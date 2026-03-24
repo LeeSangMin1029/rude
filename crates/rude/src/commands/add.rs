@@ -252,8 +252,11 @@ pub fn run(db_path: PathBuf, input_path: PathBuf, exclude: &[String]) -> Result<
         engine.checkpoint().ok();
         drop(engine);
 
-        // Build MirEdgeMap once — reuse in prebuild_caches (avoid 2nd parse).
-        let mir_edges = if mir_out_dir.exists() {
+        // Load only changed crates' MIR edges (not all 22MB).
+        let mir_edges = if mir_out_dir.exists() && !incremental_crates.is_empty() {
+            let refs: Vec<&str> = incremental_crates.iter().map(|s| s.as_str()).collect();
+            rude_intel::mir_edges::MirEdgeMap::from_dir_filtered(&mir_out_dir, Some(&refs)).ok()
+        } else if mir_out_dir.exists() {
             rude_intel::mir_edges::MirEdgeMap::from_dir(&mir_out_dir).ok()
         } else {
             None
