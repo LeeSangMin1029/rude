@@ -44,10 +44,10 @@ pub fn run(db_path: PathBuf, input_path: PathBuf, exclude: &[String]) -> Result<
         );
     }
 
-    // current_sources: lightweight path normalization for deleted-file detection (no canonicalize).
+    // current_sources: must use normalize_source (canonicalize) to match file_index keys.
     let current_sources: std::collections::HashSet<String> = all_files
         .iter()
-        .map(|f| rude_db::file_utils::normalize_source_light(f))
+        .map(|f| rude_db::file_utils::normalize_source(f))
         .collect();
 
     // Filter to changed files only (mtime check).
