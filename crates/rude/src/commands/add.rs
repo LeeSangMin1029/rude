@@ -51,12 +51,12 @@ pub fn run(db_path: PathBuf, input_path: PathBuf, exclude: &[String]) -> Result<
         .collect();
 
     // Filter to changed files only (mtime check).
-    // Use normalize_source_light for file_idx lookup (matches how file_idx keys are stored).
+    // Use normalize_source for file_idx lookup (keys are absolute paths).
     let file_idx = file_index::load_file_index(&db_path)?;
     let code_files: Vec<_> = all_files
         .iter()
         .filter(|f| {
-            let source = rude_db::file_utils::normalize_source_light(f);
+            let source = rude_db::file_utils::normalize_source(f);
             match file_idx.get_file(&source) {
                 Some(entry) => get_file_mtime(*f).is_none_or(|m| m != entry.mtime),
                 None => true,
