@@ -17,9 +17,8 @@ pub fn load_chunks(path: &Path) -> Result<Vec<ParsedChunk>> {
     ensure_project_root(path);
 
     let cache = cache_path(path);
-    // Use payload.dat mtime (not directory mtime) — directory mtime
-    // doesn't update on Windows when files inside are modified.
-    let db_mtime = fs::metadata(path.join("payload.dat"))
+    // Use store.db mtime — the SQLite database file.
+    let db_mtime = fs::metadata(path.join("store.db"))
         .and_then(|m| m.modified())
         .ok();
 
@@ -52,20 +51,16 @@ pub fn load_chunks_from_db(path: &Path) -> Result<Vec<ParsedChunk>> {
     let engine = StorageEngine::open(path)
         .with_context(|| format!("failed to open database at {}", path.display()))?;
 
-    let payload_store = engine.payload_store();
-    let mut ids: Vec<u64> = engine.all_ids().unwrap_or_default();
-    // Sort by ID for deterministic chunk ordering (HashMap iteration is random).
-    ids.sort_unstable();
+    let rows = engine
+        .iter_all()
+        .with_context(|| format!("failed to read chunks from {}", path.display()))?;
 
-    let mut chunks = Vec::new();
-    for id in ids {
-        if let Ok(Some(text)) = payload_store.get_text(id)
-            && let Some(mut chunk) = parse::parse_chunk(&text)
-        {
-            if let Ok(Some(payload)) = payload_store.get_payload(id)
-                && let Some(PayloadValue::StringList(imports)) = payload.custom.get("imports") {
-                    chunk.imports.clone_from(imports);
-                }
+    let mut chunks = Vec::with_capacity(rows.len());
+    for (_, payload, text) in &rows {
+        if let Some(mut chunk) = parse::parse_chunk(text) {
+            if let Some(PayloadValue::StringList(imports)) = payload.custom.get("imports") {
+                chunk.imports.clone_from(imports);
+            }
             chunks.push(chunk);
         }
     }

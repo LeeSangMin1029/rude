@@ -39,8 +39,8 @@ fn test_chunk(name: &str, file: &str, calls: &[&str]) -> ParsedChunk {
 }
 
 /// Create a temporary DB directory with chunks and graph cache.
-/// Creates a dummy `payload.dat` so `load_chunks` cache-hit logic works
-/// (it checks `payload.dat` mtime to validate the cache).
+/// Creates a dummy `store.db` so `load_chunks` cache-hit logic works
+/// (it checks `store.db` mtime to validate the cache).
 fn setup_test_db(dir: &Path) -> Vec<ParsedChunk> {
     let chunks = vec![
         test_chunk("mod_a::foo", "src/a.rs", &["mod_b::bar"]),
@@ -50,10 +50,10 @@ fn setup_test_db(dir: &Path) -> Vec<ParsedChunk> {
         test_chunk("mod_d::entry", "src/d.rs", &["mod_a::foo", "mod_b::bar"]),
     ];
 
-    // Create dummy payload.dat (load_chunks checks its mtime for cache validity)
-    std::fs::write(dir.join("payload.dat"), b"dummy").unwrap();
+    // Create dummy store.db (load_chunks checks its mtime for cache validity)
+    std::fs::write(dir.join("store.db"), b"dummy").unwrap();
 
-    // Save chunks cache (must be written AFTER payload.dat so cache mtime >= db mtime)
+    // Save chunks cache (must be written AFTER store.db so cache mtime >= db mtime)
     let cache_dir = dir.join("cache");
     std::fs::create_dir_all(&cache_dir).unwrap();
     // Small sleep to ensure cache file gets a strictly newer mtime

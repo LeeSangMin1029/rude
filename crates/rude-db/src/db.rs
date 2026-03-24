@@ -89,7 +89,20 @@ impl StorageEngine {
                  chunk_total      INTEGER NOT NULL DEFAULT 0,
                  text      TEXT NOT NULL DEFAULT ''
              );
-             CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source);",
+             CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source);
+
+             CREATE TABLE IF NOT EXISTS file_index (
+                 path          TEXT PRIMARY KEY,
+                 mtime         INTEGER NOT NULL,
+                 size          INTEGER NOT NULL,
+                 chunk_ids     TEXT NOT NULL DEFAULT '[]',
+                 content_hash  INTEGER
+             );
+
+             CREATE TABLE IF NOT EXISTS config (
+                 key   TEXT PRIMARY KEY,
+                 value TEXT NOT NULL
+             );",
         )
         .context("failed to create schema")?;
         Ok(())

@@ -10,7 +10,10 @@ mod payload_store;
 
 pub use db::StorageEngine;
 pub use db_config::DbConfig;
-pub use file_index::{FileIndex, FileMetadata, get_file_size, load_file_index, save_file_index};
+pub use file_index::{
+    FileIndex, FileMetadata, get_file_size, load_file_index, load_file_index_from_engine,
+    save_file_index, save_file_index_to_engine,
+};
 pub use file_utils::{
     content_hash, content_hash_bytes, generate_id, get_file_mtime, home_dir, is_code_ext,
     lang_for_ext, normalize_source, normalize_source_light, scan_files, should_skip_dir,
