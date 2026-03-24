@@ -18,32 +18,6 @@ use crate::parse::ParsedChunk;
 /// Source hash — auto-computed by build.rs for cache invalidation.
 const GRAPH_SOURCE_HASH: &str = env!("GRAPH_SOURCE_HASH");
 
-/// Get current process RSS in MB.
-pub fn current_rss_mb() -> f64 {
-    #[cfg(windows)]
-    {
-        use std::mem::MaybeUninit;
-        #[repr(C)]
-        struct Pmc { cb: u32, pf: u32, peak: usize, wss: usize, qpp: usize, qp: usize, qnpp: usize, qnp: usize, pfu: usize, ppfu: usize }
-        #[expect(unsafe_code, reason = "FFI for Windows memory profiling")]
-        unsafe extern "system" {
-            fn GetCurrentProcess() -> *mut std::ffi::c_void;
-            fn K32GetProcessMemoryInfo(h: *mut std::ffi::c_void, p: *mut Pmc, cb: u32) -> i32;
-        }
-        #[expect(unsafe_code, reason = "FFI for memory profiling")]
-        unsafe {
-            let mut pmc = MaybeUninit::<Pmc>::zeroed().assume_init();
-            pmc.cb = std::mem::size_of::<Pmc>() as u32;
-            if K32GetProcessMemoryInfo(GetCurrentProcess(), &mut pmc, pmc.cb) != 0 {
-                return pmc.wss as f64 / (1024.0 * 1024.0);
-            }
-        }
-        0.0
-    }
-    #[cfg(not(windows))]
-    { 0.0 }
-}
-
 // Re-export for external consumers (used by rude, stats, clones).
 pub use crate::index_tables::{is_test_path, is_test_chunk};
 

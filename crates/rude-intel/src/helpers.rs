@@ -186,12 +186,4 @@ pub fn extract_crate_name(path: &str) -> String {
     "(root)".to_owned()
 }
 
-/// Print the path alias legend.
-pub fn print_legend(legend: &[(String, String)]) {
-    if !legend.is_empty() {
-        for (alias, dir) in legend {
-            println!("{alias} = {dir}");
-        }
-    }
-}
 

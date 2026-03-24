@@ -21,7 +21,6 @@ pub mod impact;
 pub mod jump;
 pub mod loader;
 pub mod parse;
-pub mod reason;
 pub mod stats;
 pub mod mir_edges;
 pub mod trace;
