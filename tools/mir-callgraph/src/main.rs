@@ -306,11 +306,58 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool) {
 
     // ── Output ──────────────────────────────────────────────────────
     let out_dir = env::var("MIR_CALLGRAPH_OUT").ok();
+    let db_path = env::var("MIR_CALLGRAPH_DB").ok();
 
-    if let Some(dir) = &out_dir {
+    // Prefer sqlite direct write; fall back to JSONL for compatibility.
+    if let Some(db) = &db_path {
+        if let Ok(conn) = rusqlite::Connection::open(db) {
+            let _ = conn.execute_batch("
+                CREATE TABLE IF NOT EXISTS mir_edges (
+                    caller TEXT, caller_file TEXT, caller_kind TEXT,
+                    callee TEXT, callee_file TEXT, callee_start_line INTEGER,
+                    line INTEGER, is_local INTEGER, crate_name TEXT
+                );
+                CREATE TABLE IF NOT EXISTS mir_chunks (
+                    name TEXT, file TEXT, kind TEXT,
+                    start_line INTEGER, end_line INTEGER,
+                    signature TEXT, visibility TEXT, is_test INTEGER,
+                    body TEXT, crate_name TEXT
+                );
+            ");
+
+            if let Ok(tx) = conn.unchecked_transaction() {
+                let mut edge_stmt = tx.prepare_cached(
+                    "INSERT INTO mir_edges VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)"
+                ).unwrap();
+                for e in &edges {
+                    let _ = edge_stmt.execute(rusqlite::params![
+                        e.caller, e.caller_file, e.caller_kind,
+                        e.callee, e.callee_file, e.callee_start_line,
+                        e.line, e.is_local as i32, crate_name,
+                    ]);
+                }
+
+                let mut chunk_stmt = tx.prepare_cached(
+                    "INSERT INTO mir_chunks VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)"
+                ).unwrap();
+                for c in &chunks {
+                    let _ = chunk_stmt.execute(rusqlite::params![
+                        c.name, c.file, c.kind,
+                        c.start_line, c.end_line,
+                        c.signature, c.visibility, c.is_test as i32,
+                        c.body, crate_name,
+                    ]);
+                }
+                let _ = tx.commit();
+            }
+        }
+        eprintln!(
+            "[mir-callgraph] {crate_name}: {} edges, {} chunks (sqlite)",
+            edges.len(), chunks.len()
+        );
+    } else if let Some(dir) = &out_dir {
         use std::io::Write;
 
-        // Write edges: always append. Caller pre-truncates files before spawning.
         let edge_path = format!("{dir}/{crate_name}.edges.jsonl");
         if let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(&edge_path) {
             let mut w = std::io::BufWriter::new(file);
@@ -321,7 +368,6 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool) {
             }
         }
 
-        // Write chunks: always append. Caller pre-truncates files before spawning.
         let chunk_path = format!("{dir}/{crate_name}.chunks.jsonl");
         if let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(&chunk_path) {
             let mut w = std::io::BufWriter::new(file);
