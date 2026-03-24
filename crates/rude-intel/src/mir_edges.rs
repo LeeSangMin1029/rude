@@ -145,6 +145,121 @@ impl MirEdgeMap {
         Ok(combined)
     }
 
+    /// Load edges from sqlite (mir-callgraph direct write mode).
+    pub fn from_sqlite(db_path: &Path, only_crates: Option<&[&str]>) -> Result<Self> {
+        let conn = rusqlite::Connection::open(db_path)
+            .with_context(|| format!("failed to open MIR sqlite: {}", db_path.display()))?;
+
+        let mut combined = Self::default();
+
+        let query = if let Some(crates) = only_crates {
+            let placeholders: Vec<String> = crates.iter().enumerate()
+                .map(|(i, _)| format!("?{}", i + 1))
+                .collect();
+            format!("SELECT caller, caller_file, callee, callee_file, callee_start_line, line, is_local, crate_name FROM mir_edges WHERE crate_name IN ({})", placeholders.join(","))
+        } else {
+            "SELECT caller, caller_file, callee, callee_file, callee_start_line, line, is_local, crate_name FROM mir_edges".to_owned()
+        };
+
+        let mut stmt = conn.prepare(&query).context("failed to prepare edge query")?;
+
+        let params: Vec<Box<dyn rusqlite::types::ToSql>> = if let Some(crates) = only_crates {
+            crates.iter().map(|c| {
+                let normalized = c.replace('-', "_");
+                Box::new(normalized) as Box<dyn rusqlite::types::ToSql>
+            }).collect()
+        } else {
+            vec![]
+        };
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+        let rows = stmt.query_map(param_refs.as_slice(), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, usize>(4)?,
+                row.get::<_, usize>(5)?,
+                row.get::<_, bool>(6)?,
+                row.get::<_, String>(7)?,
+            ))
+        }).context("failed to query edges")?;
+
+        for row in rows {
+            let (caller, caller_file, callee, callee_file, callee_start_line, line, _is_local, crate_name) = row?;
+
+            let file_normalized = normalize_path(&caller_file);
+            combined.by_location
+                .entry((file_normalized, line))
+                .or_default()
+                .push(callee.clone());
+
+            let callee_file_normalized = normalize_path(&callee_file);
+            combined.caller_crate.insert(caller.clone(), crate_name);
+            combined.by_caller
+                .entry(caller)
+                .or_default()
+                .push(CalleeInfo {
+                    name: callee,
+                    file: callee_file_normalized,
+                    start_line: callee_start_line,
+                    call_line: line,
+                });
+
+            combined.total += 1;
+        }
+
+        // Build reverse index
+        for (caller, crate_name) in &combined.caller_crate {
+            combined.crate_to_callers
+                .entry(crate_name.clone())
+                .or_default()
+                .push(caller.clone());
+        }
+
+        Ok(combined)
+    }
+
+    /// Load MIR chunks from sqlite.
+    pub fn load_chunks_from_sqlite(db_path: &Path, only_crates: Option<&[&str]>) -> Result<Vec<MirChunk>> {
+        let conn = rusqlite::Connection::open(db_path)
+            .with_context(|| format!("failed to open MIR sqlite: {}", db_path.display()))?;
+
+        let query = if let Some(crates) = only_crates {
+            let placeholders: Vec<String> = crates.iter().enumerate()
+                .map(|(i, _)| format!("?{}", i + 1))
+                .collect();
+            format!("SELECT name, file, kind, start_line, end_line, signature, visibility, is_test, body FROM mir_chunks WHERE crate_name IN ({})", placeholders.join(","))
+        } else {
+            "SELECT name, file, kind, start_line, end_line, signature, visibility, is_test, body FROM mir_chunks".to_owned()
+        };
+
+        let mut stmt = conn.prepare(&query).context("failed to prepare chunk query")?;
+        let params: Vec<Box<dyn rusqlite::types::ToSql>> = if let Some(crates) = only_crates {
+            crates.iter().map(|c| Box::new(c.replace('-', "_")) as Box<dyn rusqlite::types::ToSql>).collect()
+        } else {
+            vec![]
+        };
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+        let rows = stmt.query_map(param_refs.as_slice(), |row| {
+            Ok(MirChunk {
+                name: row.get(0)?,
+                file: row.get(1)?,
+                kind: row.get(2)?,
+                start_line: row.get(3)?,
+                end_line: row.get(4)?,
+                signature: row.get(5)?,
+                visibility: row.get(6)?,
+                is_test: row.get(7)?,
+                body: row.get::<_, String>(8).unwrap_or_default(),
+            })
+        }).context("failed to query chunks")?;
+
+        rows.collect::<std::result::Result<Vec<_>, _>>().context("failed to collect chunks")
+    }
+
     /// Resolve a call from a specific file and line to its callee names.
     pub fn resolve_at(&self, file: &str, line: usize) -> Option<&[String]> {
         let key = (normalize_path(file), line);
@@ -332,6 +447,13 @@ fn find_mir_callgraph_bin(override_path: Option<&Path>) -> Result<PathBuf> {
     build_mir_callgraph(&base)
 }
 
+/// Derive the sqlite path for MIR data from a project root.
+///
+/// Returns `{project_root}/target/mir-edges/mir.db`.
+pub fn mir_db_path(project_root: &Path) -> PathBuf {
+    project_root.join("target").join("mir-edges").join("mir.db")
+}
+
 /// Run mir-callgraph on the entire workspace.
 pub fn run_mir_callgraph(project_root: &Path, mir_callgraph_bin: Option<&Path>) -> Result<MirEdgeMap> {
     run_mir_callgraph_for(project_root, mir_callgraph_bin, &[], false)
@@ -354,11 +476,14 @@ pub fn run_mir_callgraph_for(
 
     let bin = find_mir_callgraph_bin(mir_callgraph_bin)?;
 
+    let mir_db = mir_db_path(project_root);
+
     let mut cmd = Command::new(&bin);
     add_nightly_path(&mut cmd);
     cmd.current_dir(project_root)
         .arg("--keep-going")
         .env("MIR_CALLGRAPH_OUT", &out_dir)
+        .env("MIR_CALLGRAPH_DB", &mir_db)
         .env("MIR_CALLGRAPH_JSON", "1");
 
     for krate in crates {
@@ -386,7 +511,12 @@ pub fn run_mir_callgraph_for(
         }
     }
 
-    MirEdgeMap::from_dir(&out_dir)
+    // Prefer sqlite if available, fallback to JSONL
+    if mir_db.exists() {
+        MirEdgeMap::from_sqlite(&mir_db, None)
+    } else {
+        MirEdgeMap::from_dir(&out_dir)
+    }
 }
 
 /// Kill any background test processes from a previous `run_mir_direct` call.
@@ -487,6 +617,31 @@ fn kill_process_by_pid(pid: u32) {
         .status();
 }
 
+/// Pre-truncate MIR data for crates about to be rebuilt.
+///
+/// Deletes rows from sqlite (if available) and truncates JSONL files as fallback.
+fn pre_truncate_crates(crates: &[&str], out_dir: &Path, mir_db: &Path) {
+    // SQLite: DELETE rows for these crates
+    if mir_db.exists() {
+        if let Ok(conn) = rusqlite::Connection::open(mir_db) {
+            for krate in crates {
+                let cn = krate.replace('-', "_");
+                let _ = conn.execute("DELETE FROM mir_edges WHERE crate_name = ?1", [&cn]);
+                let _ = conn.execute("DELETE FROM mir_chunks WHERE crate_name = ?1", [&cn]);
+            }
+        }
+    }
+
+    // JSONL fallback: truncate files
+    for krate in crates {
+        let u = krate.replace('-', "_");
+        for ext in [".edges.jsonl", ".chunks.jsonl"] {
+            let p = out_dir.join(format!("{u}{ext}"));
+            if p.exists() { let _ = std::fs::write(&p, ""); }
+        }
+    }
+}
+
 /// Run mir-callgraph in direct mode — always.
 ///
 /// If prerequisites are missing (no cache, stale cache, missing artifacts),
@@ -535,17 +690,27 @@ pub fn run_mir_direct(
         if test_file.exists() { test_files.push(test_file); }
     }
 
+    let mir_db = mir_db_path(project_root);
+
     // If cargo just ran (Phase 1) and we still have no args, there's nothing
     // more we can do — the crate might not be a local crate.
     if lib_files.is_empty() && test_files.is_empty() {
-        return MirEdgeMap::from_dir(&out_dir);
+        return if mir_db.exists() {
+            MirEdgeMap::from_sqlite(&mir_db, None)
+        } else {
+            MirEdgeMap::from_dir(&out_dir)
+        };
     }
 
     // If deps were just rebuilt via cargo (Phase 1), the edge files are already
     // generated by RUSTC_WRAPPER. Skip redundant direct extraction.
     if needs_deps_rebuild {
         run_language_extractors(project_root, &out_dir, rust_only);
-        return MirEdgeMap::from_dir(&out_dir);
+        return if mir_db.exists() {
+            MirEdgeMap::from_sqlite(&mir_db, Some(crates))
+        } else {
+            MirEdgeMap::from_dir(&out_dir)
+        };
     }
 
     // ── Phase 3: Direct mode — lib sync, test fire-and-forget ──────
@@ -554,15 +719,9 @@ pub fn run_mir_direct(
     // Kill any leftover background test process from a previous run.
     kill_previous_test_bg(&out_dir);
 
-    // Pre-truncate edge/chunk files for crates we're about to rebuild.
-    // This allows RUSTC_WRAPPER to use append mode for both lib and test.
-    for krate in crates {
-        let u = krate.replace('-', "_");
-        for ext in [".edges.jsonl", ".chunks.jsonl"] {
-            let p = out_dir.join(format!("{u}{ext}"));
-            if p.exists() { let _ = std::fs::write(&p, ""); }
-        }
-    }
+    // Pre-truncate: sqlite DELETE for crates we're about to rebuild,
+    // plus JSONL truncate as fallback for older mir-callgraph binaries.
+    pre_truncate_crates(crates, &out_dir, &mir_db);
 
     // ── Phase 3a: Launch lib builds synchronously ──────────────────
     let mut lib_children: Vec<(PathBuf, std::process::Child)> = Vec::new();
@@ -575,6 +734,7 @@ pub fn run_mir_direct(
             .arg("--direct")
             .arg("--args-file").arg(args_file)
             .env("MIR_CALLGRAPH_OUT", &out_dir)
+            .env("MIR_CALLGRAPH_DB", &mir_db)
             .env("MIR_CALLGRAPH_JSON", "1");
         match cmd.spawn() {
             Ok(child) => lib_children.push((args_file.clone(), child)),
@@ -598,7 +758,11 @@ pub fn run_mir_direct(
         eprintln!("  [mir] some lib builds failed, refreshing via cargo...");
         run_mir_callgraph_for(project_root, mir_callgraph_bin, crates, rust_only)?;
         run_language_extractors(project_root, &out_dir, rust_only);
-        return MirEdgeMap::from_dir(&out_dir);
+        return if mir_db.exists() {
+            MirEdgeMap::from_sqlite(&mir_db, Some(crates))
+        } else {
+            MirEdgeMap::from_dir(&out_dir)
+        };
     }
 
     // ── Phase 3b: Fire-and-forget test builds ──────────────────────
@@ -613,6 +777,7 @@ pub fn run_mir_direct(
                 .arg("--direct")
                 .arg("--args-file").arg(args_file)
                 .env("MIR_CALLGRAPH_OUT", &out_dir)
+                .env("MIR_CALLGRAPH_DB", &mir_db)
                 .env("MIR_CALLGRAPH_JSON", "1");
             match cmd.spawn() {
                 Ok(child) => {
@@ -637,9 +802,12 @@ pub fn run_mir_direct(
     }
 
     run_language_extractors(project_root, &out_dir, rust_only);
-    // Load only changed crates' JSONL (not all 65+ files).
-    // Edge cache handles the rest via cached resolved edges.
-    MirEdgeMap::from_dir_filtered(&out_dir, Some(crates))
+    // Prefer sqlite if available, fallback to JSONL.
+    if mir_db.exists() {
+        MirEdgeMap::from_sqlite(&mir_db, Some(crates))
+    } else {
+        MirEdgeMap::from_dir_filtered(&out_dir, Some(crates))
+    }
 }
 
 /// Check if all requested crates have valid --extern artifact paths.
@@ -1045,6 +1213,20 @@ pub fn detect_missing_edge_crates(project_root: &Path) -> Vec<String> {
             .collect()
     };
 
+    // Pre-load crate names that exist in sqlite (if available).
+    let mir_db = mir_db_path(project_root);
+    let sqlite_crates: std::collections::HashSet<String> = if mir_db.exists() {
+        rusqlite::Connection::open(&mir_db)
+            .and_then(|conn| {
+                let mut stmt = conn.prepare("SELECT DISTINCT crate_name FROM mir_edges")?;
+                let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+                rows.collect::<std::result::Result<std::collections::HashSet<String>, _>>()
+            })
+            .unwrap_or_default()
+    } else {
+        std::collections::HashSet::new()
+    };
+
     let mut missing = Vec::new();
     for (toml_path, src_dir) in &check_list {
         let pkg_name = match std::fs::read_to_string(toml_path) {
@@ -1057,7 +1239,15 @@ pub fn detect_missing_edge_crates(project_root: &Path) -> Vec<String> {
             continue;
         }
 
-        let edge_file = edge_dir.join(format!("{}.edges.jsonl", name.replace('-', "_")));
+        let cn = name.replace('-', "_");
+
+        // Present in sqlite → not missing
+        if sqlite_crates.contains(&cn) {
+            continue;
+        }
+
+        // Fallback: check JSONL
+        let edge_file = edge_dir.join(format!("{cn}.edges.jsonl"));
         if !edge_file.exists() {
             missing.push(name);
         }

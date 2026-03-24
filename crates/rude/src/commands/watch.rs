@@ -119,13 +119,24 @@ fn process_changes(changed: &[PathBuf], db_path: &Path, input_path: &Path) {
             }
         };
 
-    // 3. Load MIR chunks
+    // 3. Load MIR chunks — prefer sqlite, fallback to JSONL
     let mir_out_dir = input_path.join("target").join("mir-edges");
-    let mir_chunks = match rude_intel::mir_edges::load_all_mir_chunks(&mir_out_dir) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("[watch] failed to load MIR chunks: {e}");
-            return;
+    let mir_db = rude_intel::mir_edges::mir_db_path(input_path);
+    let mir_chunks = if mir_db.exists() {
+        match rude_intel::mir_edges::MirEdgeMap::load_chunks_from_sqlite(&mir_db, None) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[watch] failed to load MIR chunks from sqlite: {e}");
+                return;
+            }
+        }
+    } else {
+        match rude_intel::mir_edges::load_all_mir_chunks(&mir_out_dir) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[watch] failed to load MIR chunks: {e}");
+                return;
+            }
         }
     };
 

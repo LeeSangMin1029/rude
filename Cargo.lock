@@ -771,6 +771,7 @@ dependencies = [
  "fs2",
  "rayon",
  "rude-db",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",

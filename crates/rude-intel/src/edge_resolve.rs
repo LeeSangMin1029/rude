@@ -165,19 +165,33 @@ fn load_edge_bundle(db_path: &Path) -> Option<EdgeCacheBundle> {
     Some(bundle)
 }
 
-/// Check if a crate's edges are stale by comparing edge JSONL mtime
+/// Check if a crate's edges are stale by comparing edge source mtime
 /// against the bundle file mtime.
+///
+/// Checks both JSONL file and mir.db (sqlite) — whichever is newer wins.
 fn is_crate_cache_stale(_db_path: &Path, mir_edge_dir: &Path, crate_name: &str, bundle_mtime: Option<std::time::SystemTime>) -> bool {
-    let edge_file = mir_edge_dir.join(format!("{crate_name}.edges.jsonl"));
     let cache_mtime = match bundle_mtime {
         Some(t) => t,
         None => return true,
     };
-    let edge_mtime = match std::fs::metadata(&edge_file).and_then(|m| m.modified()) {
-        Ok(t) => t,
-        Err(_) => return false,
+
+    // Check JSONL mtime
+    let edge_file = mir_edge_dir.join(format!("{crate_name}.edges.jsonl"));
+    let jsonl_mtime = std::fs::metadata(&edge_file).and_then(|m| m.modified()).ok();
+
+    // Check mir.db mtime (sqlite mode)
+    let mir_db = mir_edge_dir.join("mir.db");
+    let sqlite_mtime = std::fs::metadata(&mir_db).and_then(|m| m.modified()).ok();
+
+    // Use the most recent source mtime
+    let source_mtime = match (jsonl_mtime, sqlite_mtime) {
+        (Some(j), Some(s)) => Some(if j > s { j } else { s }),
+        (Some(j), None) => Some(j),
+        (None, Some(s)) => Some(s),
+        (None, None) => return false, // no source at all → not stale
     };
-    edge_mtime > cache_mtime
+
+    source_mtime.is_some_and(|t| t > cache_mtime)
 }
 
 /// Resolve edges for a single crate's callers and return the edge triples.

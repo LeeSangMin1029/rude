@@ -93,7 +93,7 @@ pub fn run(db_path: PathBuf, input_path: PathBuf, exclude: &[String]) -> Result<
             .with_context(|| format!("Failed to open database at {}", db_path.display()))?
     } else {
         println!("New database: {} (dim={TEXT_ONLY_DIM})", db_path.display());
-        // Clear stale edge/chunk JSONL + cargo fingerprints for local crates.
+        // Clear stale edge/chunk JSONL + mir.db + cargo fingerprints for local crates.
         // Keep target/mir-check/debug/deps/ (compiled deps) and incremental/ (rustc cache).
         let mir_edges = input_path.join("target").join("mir-edges");
         if mir_edges.exists() { let _ = std::fs::remove_dir_all(&mir_edges); }
@@ -132,10 +132,12 @@ pub fn run(db_path: PathBuf, input_path: PathBuf, exclude: &[String]) -> Result<
     let mir_out_dir = input_path.join("target").join("mir-edges");
     std::fs::create_dir_all(&mir_out_dir).ok();
 
-    let has_cached_edges = mir_out_dir.exists()
-        && std::fs::read_dir(&mir_out_dir).is_ok_and(|mut d| d.any(|e| {
-            e.is_ok_and(|e| e.path().to_string_lossy().ends_with(".edges.jsonl"))
-        }));
+    let mir_db = rude_intel::mir_edges::mir_db_path(&input_path);
+    let has_cached_edges = mir_db.exists()
+        || (mir_out_dir.exists()
+            && std::fs::read_dir(&mir_out_dir).is_ok_and(|mut d| d.any(|e| {
+                e.is_ok_and(|e| e.path().to_string_lossy().ends_with(".edges.jsonl"))
+            })));
 
     let mut incremental_crates: Vec<String> = Vec::new();
     if has_cached_edges {
@@ -173,8 +175,18 @@ pub fn run(db_path: PathBuf, input_path: PathBuf, exclude: &[String]) -> Result<
             .context("mir-callgraph failed — ensure nightly rustc and mir-callgraph are installed")?;
     }
 
-    // Load MIR chunks — only for changed crates (skip 94MB full parse on incremental)
-    let mir_chunks = if incremental_crates.is_empty() {
+    // Load MIR chunks — prefer sqlite, fallback to JSONL
+    let mir_chunks = if mir_db.exists() {
+        let only = if incremental_crates.is_empty() {
+            None
+        } else {
+            Some(incremental_crates.iter().map(|s| s.as_str()).collect::<Vec<&str>>())
+        };
+        rude_intel::mir_edges::MirEdgeMap::load_chunks_from_sqlite(
+            &mir_db,
+            only.as_deref(),
+        )
+    } else if incremental_crates.is_empty() {
         rude_intel::mir_edges::load_all_mir_chunks(&mir_out_dir)
     } else {
         let refs: Vec<&str> = incremental_crates.iter().map(|s| s.as_str()).collect();
@@ -252,8 +264,15 @@ pub fn run(db_path: PathBuf, input_path: PathBuf, exclude: &[String]) -> Result<
         engine.checkpoint().ok();
         drop(engine);
 
-        // Load only changed crates' MIR edges (not all 22MB).
-        let mir_edges = if mir_out_dir.exists() && !incremental_crates.is_empty() {
+        // Load only changed crates' MIR edges — prefer sqlite, fallback to JSONL.
+        let mir_edges = if mir_db.exists() {
+            let only = if incremental_crates.is_empty() {
+                None
+            } else {
+                Some(incremental_crates.iter().map(|s| s.as_str()).collect::<Vec<&str>>())
+            };
+            rude_intel::mir_edges::MirEdgeMap::from_sqlite(&mir_db, only.as_deref()).ok()
+        } else if mir_out_dir.exists() && !incremental_crates.is_empty() {
             let refs: Vec<&str> = incremental_crates.iter().map(|s| s.as_str()).collect();
             rude_intel::mir_edges::MirEdgeMap::from_dir_filtered(&mir_out_dir, Some(&refs)).ok()
         } else if mir_out_dir.exists() {

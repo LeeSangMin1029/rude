@@ -326,27 +326,30 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool) {
             ");
 
             if let Ok(tx) = conn.unchecked_transaction() {
-                let mut edge_stmt = tx.prepare_cached(
-                    "INSERT INTO mir_edges VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)"
-                ).unwrap();
-                for e in &edges {
-                    let _ = edge_stmt.execute(rusqlite::params![
-                        e.caller, e.caller_file, e.caller_kind,
-                        e.callee, e.callee_file, e.callee_start_line,
-                        e.line, e.is_local as i32, crate_name,
-                    ]);
+                {
+                    let mut edge_stmt = tx.prepare_cached(
+                        "INSERT INTO mir_edges VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)"
+                    ).unwrap();
+                    for e in &edges {
+                        let _ = edge_stmt.execute(rusqlite::params![
+                            e.caller, e.caller_file, e.caller_kind,
+                            e.callee, e.callee_file, e.callee_start_line,
+                            e.line, e.is_local as i32, crate_name,
+                        ]);
+                    }
                 }
-
-                let mut chunk_stmt = tx.prepare_cached(
-                    "INSERT INTO mir_chunks VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)"
-                ).unwrap();
-                for c in &chunks {
-                    let _ = chunk_stmt.execute(rusqlite::params![
-                        c.name, c.file, c.kind,
-                        c.start_line, c.end_line,
-                        c.signature, c.visibility, c.is_test as i32,
-                        c.body, crate_name,
-                    ]);
+                {
+                    let mut chunk_stmt = tx.prepare_cached(
+                        "INSERT INTO mir_chunks VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)"
+                    ).unwrap();
+                    for c in &chunks {
+                        let _ = chunk_stmt.execute(rusqlite::params![
+                            c.name, c.file, c.kind,
+                            c.start_line, c.end_line,
+                            c.signature, c.visibility, c.is_test as i32,
+                            c.body, crate_name,
+                        ]);
+                    }
                 }
                 let _ = tx.commit();
             }
