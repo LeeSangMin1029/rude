@@ -147,15 +147,7 @@ pub fn chunk_from_mir(
                 std::path::PathBuf::from(file_key)
             }
         };
-        if !file_path.exists() {
-            continue;
-        }
-
-        let file_text = match std::fs::read_to_string(&file_path) {
-            Ok(t) => t,
-            Err(_) => continue,
-        };
-        let all_lines: Vec<&str> = file_text.lines().collect();
+        // No file I/O — body text comes directly from MIR extraction.
 
         let source = normalize_source(&file_path);
 
@@ -194,9 +186,9 @@ pub fn chunk_from_mir(
         let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let lang = rude_db::lang_for_ext(ext);
 
-        // Extract imports once per file (top-level `use` statements)
-        let imports: Vec<String> = all_lines
-            .iter()
+        // Imports extracted from first chunk's body (use statements at file top).
+        let first_body = chunks.first().map(|c| c.body.as_str()).unwrap_or("");
+        let imports: Vec<String> = first_body.lines()
             .take_while(|line| {
                 let trimmed = line.trim();
                 trimmed.is_empty()
@@ -218,15 +210,8 @@ pub fn chunk_from_mir(
         let mut chunk_ids = Vec::with_capacity(chunks.len());
 
         for (idx, mc) in chunks.iter().enumerate() {
-            // Extract text from line range (1-based start_line, end_line)
-            let start = mc.start_line.saturating_sub(1);
-            let end = mc.end_line.min(all_lines.len());
-            let chunk_lines: Vec<&str> = if start < end {
-                all_lines[start..end].to_vec()
-            } else {
-                Vec::new()
-            };
-            let text = chunk_lines.join("\n");
+            let chunk_lines: Vec<&str> = mc.body.lines().collect();
+            let text = mc.body.clone();
 
             // Parse kind
             let kind = match mc.kind.as_str() {
@@ -354,17 +339,8 @@ pub fn chunk_from_mir(
                     }
                 });
 
-            // Compute byte offsets
-            let start_byte: usize = all_lines
-                .iter()
-                .take(start)
-                .map(|l| l.len() + 1) // +1 for newline
-                .sum();
-            let end_byte: usize = start_byte
-                + chunk_lines
-                    .iter()
-                    .map(|l| l.len() + 1)
-                    .sum::<usize>();
+            let start_byte: usize = 0;
+            let end_byte: usize = text.len();
 
             let id = generate_id(&source, idx);
             chunk_ids.push(id);
@@ -376,8 +352,8 @@ pub fn chunk_from_mir(
                 signature,
                 doc_comment: None,
                 visibility,
-                start_line: start,
-                end_line: end.saturating_sub(1),
+                start_line: mc.start_line.saturating_sub(1),
+                end_line: mc.end_line.saturating_sub(1),
                 start_byte,
                 end_byte,
                 chunk_index: idx,

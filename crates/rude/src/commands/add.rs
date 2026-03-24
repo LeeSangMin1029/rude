@@ -274,7 +274,7 @@ pub fn run(db_path: PathBuf, input_path: PathBuf, exclude: &[String]) -> Result<
 /// No merge logic needed — sqlite already has the correct state after insert.
 fn prebuild_caches(
     db_path: &std::path::Path,
-    _new_entries: &[CodeChunkEntry],
+    new_entries: &[CodeChunkEntry],
     _current_sources: &std::collections::HashSet<String>,
     _all_files: &[PathBuf],
     mir_edges: Option<&rude_intel::mir_edges::MirEdgeMap>,
@@ -287,12 +287,24 @@ fn prebuild_caches(
         let _ = std::fs::create_dir_all(parent);
     }
 
-    // Load all chunks from sqlite (source of truth).
-    let chunks: Vec<ParsedChunk> = match rude_intel::loader::load_chunks_from_db(db_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("    [cache] failed to load chunks from DB: {e}");
-            return;
+    // Fast path: load chunks.bin cache + merge new entries (avoids 37K sqlite load).
+    // Fallback: load from sqlite if no cache.
+    let chunks: Vec<ParsedChunk> = {
+        let new_chunks: Vec<ParsedChunk> = new_entries.iter()
+            .map(|e| ParsedChunk::from_code_chunk(&e.chunk, &e.file_path_str, e.chunk.imports.clone()))
+            .collect();
+        let new_files: std::collections::HashSet<String> = new_chunks.iter()
+            .map(|c| c.file.clone()).collect();
+
+        if let Some(mut existing) = rude_intel::loader::load_chunks_from_cache(db_path) {
+            // Remove chunks from changed files, add new ones
+            existing.retain(|c| !new_files.contains(c.file.as_str()));
+            existing.extend(new_chunks);
+            existing.sort_by(|a, b| a.file.cmp(&b.file).then_with(|| a.lines.cmp(&b.lines)));
+            existing
+        } else {
+            // No cache — full load from sqlite
+            rude_intel::loader::load_chunks_from_db(db_path).unwrap_or(new_chunks)
         }
     };
     eprintln!("    [cache] {} chunks", chunks.len());

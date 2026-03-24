@@ -40,6 +40,8 @@ struct MirChunk {
     signature: Option<String>,
     visibility: String,
     is_test: bool,
+    /// Full source text of the item.
+    body: String,
 }
 
 // ── Cached rustc args for direct mode ───────────────────────────────
@@ -166,6 +168,7 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool) {
                 snippet.find('{').map(|brace| snippet[..brace].trim().to_string())
             });
 
+        let body_text = source_map.span_to_snippet(span).ok();
         chunks.push(MirChunk {
             name,
             file,
@@ -175,6 +178,7 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool) {
             signature: sig_str,
             visibility: vis,
             is_test: false,
+            body: body_text.unwrap_or_default(),
         });
     }
 
@@ -225,6 +229,7 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool) {
                 || caller_name.contains("::test_")
                 || tcx.has_attr(def_id.to_def_id(), rustc_span::Symbol::intern("test"));
 
+            let body_text = source_map.span_to_snippet(body.span).ok();
             chunks.push(MirChunk {
                 name: caller_name.clone(),
                 file: caller_file.clone(),
@@ -234,6 +239,7 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool) {
                 signature: sig_str,
                 visibility: vis,
                 is_test,
+                body: body_text.unwrap_or_default(),
             });
         }
 

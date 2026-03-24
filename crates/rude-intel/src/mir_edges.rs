@@ -965,6 +965,9 @@ pub struct MirChunk {
     pub visibility: Option<String>,
     #[serde(default)]
     pub is_test: bool,
+    /// Full source text (from span_to_snippet). Eliminates source file re-reading.
+    #[serde(default)]
+    pub body: String,
 }
 
 /// Load MIR chunks from a JSONL file.
