@@ -265,16 +265,15 @@ pub fn run(db_path: PathBuf, input_path: PathBuf, exclude: &[String]) -> Result<
     Ok(())
 }
 
-/// Build chunks.bin + graph.bin caches directly from in-memory entries.
+/// Rebuild chunks.bin + graph.bin caches.
 ///
-/// Single source of truth: `from_code_chunk` → chunks.bin → graph.bin.
-/// verify/context/blast use these caches without any rebuilding.
-/// Rebuild chunks.bin + graph.bin from new entries + existing cache.
+/// SQLite is the source of truth. Load all chunks from DB, rebuild caches.
+/// No merge logic needed — sqlite already has the correct state after insert.
 fn prebuild_caches(
     db_path: &std::path::Path,
-    new_entries: &[CodeChunkEntry],
+    _new_entries: &[CodeChunkEntry],
     _current_sources: &std::collections::HashSet<String>,
-    all_files: &[PathBuf],
+    _all_files: &[PathBuf],
     mir_edges: Option<&rude_intel::mir_edges::MirEdgeMap>,
     mir_edge_dir: &std::path::Path,
 ) {
@@ -285,49 +284,15 @@ fn prebuild_caches(
         let _ = std::fs::create_dir_all(parent);
     }
 
-    // Convert new entries to ParsedChunks.
-    let mut chunks: Vec<ParsedChunk> = new_entries.iter()
-        .map(|e| ParsedChunk::from_code_chunk(&e.chunk, &e.file_path_str, e.chunk.imports.clone()))
-        .collect();
-
-    // Merge: keep existing chunks from unchanged files, skip deleted files.
-    // Use cache-only load (no mtime check) to avoid DB reload after direct_bulk_write.
-    if let Some(existing) = rude_intel::loader::load_chunks_from_cache(db_path) {
-        let mut kept = 0;
-        let mut replaced = 0;
-        let mut pruned = 0;
-        // Build set of new chunk files (ParsedChunk.file = relative path from normalize_path)
-        let new_files: std::collections::HashSet<String> = chunks.iter()
-            .map(|c| c.file.clone())
-            .collect();
-        // Build set of all live file relative paths for deleted-file detection.
-        let live_rel_files: std::collections::HashSet<String> = all_files.iter()
-            .map(|f: &PathBuf| rude_intel::parse::normalize_path(&f.to_string_lossy()))
-            .collect();
-        for c in existing {
-            if new_files.contains(c.file.as_str()) {
-                replaced += 1;
-            } else if live_rel_files.contains(c.file.as_str()) {
-                // Keep only if the file still exists in the project
-                chunks.push(c);
-                kept += 1;
-            } else {
-                pruned += 1;
-            }
+    // Load all chunks from sqlite (source of truth).
+    let chunks: Vec<ParsedChunk> = match rude_intel::loader::load_chunks_from_db(db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("    [cache] failed to load chunks from DB: {e}");
+            return;
         }
-        if pruned > 0 {
-            eprintln!("    [merge] pruned {pruned} chunks from deleted files");
-        }
-        // Sort by (file, name) for deterministic chunk order.
-        chunks.sort_by(|a, b| {
-            a.file.cmp(&b.file).then_with(|| a.lines.cmp(&b.lines))
-        });
-
-        if kept > 0 || replaced > 0 {
-            eprintln!("    [merge] kept={kept}, replaced={replaced}");
-        }
-    }
-    eprintln!("    [cache] {} chunks ({} new + existing)", chunks.len(), new_entries.len());
+    };
+    eprintln!("    [cache] {} chunks", chunks.len());
 
     // Save chunks.bin
     rude_intel::loader::save_chunks_cache(&cache, &chunks);
