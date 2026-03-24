@@ -1,0 +1,20 @@
+[package]
+name = "rude-intel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "rude_intel"
+
+[dependencies]
+rude-db = { path = "../rude-db" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = "2"
+rayon = "1"
+fs2 = "0.4"
+
+[dev-dependencies]
+tempfile = "3"

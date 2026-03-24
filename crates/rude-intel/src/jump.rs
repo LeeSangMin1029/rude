@@ -1,0 +1,120 @@
+//! Execution flow tree — DFS-based callee traversal with tree structure.
+//!
+//! Given seed symbol(s), builds a recursive tree of callees up to a
+//! configurable depth limit, then renders as indented text.
+
+use std::collections::HashSet;
+
+use crate::graph::CallGraph;
+use crate::helpers::{apply_alias, format_lines_opt, relative_path};
+
+/// A node in the execution flow tree.
+pub struct FlowNode {
+    pub idx: u32,
+    pub children: Vec<FlowNode>,
+    /// `true` when this node was already expanded elsewhere in the tree.
+    pub backreference: bool,
+}
+
+/// Build execution flow tree via depth-limited DFS on callees.
+///
+/// Each seed becomes a root. A node already expanded elsewhere appears
+/// as a childless leaf with `backreference = true` (no re-expansion).
+/// When `skip_test` is true, test nodes are excluded from the tree.
+pub fn build_flow_tree(graph: &CallGraph, seeds: &[u32], max_depth: u32, skip_test: bool) -> Vec<FlowNode> {
+    let mut expanded = HashSet::new();
+    seeds
+        .iter()
+        .map(|&idx| {
+            expanded.insert(idx);
+            build_subtree(graph, idx, max_depth, 0, &mut expanded, skip_test)
+        })
+        .collect()
+}
+
+fn build_subtree(
+    graph: &CallGraph,
+    idx: u32,
+    max_depth: u32,
+    current_depth: u32,
+    expanded: &mut HashSet<u32>,
+    skip_test: bool,
+) -> FlowNode {
+    if current_depth >= max_depth {
+        return FlowNode { idx, children: Vec::new(), backreference: false };
+    }
+
+    let callees = graph.callees.get(idx as usize).map_or(&[][..], |v| v.as_slice());
+    let children: Vec<FlowNode> = callees
+        .iter()
+        .filter(|&&child_idx| {
+            !skip_test || !graph.is_test.get(child_idx as usize).copied().unwrap_or(false)
+        })
+        .map(|&child_idx| {
+            if expanded.contains(&child_idx) {
+                FlowNode { idx: child_idx, children: Vec::new(), backreference: true }
+            } else {
+                expanded.insert(child_idx);
+                build_subtree(graph, child_idx, max_depth, current_depth + 1, expanded, skip_test)
+            }
+        })
+        .collect();
+
+    FlowNode { idx, children, backreference: false }
+}
+
+/// Render the flow tree as indented text with box-drawing characters.
+///
+/// ```text
+/// [A]indexing.rs:18-77  build_indexes
+///   ├─→ [B]engine.rs:374-376  StorageEngine::payload_store
+///   └─→ [A]indexing.rs:255-280  build_bm25
+/// ```
+pub fn render_tree(
+    graph: &CallGraph,
+    nodes: &[FlowNode],
+    alias_map: &std::collections::BTreeMap<String, String>,
+) -> String {
+    let mut buf = String::new();
+    for node in nodes {
+        let i = node.idx as usize;
+        let name = &graph.names[i];
+        let file = relative_path(&graph.files[i]);
+        let short = apply_alias(file, alias_map);
+        let lines = format_lines_opt(graph.lines[i]);
+        let test_marker = if graph.is_test[i] { " [test]" } else { "" };
+        buf.push_str(&format!("{short}{lines}  {name}{test_marker}\n"));
+        render_children(graph, &node.children, &mut buf, "  ", alias_map);
+    }
+    buf
+}
+
+fn render_children(
+    graph: &CallGraph,
+    children: &[FlowNode],
+    buf: &mut String,
+    prefix: &str,
+    alias_map: &std::collections::BTreeMap<String, String>,
+) {
+    let count = children.len();
+    for (ci, child) in children.iter().enumerate() {
+        let is_last = ci == count - 1;
+        let connector = if is_last { "\u{2514}\u{2500}\u{2192} " } else { "\u{251c}\u{2500}\u{2192} " };
+        let extension = if is_last { "    " } else { "\u{2502}   " };
+
+        let i = child.idx as usize;
+        let name = &graph.names[i];
+        let file = relative_path(&graph.files[i]);
+        let short = apply_alias(file, alias_map);
+        let lines = format_lines_opt(graph.lines[i]);
+        let test_marker = if graph.is_test[i] { " [test]" } else { "" };
+        let backref = if child.backreference { "  \u{21a9}" } else { "" };
+
+        buf.push_str(&format!("{prefix}{connector}{short}{lines}  {name}{test_marker}{backref}\n"));
+
+        if !child.children.is_empty() {
+            let next_prefix = format!("{prefix}{extension}");
+            render_children(graph, &child.children, buf, &next_prefix, alias_map);
+        }
+    }
+}
