@@ -14,12 +14,11 @@ use crate::payload_store::PayloadStore;
 
 /// SQLite-backed storage engine.
 ///
-/// The database file lives at `<dir>/store.db`. An advisory file lock
-/// (`write.lock`) prevents concurrent writers when opened exclusively.
+/// The database file lives at `<dir>/store.db`. SQLite WAL mode provides
+/// single-writer + multi-reader concurrency automatically.
 pub struct StorageEngine {
     conn: Connection,
     dir: PathBuf,
-    _write_lock: Option<std::fs::File>,
 }
 
 impl StorageEngine {
@@ -41,36 +40,25 @@ impl StorageEngine {
 
         Self::apply_pragmas(&conn)?;
 
-        Ok(Self {
-            conn,
-            dir,
-            _write_lock: None,
-        })
+        Ok(Self { conn, dir })
     }
 
-    /// Open (or create) a database with an exclusive write lock.
+    /// Open (or create) a database with schema initialization.
     ///
-    /// Other write operations on the same database will block until this
-    /// engine is dropped. Read operations are not affected.
+    /// SQLite WAL mode handles write exclusivity automatically.
     pub fn open_exclusive(dir: impl AsRef<Path>) -> Result<Self> {
         let dir = dir.as_ref().to_path_buf();
         std::fs::create_dir_all(&dir)
             .with_context(|| format!("failed to create directory: {}", dir.display()))?;
 
-        let lock_file = Self::acquire_write_lock(&dir)?;
         let db_path = dir.join("store.db");
-
         let conn = Connection::open(&db_path)
             .with_context(|| format!("failed to open database: {}", db_path.display()))?;
 
         Self::apply_pragmas(&conn)?;
         Self::ensure_schema(&conn)?;
 
-        Ok(Self {
-            conn,
-            dir,
-            _write_lock: Some(lock_file),
-        })
+        Ok(Self { conn, dir })
     }
 
     /// Apply performance-oriented PRAGMAs.
@@ -108,22 +96,6 @@ impl StorageEngine {
     }
 
     /// Acquire a blocking exclusive lock on the database directory.
-    fn acquire_write_lock(dir: &Path) -> Result<std::fs::File> {
-        use fs2::FileExt;
-
-        let lock_path = dir.join("write.lock");
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(&lock_path)
-            .with_context(|| format!("failed to open lock file: {}", lock_path.display()))?;
-
-        file.lock_exclusive()
-            .with_context(|| "failed to acquire write lock")?;
-        Ok(file)
-    }
-
     // ------------------------------------------------------------------
     // Write operations
     // ------------------------------------------------------------------

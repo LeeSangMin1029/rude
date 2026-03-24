@@ -755,7 +755,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ctrlc",
- "fs2",
  "md-5",
  "rusqlite",
  "serde",
