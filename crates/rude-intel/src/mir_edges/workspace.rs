@@ -152,73 +152,30 @@ fn validate_extern_paths(args_file: &Path) -> bool {
 }
 
 pub(super) fn is_args_cache_stale(project_root: &Path, args_dir: &Path) -> bool {
-    // Get the oldest cache file mtime as reference
     let cache_mtime = match args_dir_oldest_mtime(args_dir) {
         Some(t) => t,
-        None => return true, // no cache files
+        None => return true,
     };
-
-    // Check Cargo.toml
+    let is_newer = |p: &Path| -> bool {
+        std::fs::metadata(p).ok()
+            .and_then(|m| m.modified().ok())
+            .is_some_and(|t| t > cache_mtime)
+    };
     let cargo_toml = project_root.join("Cargo.toml");
-    if let Ok(meta) = std::fs::metadata(&cargo_toml) {
-        if let Ok(mtime) = meta.modified() {
-            if mtime > cache_mtime {
-                return true;
-            }
-        }
+    if is_newer(&cargo_toml) || is_newer(&project_root.join("Cargo.lock")) { return true; }
+    if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
+        if parse_workspace_members(&content, project_root).iter()
+            .any(|d| is_newer(&project_root.join(d).join("Cargo.toml"))) { return true; }
     }
-
-    // Check Cargo.lock (dependency changes, feature changes via lock update)
-    let cargo_lock = project_root.join("Cargo.lock");
-    if let Ok(meta) = std::fs::metadata(&cargo_lock) {
-        if let Ok(mtime) = meta.modified() {
-            if mtime > cache_mtime {
-                return true;
-            }
-        }
-    }
-
-    // Check all workspace member Cargo.toml files (feature flag changes, dep edits).
-    // For single-crate projects, parse_workspace_members returns empty — the root
-    // Cargo.toml is already checked above.
-    if let Ok(root_content) = std::fs::read_to_string(&cargo_toml) {
-        for member_dir in parse_workspace_members(&root_content, project_root) {
-            let member_toml = project_root.join(&member_dir).join("Cargo.toml");
-            if let Ok(meta) = std::fs::metadata(&member_toml) {
-                if let Ok(mtime) = meta.modified() {
-                    if mtime > cache_mtime {
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-
-    // Check .cargo/config.toml (target changes, rustflags, etc.)
-    for config_name in [".cargo/config.toml", ".cargo/config"] {
-        let config_path = project_root.join(config_name);
-        if let Ok(meta) = std::fs::metadata(&config_path) {
-            if let Ok(mtime) = meta.modified() {
-                if mtime > cache_mtime {
-                    return true;
-                }
-            }
-        }
-    }
-
-    // Check nightly version
+    if [".cargo/config.toml", ".cargo/config"].iter()
+        .any(|c| is_newer(&project_root.join(c))) { return true; }
     let version_file = args_dir.join(".nightly-version");
-    if let Some(current_ver) = nightly_rustc_version() {
+    if let Some(ver) = nightly_rustc_version() {
         match std::fs::read_to_string(&version_file) {
-            Ok(saved) if saved.trim() == current_ver => {}
-            _ => {
-                // Save current version for next check
-                let _ = std::fs::write(&version_file, &current_ver);
-                return true;
-            }
+            Ok(saved) if saved.trim() == ver => {}
+            _ => { let _ = std::fs::write(&version_file, &ver); return true; }
         }
     }
-
     false
 }
 
