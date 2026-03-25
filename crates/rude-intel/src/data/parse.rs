@@ -39,62 +39,6 @@ pub struct ParsedChunk {
 }
 
 impl ParsedChunk {
-    /// Build embed text for DB storage (replaces CodeChunk::to_embed_text).
-    pub fn to_embed_text(&self, called_by: &[String]) -> String {
-        fn push_list(parts: &mut Vec<String>, label: &str, items: &[String]) {
-            if !items.is_empty() {
-                parts.push(format!("{label}: {}", items.join(", ")));
-            }
-        }
-        fn pairs_to_strings(pairs: &[(String, String)], sep: &str) -> Vec<String> {
-            pairs.iter().map(|(a, b)| format!("{a}{sep}{b}")).collect()
-        }
-
-        let mut parts = Vec::new();
-
-        let vis = if self.visibility.is_empty() { String::new() } else { format!("{} ", self.visibility) };
-        parts.push(format!("[{}] {vis}{}", self.kind, self.name));
-
-        if let Some((s, e)) = self.lines {
-            parts.push(format!("File: {}:{s}-{e}", self.file));
-        } else {
-            parts.push(format!("File: {}", self.file));
-        }
-
-        if let Some(ref sig) = self.signature { parts.push(format!("Signature: {sig}")); }
-
-        push_list(&mut parts, "Params",  &pairs_to_strings(&self.param_types, ": "));
-        push_list(&mut parts, "Fields",  &pairs_to_strings(&self.field_types, ": "));
-
-        if let Some(ref ret) = self.return_type { parts.push(format!("Returns: {ret}")); }
-
-        push_list(&mut parts, "Types", &self.types);
-
-        if !self.calls.is_empty() {
-            let annotated: Vec<String> = self.calls.iter().enumerate()
-                .map(|(i, c)| match self.call_lines.get(i) {
-                    Some(&line) if line > 0 => format!("{c}@{line}"),
-                    _ => c.clone(),
-                })
-                .collect();
-            push_list(&mut parts, "Calls", &annotated);
-        }
-
-        push_list(&mut parts, "Strings",
-            &self.string_args.iter().map(|(c, v, _, _)| format!("{c}(\"{v}\")")).collect::<Vec<_>>());
-        push_list(&mut parts, "Flows",
-            &self.param_flows.iter().map(|(p, _, c, _, _)| format!("{p}\u{2192}{c}")).collect::<Vec<_>>());
-        push_list(&mut parts, "Locals",  &pairs_to_strings(&self.local_types, ": "));
-        push_list(&mut parts, "Bindings",
-            &self.let_call_bindings.iter().map(|(v, c)| format!("{v}={c}")).collect::<Vec<_>>());
-        push_list(&mut parts, "FieldAccesses",
-            &self.field_accesses.iter().map(|(r, f)| format!("{r}.{f}")).collect::<Vec<_>>());
-        push_list(&mut parts, "Variants", &self.enum_variants);
-        push_list(&mut parts, "Called by", called_by);
-
-        parts.join("\n")
-    }
-
     /// Build custom payload fields for DB storage (replaces CodeChunk::to_custom_fields).
     pub fn to_custom_fields(&self, called_by: &[String]) -> std::collections::HashMap<String, rude_db::PayloadValue> {
         use rude_db::PayloadValue;

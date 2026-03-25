@@ -4,8 +4,6 @@ pub mod file_index;
 pub mod file_utils;
 pub mod interrupt;
 mod payload;
-mod payload_store;
-
 pub use db::StorageEngine;
 pub use db_config::DbConfig;
 pub use file_index::{
@@ -18,7 +16,6 @@ pub use file_utils::{
     strip_unc_prefix, strip_unc_prefix_path,
 };
 pub use payload::{Payload, PayloadValue};
-pub use payload_store::PayloadStore;
 pub use interrupt::is_interrupted;
 
 /// Storage configuration for creating a new database.

@@ -118,7 +118,7 @@ pub(crate) fn build_payload(
         custom,
     };
 
-    let embed_text = chunk.to_embed_text(&called_by_strings);
+    let embed_text = chunk.text.clone();
 
     (id, payload, embed_text)
 }
@@ -324,12 +324,7 @@ pub(crate) fn ingest_mir(
                     .unwrap_or_default()
             });
 
-            let is_test = mc.is_test
-                || mc.file.contains("/tests/") || mc.file.contains("\\tests\\")
-                || mc.name.contains("::test_") || mc.name.starts_with("test_")
-                || chunk_lines_vec
-                    .first()
-                    .is_some_and(|l| l.contains("#[test]") || l.contains("#[cfg(test)]"));
+            let is_test = mc.is_test;
 
             let parsed_chunk = ParsedChunk {
                 kind,

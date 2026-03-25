@@ -69,39 +69,3 @@ pub fn parse_calls_field(calls_str: &str) -> (Vec<String>, Vec<u32>) {
         .unzip()
 }
 
-pub fn mir_chunks_to_parsed(mir_chunks: &[MirChunk]) -> Vec<crate::parse::ParsedChunk> {
-    mir_chunks
-        .iter()
-        .map(|mc| {
-            let kind = match mc.kind.as_str() {
-                "fn" | "method" => "function".to_string(),
-                other => other.to_string(),
-            };
-
-            let (calls, call_lines) = parse_calls_field(&mc.calls);
-
-            let types: Vec<String> = if mc.type_refs.is_empty() {
-                Vec::new()
-            } else {
-                mc.type_refs.split(", ").map(|s| s.to_string()).collect()
-            };
-
-            let visibility = mc.visibility.clone().unwrap_or_default();
-
-            crate::parse::ParsedChunk {
-                kind,
-                name: mc.name.clone(),
-                file: mc.file.clone(),
-                lines: Some((mc.start_line, mc.end_line)),
-                signature: mc.signature.clone(),
-                calls,
-                call_lines,
-                types,
-                visibility,
-                text: mc.body.clone(),
-                is_test: mc.is_test,
-                ..Default::default()
-            }
-        })
-        .collect()
-}

@@ -5,11 +5,10 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 use serde::Serialize;
-use rude_db::PayloadStore;
+use rude_db::StorageEngine;
 use rude_intel::clones::{
     self, DupePair, RunStages, SubBlockClone, UnifiedDupePair,
 };
-use rude_db::StorageEngine;
 
 pub struct DupesConfig {
     pub threshold: f32,
@@ -31,8 +30,7 @@ pub fn run(cfg: DupesConfig) -> Result<()> {
     let db = crate::db();
     let engine = StorageEngine::open(db)
         .with_context(|| format!("failed to open database at {}", db.display()))?;
-    let pstore = engine.payload_store();
-    let candidate_ids = clones::collect_filtered_ids(&engine, pstore, exclude_tests, min_lines);
+    let candidate_ids = clones::collect_filtered_ids(&engine, &engine, exclude_tests, min_lines);
 
     let n = candidate_ids.len();
     if n < 2 {
@@ -43,11 +41,11 @@ pub fn run(cfg: DupesConfig) -> Result<()> {
     let mut pair_names: Vec<(String, String)> = Vec::new();
 
     if ast_mode {
-        let groups = clones::find_hash_groups(pstore, &candidate_ids, "ast_hash", k);
+        let groups = clones::find_hash_groups(&engine, &candidate_ids, "ast_hash", k);
         if json {
-            print_groups_json(&groups, pstore);
+            print_groups_json(&groups, &engine);
         } else {
-            print_groups_text(&groups, pstore);
+            print_groups_text(&groups, &engine);
         }
         return Ok(());
     }
@@ -62,18 +60,18 @@ pub fn run(cfg: DupesConfig) -> Result<()> {
 
     if !is_unified {
         eprintln!("Comparing {n} chunks (Jaccard threshold={threshold:.2})...");
-        let pairs = clones::find_minhash_pairs(pstore, &candidate_ids, threshold, k);
+        let pairs = clones::find_minhash_pairs(&engine, &candidate_ids, threshold, k);
 
         if json {
-            print_pairs_json(&pairs, pstore);
+            print_pairs_json(&pairs, &engine);
         } else {
-            print_pairs_text(&pairs, pstore);
+            print_pairs_text(&pairs, &engine);
         }
 
         if analyze {
             for p in &pairs {
-                let a = parse_label(pstore, p.id_a).name;
-                let b = parse_label(pstore, p.id_b).name;
+                let a = parse_label(&engine, p.id_a).name;
+                let b = parse_label(&engine, p.id_b).name;
                 pair_names.push((a, b));
             }
         }
@@ -81,29 +79,29 @@ pub fn run(cfg: DupesConfig) -> Result<()> {
         eprintln!("Unified pipeline: {n} chunks");
 
         let (unified_pairs, sub_clones) =
-            clones::run_unified_pipeline(&engine, pstore, &candidate_ids, threshold, k, &stages, min_sub_lines)?;
+            clones::run_unified_pipeline(&engine, &engine, &candidate_ids, threshold, k, &stages, min_sub_lines)?;
 
         if unified_pairs.is_empty() {
             println!("No duplicates found.");
         } else if json {
-            print_pairs_json(&unified_pairs, pstore);
+            print_pairs_json(&unified_pairs, &engine);
         } else {
-            print_pairs_text(&unified_pairs, pstore);
+            print_pairs_text(&unified_pairs, &engine);
         }
 
         if !sub_clones.is_empty() {
             let capped: Vec<_> = sub_clones.into_iter().take(k).collect();
             if json {
-                print_sub_block_json(&capped, pstore);
+                print_sub_block_json(&capped, &engine);
             } else {
-                print_sub_block_text(&capped, pstore);
+                print_sub_block_text(&capped, &engine);
             }
         }
 
         if analyze {
             for p in &unified_pairs {
-                let a = parse_label(pstore, p.id_a).name;
-                let b = parse_label(pstore, p.id_b).name;
+                let a = parse_label(&engine, p.id_a).name;
+                let b = parse_label(&engine, p.id_b).name;
                 pair_names.push((a, b));
             }
         }
@@ -164,31 +162,24 @@ impl ChunkLabel {
     }
 }
 
-fn parse_label(pstore: &(impl PayloadStore + ?Sized), id: u64) -> ChunkLabel {
-    let Some(text) = pstore.get_text(id).ok().flatten() else {
+fn parse_label(pstore: &StorageEngine, id: u64) -> ChunkLabel {
+    let Some(payload) = pstore.get_payload(id).ok().flatten() else {
         return ChunkLabel {
             name: format!("id:{id}"),
             file: String::new(),
         };
     };
-    let mut lines = text.lines();
-    let first = lines.next().unwrap_or("");
-    let file = lines
-        .next()
-        .unwrap_or("")
-        .strip_prefix("File: ")
-        .unwrap_or("")
-        .to_owned();
-    let name = first
-        .strip_prefix("[function] ")
-        .or_else(|| first.strip_prefix("[impl] "))
-        .or_else(|| first.strip_prefix("[struct] "))
-        .unwrap_or(first)
-        .to_owned();
-    ChunkLabel { name, file }
+    let name = match payload.custom.get("title") {
+        Some(rude_db::PayloadValue::String(s)) => s.clone(),
+        _ => match payload.custom.get("name") {
+            Some(rude_db::PayloadValue::String(s)) => s.clone(),
+            _ => format!("id:{id}"),
+        },
+    };
+    ChunkLabel { name, file: payload.source }
 }
 
-fn label(pstore: &(impl PayloadStore + ?Sized), id: u64) -> String {
+fn label(pstore: &StorageEngine, id: u64) -> String {
     parse_label(pstore, id).display()
 }
 
@@ -197,7 +188,7 @@ use rude_intel::parse::normalize_path;
 
 fn group_by_file(
     ids: &[(u64, u64)],
-    pstore: &(impl PayloadStore + ?Sized),
+    pstore: &StorageEngine,
 ) -> Vec<(String, Vec<GroupEntry>)> {
     let labels: Vec<(ChunkLabel, ChunkLabel)> = ids
         .iter()
@@ -239,7 +230,7 @@ fn print_json<T: Serialize>(val: &T) {
 
 fn print_pairs_text(
     pairs: &[impl DupePairLike],
-    pstore: &(impl PayloadStore + ?Sized),
+    pstore: &StorageEngine,
 ) {
     if pairs.is_empty() {
         println!("No duplicates found above threshold.");
@@ -265,14 +256,14 @@ fn print_pairs_text(
     eprintln!("Tip: rude context <symbol>  to inspect.");
 }
 
-fn print_pairs_json(pairs: &[impl DupePairLike], pstore: &(impl PayloadStore + ?Sized)) {
+fn print_pairs_json(pairs: &[impl DupePairLike], pstore: &StorageEngine) {
     let vals: Vec<_> = pairs.iter()
         .map(|p| p.to_json_value(label(pstore, p.id_a()), label(pstore, p.id_b())))
         .collect();
     print_json(&serde_json::json!({ "pairs": vals }));
 }
 
-fn print_groups_text(groups: &[(u64, Vec<u64>)], pstore: &(impl PayloadStore + ?Sized)) {
+fn print_groups_text(groups: &[(u64, Vec<u64>)], pstore: &StorageEngine) {
     if groups.is_empty() {
         println!("No clones found.");
         return;
@@ -318,7 +309,7 @@ fn print_groups_text(groups: &[(u64, Vec<u64>)], pstore: &(impl PayloadStore + ?
     eprintln!("Tip: rude context <symbol>  to inspect.");
 }
 
-fn print_groups_json(groups: &[(u64, Vec<u64>)], pstore: &(impl PayloadStore + ?Sized)) {
+fn print_groups_json(groups: &[(u64, Vec<u64>)], pstore: &StorageEngine) {
     #[derive(Serialize)]
     struct GroupJson { hash: String, members: Vec<String> }
     #[derive(Serialize)]
@@ -331,7 +322,7 @@ fn print_groups_json(groups: &[(u64, Vec<u64>)], pstore: &(impl PayloadStore + ?
     });
 }
 
-fn print_sub_block_text(clones: &[SubBlockClone], pstore: &(impl PayloadStore + ?Sized)) {
+fn print_sub_block_text(clones: &[SubBlockClone], pstore: &StorageEngine) {
     println!("\n{} sub-block clones (intra-function):\n", clones.len());
 
     let labels: Vec<(ChunkLabel, ChunkLabel)> = clones
@@ -357,7 +348,7 @@ fn print_sub_block_text(clones: &[SubBlockClone], pstore: &(impl PayloadStore + 
     println!();
 }
 
-fn print_sub_block_json(clones: &[SubBlockClone], pstore: &(impl PayloadStore + ?Sized)) {
+fn print_sub_block_json(clones: &[SubBlockClone], pstore: &StorageEngine) {
     #[derive(Serialize)]
     struct SubBlockJson { a: String, a_lines: [usize; 2], b: String, b_lines: [usize; 2], body_match: bool }
     #[derive(Serialize)]

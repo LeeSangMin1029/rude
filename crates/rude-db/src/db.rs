@@ -4,7 +4,6 @@ use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, params};
 
 use crate::payload::{Payload, PayloadValue};
-use crate::payload_store::PayloadStore;
 
 pub struct StorageEngine {
     conn: Connection,
@@ -229,10 +228,6 @@ impl StorageEngine {
         Ok(())
     }
 
-    pub fn payload_store(&self) -> &dyn PayloadStore {
-        self
-    }
-
     fn query_first<T, P, F>(
         stmt: &mut rusqlite::CachedStatement<'_>,
         params: P,
@@ -264,17 +259,6 @@ impl StorageEngine {
             chunk_total: row.chunk_total,
             custom,
         })
-    }
-}
-
-// rusqlite::Connection is !Send, so for PayloadStore trait usage across threads, wrap in a Mutex.
-impl PayloadStore for StorageEngine {
-    fn get_payload(&self, id: u64) -> Result<Option<Payload>> {
-        self.get_payload(id)
-    }
-
-    fn get_text(&self, id: u64) -> Result<Option<String>> {
-        self.get_text(id)
     }
 }
 

@@ -1,4 +1,3 @@
-use std::env;
 use std::io::Write;
 
 use crate::types::{CallEdge, MirChunk};
@@ -11,18 +10,14 @@ pub fn write_results(
     json: bool,
     db_path: &Option<String>,
 ) {
-    let out_dir = env::var("MIR_CALLGRAPH_OUT").ok();
-
     if let Some(db) = db_path {
         write_sqlite(db, crate_name, edges, chunks);
-    } else if let Some(dir) = &out_dir {
-        write_jsonl(dir, crate_name, edges, chunks);
     } else if json {
         write_stdout(edges);
     }
 
     // Always log to stderr
-    if db_path.is_some() || out_dir.is_some() {
+    if db_path.is_some() {
         eprintln!(
             "[mir-callgraph] {crate_name}: {} edges, {} chunks ({fn_count} fns)",
             edges.len(), chunks.len()
@@ -78,17 +73,6 @@ fn write_sqlite(db_path: &str, crate_name: &str, edges: &[CallEdge], chunks: &[M
         }
     }
     let _ = tx.commit();
-}
-
-fn write_jsonl(dir: &str, crate_name: &str, edges: &[CallEdge], chunks: &[MirChunk]) {
-    if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(format!("{dir}/{crate_name}.edges.jsonl")) {
-        let mut w = std::io::BufWriter::new(f);
-        for e in edges { if let Ok(s) = serde_json::to_string(e) { let _ = writeln!(w, "{s}"); } }
-    }
-    if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(format!("{dir}/{crate_name}.chunks.jsonl")) {
-        let mut w = std::io::BufWriter::new(f);
-        for c in chunks { if let Ok(s) = serde_json::to_string(c) { let _ = writeln!(w, "{s}"); } }
-    }
 }
 
 fn write_stdout(edges: &[CallEdge]) {

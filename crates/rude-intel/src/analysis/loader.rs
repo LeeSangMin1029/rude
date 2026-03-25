@@ -33,7 +33,37 @@ pub fn load_chunks_from_mir_db(db_path: &Path) -> Result<Vec<ParsedChunk>> {
         anyhow::bail!("mir.db not found at {}", mir_db.display());
     }
     let mir_chunks = crate::mir_edges::MirEdgeMap::load_chunks_from_sqlite(&mir_db, None)?;
-    Ok(crate::mir_edges::mir_chunks_to_parsed(&mir_chunks))
+    let parsed = mir_chunks
+        .iter()
+        .map(|mc| {
+            let kind = match mc.kind.as_str() {
+                "fn" | "method" => "function".to_string(),
+                other => other.to_string(),
+            };
+            let (calls, call_lines) = crate::mir_edges::parse_calls_field(&mc.calls);
+            let types: Vec<String> = if mc.type_refs.is_empty() {
+                Vec::new()
+            } else {
+                mc.type_refs.split(", ").map(|s| s.to_string()).collect()
+            };
+            let visibility = mc.visibility.clone().unwrap_or_default();
+            ParsedChunk {
+                kind,
+                name: mc.name.clone(),
+                file: mc.file.clone(),
+                lines: Some((mc.start_line, mc.end_line)),
+                signature: mc.signature.clone(),
+                calls,
+                call_lines,
+                types,
+                visibility,
+                text: mc.body.clone(),
+                is_test: mc.is_test,
+                ..Default::default()
+            }
+        })
+        .collect();
+    Ok(parsed)
 }
 
 pub fn save_chunks_cache(db: &Path, chunks: &[ParsedChunk]) {

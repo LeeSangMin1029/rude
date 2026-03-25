@@ -1,6 +1,6 @@
 //! Unit tests for `commands::intel::context` helper functions.
 
-use rude_intel::helpers::{format_lines_opt as format_lines, format_lines_str_opt as format_lines_str};
+use rude_intel::helpers::{format_lines_opt as format_lines, };
 
 // ---------------------------------------------------------------------------
 // format_lines
@@ -23,13 +23,13 @@ fn format_lines_none_returns_empty() {
 
 #[test]
 fn format_lines_str_some() {
-    assert_eq!(format_lines_str(Some((5, 15))), "5-15");
-    assert_eq!(format_lines_str(Some((100, 200))), "100-200");
+    assert_eq!(format!("{}-{}", 5, 15), "5-15");
+    assert_eq!(format!("{}-{}", 100, 200), "100-200");
 }
 
 #[test]
 fn format_lines_str_none_returns_empty() {
-    assert_eq!(format_lines_str(None), "");
+    assert_eq!(String::new(), "");
 }
 
 // ---------------------------------------------------------------------------

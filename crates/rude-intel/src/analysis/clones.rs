@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use anyhow::Result;
 use rayon::prelude::*;
 use crate::data::minhash;
-use rude_db::{PayloadStore, PayloadValue, StorageEngine};
+use rude_db::{PayloadValue, StorageEngine};
 
 pub struct RunStages {
     pub ast: bool,
@@ -54,7 +54,7 @@ pub struct CloneResults {
 
 pub fn collect_filtered_ids(
     engine: &StorageEngine,
-    pstore: &(impl PayloadStore + ?Sized),
+    pstore: &StorageEngine,
     exclude_tests: bool,
     min_lines: usize,
 ) -> Vec<u64> {
@@ -69,7 +69,7 @@ pub fn collect_filtered_ids(
 }
 
 pub fn find_hash_groups(
-    pstore: &(impl PayloadStore + ?Sized),
+    pstore: &StorageEngine,
     candidate_ids: &[u64],
     hash_key: &str,
     k: usize,
@@ -86,7 +86,7 @@ pub fn find_hash_groups(
 }
 
 pub fn find_minhash_pairs(
-    pstore: &(impl PayloadStore + ?Sized),
+    pstore: &StorageEngine,
     candidate_ids: &[u64],
     threshold: f32,
     k: usize,
@@ -99,7 +99,7 @@ pub fn find_minhash_pairs(
 }
 pub fn run_unified_pipeline(
     _engine: &StorageEngine,
-    pstore: &(impl PayloadStore + ?Sized),
+    pstore: &StorageEngine,
     candidate_ids: &[u64],
     threshold: f32,
     k: usize,
@@ -154,7 +154,7 @@ fn canonical_pair(a: u64, b: u64) -> (u64, u64) {
 }
 
 fn stage1_ast_hash(
-    pstore: &(impl PayloadStore + ?Sized),
+    pstore: &StorageEngine,
     candidate_ids: &[u64],
     candidates: &mut HashSet<(u64, u64)>,
 ) {
@@ -172,7 +172,7 @@ fn stage1_ast_hash(
 }
 
 fn stage1_minhash(
-    pstore: &(impl PayloadStore + ?Sized),
+    pstore: &StorageEngine,
     candidate_ids: &[u64],
     candidates: &mut HashSet<(u64, u64)>,
 ) {
@@ -186,7 +186,7 @@ fn stage1_minhash(
     candidates.extend(pairs.into_iter().map(|p| canonical_pair(p.id_a, p.id_b)));
 }
 
-fn parse_sub_block_entries(pstore: &(impl PayloadStore + ?Sized), id: u64) -> Vec<(u64, usize, usize)> {
+fn parse_sub_block_entries(pstore: &StorageEngine, id: u64) -> Vec<(u64, usize, usize)> {
     let Some(payload) = pstore.get_payload(id).ok().flatten() else { return Vec::new() };
     let Some(PayloadValue::StringList(hashes)) = payload.custom.get("sub_block_hashes") else { return Vec::new() };
     hashes.iter().filter_map(|s| {
@@ -197,7 +197,7 @@ fn parse_sub_block_entries(pstore: &(impl PayloadStore + ?Sized), id: u64) -> Ve
 }
 
 fn build_chunk_ranges(
-    pstore: &(impl PayloadStore + ?Sized),
+    pstore: &StorageEngine,
     ids: &[u64],
 ) -> HashMap<u64, (String, i64, i64)> {
     ids.iter()
@@ -206,7 +206,7 @@ fn build_chunk_ranges(
 }
 
 fn find_sub_block_clones(
-    pstore: &(impl PayloadStore + ?Sized),
+    pstore: &StorageEngine,
     candidate_ids: &[u64],
     min_sub_lines: usize,
 ) -> Vec<SubBlockClone> {
@@ -293,15 +293,16 @@ fn deduplicate_contained_entries(
     for &idx in to_remove.iter().rev() { entries.swap_remove(idx); }
 }
 
-fn is_test_chunk(pstore: &(impl PayloadStore + ?Sized), id: u64) -> bool {
+fn is_test_chunk(pstore: &StorageEngine, id: u64) -> bool {
     let Some(payload) = pstore.get_payload(id).ok().flatten() else { return false };
     if crate::graph::is_test_path(&payload.source) { return true; }
-    // "[function] test_foo" — name starts with test_ in the kind header.
-    pstore.get_text(id).ok().flatten()
-        .is_some_and(|t| t.lines().next().unwrap_or("").contains("] test_"))
+    if let Some(rude_db::PayloadValue::String(name)) = payload.custom.get("name") {
+        if name.contains("test_") { return true; }
+    }
+    payload.tags.iter().any(|t| t == "role:test")
 }
 
-fn get_chunk_source_range(pstore: &(impl PayloadStore + ?Sized), id: u64) -> Option<(String, i64, i64)> {
+fn get_chunk_source_range(pstore: &StorageEngine, id: u64) -> Option<(String, i64, i64)> {
     let p = pstore.get_payload(id).ok()??;
     match (p.custom.get("start_line"), p.custom.get("end_line")) {
         (Some(PayloadValue::Integer(s)), Some(PayloadValue::Integer(e))) => Some((p.source.clone(), *s, *e)),
@@ -309,19 +310,19 @@ fn get_chunk_source_range(pstore: &(impl PayloadStore + ?Sized), id: u64) -> Opt
     }
 }
 
-pub fn chunks_overlap(pstore: &(impl PayloadStore + ?Sized), id_a: u64, id_b: u64) -> bool {
+pub fn chunks_overlap(pstore: &StorageEngine, id_a: u64, id_b: u64) -> bool {
     let (Some((fa, sa, ea)), Some((fb, sb, eb))) =
         (get_chunk_source_range(pstore, id_a), get_chunk_source_range(pstore, id_b)) else { return false };
     fa == fb && sa <= eb && sb <= ea
 }
 
-pub fn chunk_lines(pstore: &(impl PayloadStore + ?Sized), id: u64) -> usize {
+pub fn chunk_lines(pstore: &StorageEngine, id: u64) -> usize {
     let Some((_, s, e)) = get_chunk_source_range(pstore, id) else { return 0 };
     #[expect(clippy::cast_sign_loss)]
     { (e - s + 1) as usize }
 }
 
-fn get_hash(pstore: &(impl PayloadStore + ?Sized), id: u64, key: &str) -> Option<u64> {
+fn get_hash(pstore: &StorageEngine, id: u64, key: &str) -> Option<u64> {
     let payload = pstore.get_payload(id).ok()??;
     match payload.custom.get(key)? {
         #[expect(clippy::cast_sign_loss, reason = "hash bits reinterpreted")]
@@ -330,7 +331,7 @@ fn get_hash(pstore: &(impl PayloadStore + ?Sized), id: u64, key: &str) -> Option
     }
 }
 
-fn get_minhash(pstore: &(impl PayloadStore + ?Sized), id: u64) -> Option<Vec<u64>> {
+fn get_minhash(pstore: &StorageEngine, id: u64) -> Option<Vec<u64>> {
     let payload = pstore.get_payload(id).ok()??;
     match payload.custom.get("minhash")? {
         PayloadValue::String(hex) => minhash::minhash_from_hex(hex),
@@ -339,7 +340,7 @@ fn get_minhash(pstore: &(impl PayloadStore + ?Sized), id: u64) -> Option<Vec<u64
 }
 
 fn collect_hash_groups(
-    pstore: &(impl PayloadStore + ?Sized),
+    pstore: &StorageEngine,
     candidate_ids: &[u64],
     hash_key: &str,
 ) -> HashMap<u64, Vec<u64>> {
@@ -356,7 +357,7 @@ fn collect_hash_groups(
 }
 
 fn collect_minhash_entries(
-    pstore: &(impl PayloadStore + ?Sized),
+    pstore: &StorageEngine,
     candidate_ids: &[u64],
 ) -> Vec<(u64, Vec<u64>)> {
     let entries: Vec<_> = candidate_ids.iter()
@@ -387,13 +388,13 @@ fn minhash_all_pairs(entries: &[(u64, Vec<u64>)], threshold: f64) -> Vec<DupePai
         .collect()
 }
 
-fn finalize_pairs(pairs: &mut Vec<DupePair>, pstore: &(impl PayloadStore + ?Sized), k: usize) {
+fn finalize_pairs(pairs: &mut Vec<DupePair>, pstore: &StorageEngine, k: usize) {
     pairs.retain(|p| !chunks_overlap(pstore, p.id_a, p.id_b));
     pairs.sort_unstable_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal));
     pairs.truncate(k);
 }
 
-fn remove_overlapping_chunks(pstore: &(impl PayloadStore + ?Sized), ids: &mut Vec<u64>) {
+fn remove_overlapping_chunks(pstore: &StorageEngine, ids: &mut Vec<u64>) {
     let mut i = 0;
     while i < ids.len() {
         let mut j = i + 1;
@@ -414,7 +415,7 @@ fn remove_overlapping_chunks(pstore: &(impl PayloadStore + ?Sized), ids: &mut Ve
     }
 }
 
-fn same_file(pstore: &(impl PayloadStore + ?Sized), id_a: u64, id_b: u64) -> bool {
+fn same_file(pstore: &StorageEngine, id_a: u64, id_b: u64) -> bool {
     let fa = pstore.get_payload(id_a).ok().flatten().map(|p| p.source);
     let fb = pstore.get_payload(id_b).ok().flatten().map(|p| p.source);
     fa.is_some() && fa == fb

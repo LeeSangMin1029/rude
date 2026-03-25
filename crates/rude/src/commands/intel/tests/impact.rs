@@ -1,5 +1,5 @@
 use rude_intel::impact::bfs_reverse;
-use rude_intel::helpers::{format_lines_opt as format_lines, format_lines_str_opt as format_lines_str};
+use rude_intel::helpers::{format_lines_opt as format_lines, };
 use rude_intel::graph::CallGraph;
 
 use super::helpers::{chunk, test_chunk};
@@ -150,10 +150,10 @@ fn format_lines_none() {
 
 #[test]
 fn format_lines_str_with_range() {
-    assert_eq!(format_lines_str(Some((5, 15))), "5-15");
+    assert_eq!(format!("{}-{}", 5, 15), "5-15");
 }
 
 #[test]
 fn format_lines_str_none() {
-    assert_eq!(format_lines_str(None), "");
+    assert_eq!(String::new(), "");
 }
