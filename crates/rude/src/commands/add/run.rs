@@ -276,8 +276,6 @@ fn prebuild_caches(
     rude_intel::graph::CallGraph::build_only(&chunks, mir_edges, incremental, db_path)
         .save_background(db_path);
 }
-
-
 fn scan_files_fast(input_path: &std::path::Path, exclude: &[String]) -> Vec<PathBuf> {
     if let Ok(out) = std::process::Command::new("git")
         .args(["ls-files", "--cached", "--others", "--exclude-standard"])

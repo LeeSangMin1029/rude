@@ -7,28 +7,13 @@ use super::sqlite::mir_db_path;
 pub fn detect_changed_crates(project_root: &Path, changed_files: &[impl AsRef<Path>]) -> Vec<String> {
     let mut crates = std::collections::HashSet::new();
     for file in changed_files {
-        let file = file.as_ref();
-        let abs = if file.is_absolute() {
-            file.to_path_buf()
-        } else {
-            project_root.join(file)
-        };
-        // Walk up to find Cargo.toml
+        let abs = if file.as_ref().is_absolute() { file.as_ref().to_path_buf() } else { project_root.join(file) };
         let mut dir = abs.parent();
         while let Some(d) = dir {
-            let cargo_toml = d.join("Cargo.toml");
-            if cargo_toml.exists() {
-                // Extract package name from Cargo.toml
-                if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
-                    for line in content.lines() {
-                        let trimmed = line.trim();
-                        if trimmed.starts_with("name") {
-                            if let Some(name) = trimmed.split('"').nth(1) {
-                                crates.insert(name.to_owned());
-                            }
-                            break;
-                        }
-                    }
+            let toml = d.join("Cargo.toml");
+            if toml.exists() {
+                if let Some(name) = std::fs::read_to_string(&toml).ok().and_then(|c| extract_package_name(&c)) {
+                    crates.insert(name);
                 }
                 break;
             }
@@ -206,40 +191,16 @@ fn parse_workspace_members_raw(content: &str) -> Vec<String> {
         let trimmed = line.trim();
         if trimmed.starts_with("members") && trimmed.contains('[') {
             in_members = true;
-            // Handle inline items on the same line as `members = [`
-            for part in trimmed.split('[').nth(1).into_iter() {
-                for item in part.split(']').next().into_iter() {
-                    for entry in item.split(',') {
-                        let entry = entry.trim().trim_matches('"').trim();
-                        if !entry.is_empty() {
-                            members.push(entry.to_owned());
-                        }
-                    }
-                }
-            }
-            if trimmed.contains(']') {
-                in_members = false;
-            }
-            continue;
         }
-        if in_members {
-            if trimmed.contains(']') {
-                // Last line of the array
-                let before_bracket = trimmed.split(']').next().unwrap_or("");
-                let entry = before_bracket.trim().trim_matches(',').trim().trim_matches('"').trim();
-                if !entry.is_empty() {
-                    members.push(entry.to_owned());
-                }
-                in_members = false;
-                continue;
-            }
-            // Strip comments
-            let no_comment = trimmed.split('#').next().unwrap_or(trimmed);
-            let entry = no_comment.trim().trim_matches(',').trim().trim_matches('"').trim();
-            if !entry.is_empty() {
-                members.push(entry.to_owned());
-            }
+        if !in_members { continue; }
+        let chunk = trimmed.split('#').next().unwrap_or(trimmed);
+        let chunk = chunk.split('[').last().unwrap_or(chunk);
+        let chunk = chunk.split(']').next().unwrap_or(chunk);
+        for entry in chunk.split(',') {
+            let e = entry.trim().trim_matches('"').trim();
+            if !e.is_empty() && e != "members" && !e.contains('=') { members.push(e.to_owned()); }
         }
+        if trimmed.contains(']') { in_members = false; }
     }
     members
 }
