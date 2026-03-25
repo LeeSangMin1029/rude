@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use rude_db::{PayloadValue, StorageEngine};
 
-use crate::parse::{self, ParsedChunk};
+use crate::data::parse::{self, ParsedChunk};
 
 /// Cache format version for `chunks.bin` — bump when `ParsedChunk` layout changes.
 const CHUNKS_CACHE_VERSION: u8 = 1;

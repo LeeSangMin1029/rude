@@ -1,6 +1,6 @@
 //! Unit tests for `commands::intel::context` helper functions.
 
-use crate::commands::intel::{format_lines_opt as format_lines, format_lines_str_opt as format_lines_str};
+use rude_intel::helpers::{format_lines_opt as format_lines, format_lines_str_opt as format_lines_str};
 
 // ---------------------------------------------------------------------------
 // format_lines

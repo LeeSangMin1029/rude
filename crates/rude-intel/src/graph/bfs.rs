@@ -5,7 +5,7 @@
 
 use std::collections::VecDeque;
 
-use crate::graph::CallGraph;
+use crate::graph::build::CallGraph;
 
 // ── Shared trait for BFS entry types ─────────────────────────────────────
 

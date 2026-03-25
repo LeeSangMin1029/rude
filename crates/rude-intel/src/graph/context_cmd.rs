@@ -1,9 +1,9 @@
 //! Unified context gathering for a symbol.
 //! Collects definition, callers, callees, related types, and tests in one pass.
 
-use crate::bfs::{bfs_generic, BfsDirection};
-use crate::graph::CallGraph;
-use crate::parse::ParsedChunk;
+use crate::graph::bfs::{bfs_generic, BfsDirection};
+use crate::graph::build::CallGraph;
+use crate::data::parse::ParsedChunk;
 
 /// A single entry in the context result (definition, caller, callee, type, or test).
 pub struct ContextEntry {

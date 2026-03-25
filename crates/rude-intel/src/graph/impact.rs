@@ -3,8 +3,8 @@
 //! Answers "if I change this symbol, what else is affected?"
 //! Traverses the callers adjacency list up to a configurable depth.
 
-use crate::bfs::{bfs_generic, BfsDirection, HasIdx};
-use crate::graph::CallGraph;
+use crate::graph::bfs::{bfs_generic, BfsDirection, HasIdx};
+use crate::graph::build::CallGraph;
 
 /// BFS result entry with depth.
 pub struct BfsEntry {

@@ -3,7 +3,7 @@ use std::fmt;
 
 use rude_db::PayloadValue;
 
-use crate::minhash;
+use crate::data::minhash;
 
 /// A sub-block within a code chunk, split at control structure boundaries.
 ///

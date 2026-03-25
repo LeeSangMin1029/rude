@@ -10,16 +10,16 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::edge_resolve::{self, ChunkIndex, ResolvedEdges};
-use crate::index_tables;
+use crate::graph::edge_resolve::{self, ChunkIndex, ResolvedEdges};
+use crate::graph::index_tables;
 use crate::mir_edges::MirEdgeMap;
-use crate::parse::ParsedChunk;
+use crate::data::parse::ParsedChunk;
 
 /// Source hash — auto-computed by build.rs for cache invalidation.
 const GRAPH_SOURCE_HASH: &str = env!("GRAPH_SOURCE_HASH");
 
 // Re-export for external consumers (used by rude, stats, clones).
-pub use crate::index_tables::{is_test_path, is_test_chunk};
+pub use crate::graph::index_tables::{is_test_path, is_test_chunk};
 
 /// Arguments for incremental edge resolution.
 pub struct IncrementalArgs<'a> {
@@ -105,6 +105,16 @@ impl CallGraph {
             call_sites: adj.call_sites,
             field_access_index,
         }
+    }
+
+    /// Build a simple call graph from chunks using name-based resolution.
+    ///
+    /// Convenience method for tests and simple use cases. For production use,
+    /// prefer `build_only` which supports MIR edges and incremental builds.
+    pub fn build(chunks: &[ParsedChunk]) -> Self {
+        let index = ChunkIndex::build(chunks);
+        let adj = edge_resolve::resolve_by_name(chunks, &index);
+        Self::assemble(chunks, &index, adj)
     }
 
     // ── Query API ───────────────────────────────────────────────────

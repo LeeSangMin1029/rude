@@ -5,8 +5,8 @@
 
 use std::collections::HashSet;
 
-use crate::graph::CallGraph;
-use crate::helpers::{apply_alias, format_lines_opt, relative_path};
+use crate::graph::build::CallGraph;
+use crate::analysis::helpers::{apply_alias, format_lines_opt, relative_path};
 
 /// A node in the execution flow tree.
 pub struct FlowNode {

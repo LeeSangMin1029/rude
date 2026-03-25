@@ -1,4 +1,4 @@
-use crate::commands::intel::graph::CallGraph;
+use rude_intel::graph::CallGraph;
 
 use super::helpers::chunk;
 

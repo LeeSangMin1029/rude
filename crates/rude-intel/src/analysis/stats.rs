@@ -2,9 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use crate::graph::is_test_chunk;
-use crate::helpers::extract_crate_name;
-use crate::parse::ParsedChunk;
+use crate::graph::index_tables::is_test_chunk;
+use crate::analysis::helpers::extract_crate_name;
+use crate::data::parse::ParsedChunk;
 
 /// Build per-crate statistics from code chunks.
 ///

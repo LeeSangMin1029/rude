@@ -1,6 +1,6 @@
-use crate::commands::intel::impact::bfs_reverse;
-use crate::commands::intel::{format_lines_opt as format_lines, format_lines_str_opt as format_lines_str};
-use crate::commands::intel::graph::CallGraph;
+use rude_intel::impact::bfs_reverse;
+use rude_intel::helpers::{format_lines_opt as format_lines, format_lines_str_opt as format_lines_str};
+use rude_intel::graph::CallGraph;
 
 use super::helpers::{chunk, test_chunk};
 

@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::parse::ParsedChunk;
+use crate::data::parse::ParsedChunk;
 
 // ── Project Root Detection ──────────────────────────────────────────
 

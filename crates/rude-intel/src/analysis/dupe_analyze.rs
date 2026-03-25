@@ -5,8 +5,8 @@
 
 use std::collections::HashSet;
 
-use crate::graph::CallGraph;
-use crate::impact;
+use crate::graph::build::CallGraph;
+use crate::graph::impact;
 
 /// Analysis result for a single duplicate pair.
 pub struct DupeAnalysis {

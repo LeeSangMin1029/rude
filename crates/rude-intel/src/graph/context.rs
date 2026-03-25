@@ -3,7 +3,7 @@
 //! Shows the "context" of a symbol: what it calls (callees), what those
 //! call, etc., up to a configurable depth.
 
-use crate::bfs::HasIdx;
+use crate::graph::bfs::HasIdx;
 
 /// BFS result entry with depth and score.
 pub struct BfsEntry {

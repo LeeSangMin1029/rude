@@ -92,6 +92,39 @@ impl ParsedChunk {
     }
 }
 
+/// Parse `"name: type, name: type, ..."` into `Vec<(name, type)>`.
+fn parse_colon_pairs(s: &str) -> Vec<(String, String)> {
+    s.split(", ")
+        .filter_map(|tok| {
+            let tok = tok.trim();
+            let c = tok.find(": ")?;
+            Some((tok[..c].to_owned(), tok[c + 2..].to_owned()))
+        })
+        .collect()
+}
+
+/// Parse `"var=callee, ..."` into `Vec<(var, callee)>`.
+fn parse_eq_pairs(s: &str) -> Vec<(String, String)> {
+    s.split(", ")
+        .filter_map(|tok| {
+            let tok = tok.trim();
+            let eq = tok.find('=')?;
+            Some((tok[..eq].to_owned(), tok[eq + 1..].to_owned()))
+        })
+        .collect()
+}
+
+/// Parse `"recv.field, ..."` into `Vec<(recv, field)>`.
+fn parse_dot_pairs(s: &str) -> Vec<(String, String)> {
+    s.split(", ")
+        .filter_map(|tok| {
+            let tok = tok.trim();
+            let dot = tok.find('.')?;
+            Some((tok[..dot].to_owned(), tok[dot + 1..].to_owned()))
+        })
+        .collect()
+}
+
 /// Parse the text field of a code chunk into a [`ParsedChunk`].
 ///
 /// Expected format (first line is `[kind] [vis] name`):
@@ -114,23 +147,13 @@ pub fn parse_chunk(text: &str) -> Option<ParsedChunk> {
     let kind = first[1..bracket_end].to_owned();
     let rest = first[bracket_end + 1..].trim();
 
-    // Name extraction: for impl/trait, take everything after optional visibility
-    // prefix (e.g. "pub"); for others, take the last token.
+    // Strip optional visibility prefix. impl/trait allow "pub"; others also allow "export".
     // "[impl] VectorIndex for HnswGraph<D>" → "VectorIndex for HnswGraph<D>"
     // "[function] pub StorageEngine::insert" → "StorageEngine::insert"
-    let name = if kind == "impl" || kind == "trait" {
-        // Strip leading "pub"/"pub(crate)" prefix if present
+    let name = {
         let stripped = rest.strip_prefix("pub(crate) ")
             .or_else(|| rest.strip_prefix("pub "))
-            .unwrap_or(rest);
-        stripped.to_owned()
-    } else {
-        // Strip optional visibility prefix, then take everything as the name.
-        // Cannot split by whitespace because generic names contain spaces
-        // (e.g. "SimpleHybridSearcher<D, T>::search_ext").
-        let stripped = rest.strip_prefix("pub(crate) ")
-            .or_else(|| rest.strip_prefix("pub "))
-            .or_else(|| rest.strip_prefix("export "))
+            .or_else(|| if kind != "impl" && kind != "trait" { rest.strip_prefix("export ") } else { None })
             .unwrap_or(rest);
         stripped.to_owned()
     };
@@ -216,50 +239,15 @@ pub fn parse_chunk(text: &str) -> Option<ParsedChunk> {
                 }
             }
         } else if let Some(p) = line.strip_prefix("Params: ") {
-            for token in p.split(", ") {
-                let token = token.trim();
-                if let Some(colon) = token.find(": ") {
-                    let name = token[..colon].to_owned();
-                    let ty = token[colon + 2..].to_owned();
-                    param_types.push((name, ty));
-                }
-            }
+            param_types = parse_colon_pairs(p);
         } else if let Some(ft) = line.strip_prefix("Fields: ") {
-            for token in ft.split(", ") {
-                let token = token.trim();
-                if let Some(colon) = token.find(": ") {
-                    let name = token[..colon].to_owned();
-                    let ty = token[colon + 2..].to_owned();
-                    field_types.push((name, ty));
-                }
-            }
+            field_types = parse_colon_pairs(ft);
         } else if let Some(lt) = line.strip_prefix("Locals: ") {
-            for token in lt.split(", ") {
-                let token = token.trim();
-                if let Some(colon) = token.find(": ") {
-                    let name = token[..colon].to_owned();
-                    let ty = token[colon + 2..].to_owned();
-                    local_types.push((name, ty));
-                }
-            }
+            local_types = parse_colon_pairs(lt);
         } else if let Some(b) = line.strip_prefix("Bindings: ") {
-            for token in b.split(", ") {
-                let token = token.trim();
-                if let Some(eq) = token.find('=') {
-                    let var = token[..eq].to_owned();
-                    let callee = token[eq + 1..].to_owned();
-                    let_call_bindings.push((var, callee));
-                }
-            }
+            let_call_bindings = parse_eq_pairs(b);
         } else if let Some(fa) = line.strip_prefix("FieldAccesses: ") {
-            for token in fa.split(", ") {
-                let token = token.trim();
-                if let Some(dot) = token.find('.') {
-                    let recv = token[..dot].to_owned();
-                    let field = token[dot + 1..].to_owned();
-                    field_accesses.push((recv, field));
-                }
-            }
+            field_accesses = parse_dot_pairs(fa);
         } else if let Some(v) = line.strip_prefix("Variants: ") {
             enum_variants = v.split(", ").map(|s| s.trim().to_owned()).collect();
         }

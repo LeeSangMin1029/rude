@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use crate::parse::normalize_path;
+use crate::data::parse::normalize_path;
 use super::types::{CalleeInfo, MirChunk, MirEdgeMap};
 
 /// Derive the sqlite path for MIR data from a project root.

@@ -6,24 +6,31 @@
 //! CLI command handlers live in `rude-cli`; this crate contains only
 //! the pure analysis logic.
 
-pub mod bfs;
-pub mod clones;
-pub mod context;
-pub mod context_cmd;
-pub mod dupe_analyze;
-pub mod chunk_types;
-pub mod edge_resolve;
+pub mod data;
 pub mod graph;
-pub mod minhash;
-pub mod helpers;
-pub mod index_tables;
-pub mod impact;
-pub mod jump;
-pub mod loader;
-pub mod parse;
-pub mod stats;
+pub mod analysis;
 pub mod mir_edges;
-pub mod trace;
+
+// Re-export flat module paths for backward compatibility.
+// External crates use `rude_intel::parse::ParsedChunk` etc.
+pub use data::chunk_types;
+pub use data::minhash;
+pub use data::parse;
+
+pub use graph::bfs;
+pub use graph::context;
+pub use graph::context_cmd;
+pub use graph::edge_resolve;
+pub use graph::impact;
+pub use graph::index_tables;
+pub use graph::jump;
+pub use graph::trace;
+
+pub use analysis::clones;
+pub use analysis::dupe_analyze;
+pub use analysis::helpers;
+pub use analysis::loader;
+pub use analysis::stats;
 
 #[cfg(test)]
 mod tests;

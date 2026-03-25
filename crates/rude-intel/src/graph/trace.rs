@@ -5,7 +5,7 @@
 
 use std::collections::VecDeque;
 
-use crate::graph::CallGraph;
+use crate::graph::build::CallGraph;
 
 /// BFS to find shortest path from any source index to any target index.
 ///
