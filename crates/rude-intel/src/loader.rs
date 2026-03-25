@@ -144,7 +144,7 @@ pub fn load_or_build_graph_with_chunks(
         .join("target")
         .join("mir-edges");
     let mir_edges = if mir_edges_dir.exists() {
-        crate::mir_edges::MirEdgeMap::from_dir(&mir_edges_dir).ok()
+        crate::mir_edges::MirEdgeMap::from_sqlite(&crate::mir_edges::mir_db_path(db.parent().unwrap_or(db)), None).ok()
     } else {
         None
     };

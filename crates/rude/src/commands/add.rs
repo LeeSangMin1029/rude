@@ -187,23 +187,15 @@ pub fn run(db_path: PathBuf, input_path: PathBuf, exclude: &[String]) -> Result<
             .context("mir-callgraph failed — ensure nightly rustc and mir-callgraph are installed")?;
     }
 
-    // Load MIR chunks — prefer sqlite, fallback to JSONL
-    let mir_chunks = if mir_db.exists() {
-        let only = if incremental_crates.is_empty() {
-            None
-        } else {
-            Some(incremental_crates.iter().map(|s| s.as_str()).collect::<Vec<&str>>())
-        };
-        rude_intel::mir_edges::MirEdgeMap::load_chunks_from_sqlite(
-            &mir_db,
-            only.as_deref(),
-        )
-    } else if incremental_crates.is_empty() {
-        rude_intel::mir_edges::load_all_mir_chunks(&mir_out_dir)
+    // Load MIR chunks from sqlite
+    let only_crates = if incremental_crates.is_empty() {
+        None
     } else {
-        let refs: Vec<&str> = incremental_crates.iter().map(|s| s.as_str()).collect();
-        rude_intel::mir_edges::load_mir_chunks_filtered(&mir_out_dir, Some(&refs))
-    }.context("failed to load MIR chunks")?;
+        Some(incremental_crates.iter().map(|s| s.as_str()).collect::<Vec<&str>>())
+    };
+    let mir_chunks = rude_intel::mir_edges::MirEdgeMap::load_chunks_from_sqlite(
+        &mir_db, only_crates.as_deref(),
+    ).context("failed to load MIR chunks")?;
 
     let changed_sources: std::collections::HashSet<String> = code_files.iter()
         .filter_map(|f| source_cache.get(*f).cloned())
@@ -286,9 +278,9 @@ pub fn run(db_path: PathBuf, input_path: PathBuf, exclude: &[String]) -> Result<
             rude_intel::mir_edges::MirEdgeMap::from_sqlite(&mir_db, only.as_deref()).ok()
         } else if mir_out_dir.exists() && !incremental_crates.is_empty() {
             let refs: Vec<&str> = incremental_crates.iter().map(|s| s.as_str()).collect();
-            rude_intel::mir_edges::MirEdgeMap::from_dir_filtered(&mir_out_dir, Some(&refs)).ok()
+            rude_intel::mir_edges::MirEdgeMap::from_sqlite(&mir_db, Some(&refs)).ok()
         } else if mir_out_dir.exists() {
-            rude_intel::mir_edges::MirEdgeMap::from_dir(&mir_out_dir).ok()
+            rude_intel::mir_edges::MirEdgeMap::from_sqlite(&mir_db, None).ok()
         } else {
             None
         };

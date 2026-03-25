@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+use crate::parse::normalize_path;
 
 /// A single call edge extracted from MIR.
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -51,100 +52,10 @@ pub struct CalleeInfo {
 
 impl MirEdgeMap {
     /// Load MIR edges from a JSONL file.
-    pub fn from_jsonl(path: &Path) -> Result<Self> {
-        let file = std::fs::File::open(path)
-            .with_context(|| format!("failed to open MIR edges: {}", path.display()))?;
-        let reader = std::io::BufReader::new(file);
-        let mut map = Self::default();
-
-        for line in reader.lines() {
-            let line = line.with_context(|| "failed to read MIR edge line")?;
-            if line.trim().is_empty() { continue; }
-            let edge: MirCallEdge = serde_json::from_str(&line)
-                .with_context(|| format!("failed to parse MIR edge: {line}"))?;
-
-            let file_normalized = normalize_path(&edge.caller_file);
-            map.by_location
-                .entry((file_normalized, edge.line))
-                .or_default()
-                .push(edge.callee.clone());
-
-            let callee_file_normalized = normalize_path(&edge.callee_file);
-            map.by_caller
-                .entry(edge.caller.clone())
-                .or_default()
-                .push(CalleeInfo {
-                    name: edge.callee,
-                    file: callee_file_normalized,
-                    start_line: edge.callee_start_line,
-                    call_line: edge.line,
-                });
-
-            map.total += 1;
-        }
-
-        Ok(map)
-    }
-
     /// Load all `.edges.jsonl` files from a directory.
     /// Load all edge JSONL files from a directory.
-    pub fn from_dir(dir: &Path) -> Result<Self> {
-        Self::from_dir_filtered(dir, None)
-    }
-
     /// Load edge JSONL files, optionally filtering to specific crates only.
     /// When `only_crates` is Some, only loads JSONL for those crate names.
-    pub fn from_dir_filtered(dir: &Path, only_crates: Option<&[&str]>) -> Result<Self> {
-        let mut combined = Self::default();
-        let entries = std::fs::read_dir(dir)
-            .with_context(|| format!("failed to read MIR edge dir: {}", dir.display()))?;
-
-        for entry in entries {
-            let entry = entry?;
-            let path = entry.path();
-            let name = path.to_string_lossy();
-            if name.ends_with(".edges.jsonl") {
-                let crate_name = path.file_stem()
-                    .and_then(|s| s.to_str())
-                    .and_then(|s| s.strip_suffix(".edges"))
-                    .unwrap_or("")
-                    .to_owned();
-
-                // Skip crates not in the filter
-                if let Some(filter) = only_crates {
-                    let cn = crate_name.replace('-', "_");
-                    if !filter.iter().any(|c| c.replace('-', "_") == cn) {
-                        continue;
-                    }
-                }
-
-                let partial = Self::from_jsonl(&path)?;
-                for (k, v) in partial.by_location {
-                    combined.by_location.entry(k).or_default().extend(v);
-                }
-                for (k, _v) in &partial.by_caller {
-                    if !crate_name.is_empty() {
-                        combined.caller_crate.insert(k.clone(), crate_name.clone());
-                    }
-                }
-                for (k, v) in partial.by_caller {
-                    combined.by_caller.entry(k).or_default().extend(v);
-                }
-                combined.total += partial.total;
-            }
-        }
-
-        // Build reverse index: crate → callers
-        for (caller, crate_name) in &combined.caller_crate {
-            combined.crate_to_callers
-                .entry(crate_name.clone())
-                .or_default()
-                .push(caller.clone());
-        }
-
-        Ok(combined)
-    }
-
     /// Load edges from sqlite (mir-callgraph direct write mode).
     pub fn from_sqlite(db_path: &Path, only_crates: Option<&[&str]>) -> Result<Self> {
         let conn = rusqlite::Connection::open(db_path)
@@ -545,7 +456,7 @@ pub fn run_mir_callgraph_for(
     if mir_db.exists() {
         MirEdgeMap::from_sqlite(&mir_db, None)
     } else {
-        MirEdgeMap::from_dir(&out_dir)
+        MirEdgeMap::from_sqlite(&mir_db_path(project_root), None)
     }
 }
 
@@ -567,43 +478,11 @@ fn kill_previous_test_bg(out_dir: &Path) {
             kill_process_by_pid(pid);
         }
     }
-    validate_jsonl_files_after_kill(out_dir);
 }
 
 /// Check all `.edges.jsonl` and `.chunks.jsonl` files in `dir` for corrupt
 /// trailing lines (non-empty line that isn't valid JSON). Delete corrupt files.
-fn validate_jsonl_files_after_kill(dir: &Path) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = path.to_string_lossy();
-        if !name.ends_with(".edges.jsonl") && !name.ends_with(".chunks.jsonl") {
-            continue;
-        }
-        if is_jsonl_corrupt(&path) {
-            eprintln!("  [mir] removing corrupt JSONL: {}", path.display());
-            let _ = std::fs::remove_file(&path);
-        }
-    }
-}
-
 /// Returns true if the file's last non-empty line is not valid JSON.
-fn is_jsonl_corrupt(path: &Path) -> bool {
-    let content = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(_) => return false, // can't read → not our problem
-    };
-    // Find last non-empty line
-    let last_line = content.lines().rev().find(|l| !l.trim().is_empty());
-    match last_line {
-        None => false, // empty file is fine
-        Some(line) => serde_json::from_str::<serde_json::Value>(line).is_err(),
-    }
-}
-
 /// Best-effort process kill by PID with image-name guard against PID reuse.
 /// On Windows, uses `taskkill /FI "IMAGENAME eq mir-callgraph.exe"` to avoid
 /// killing unrelated processes that inherited the same PID.
@@ -714,7 +593,7 @@ pub fn run_mir_direct(
         return if mir_db.exists() {
             MirEdgeMap::from_sqlite(&mir_db, None)
         } else {
-            MirEdgeMap::from_dir(&out_dir)
+            MirEdgeMap::from_sqlite(&mir_db_path(project_root), None)
         };
     }
 
@@ -725,7 +604,7 @@ pub fn run_mir_direct(
         return if mir_db.exists() {
             MirEdgeMap::from_sqlite(&mir_db, Some(crates))
         } else {
-            MirEdgeMap::from_dir(&out_dir)
+            MirEdgeMap::from_sqlite(&mir_db_path(project_root), None)
         };
     }
 
@@ -778,7 +657,7 @@ pub fn run_mir_direct(
         return if mir_db.exists() {
             MirEdgeMap::from_sqlite(&mir_db, Some(crates))
         } else {
-            MirEdgeMap::from_dir(&out_dir)
+            MirEdgeMap::from_sqlite(&mir_db_path(project_root), None)
         };
     }
 
@@ -823,7 +702,7 @@ pub fn run_mir_direct(
     let result = if mir_db.exists() {
         MirEdgeMap::from_sqlite(&mir_db, Some(crates))
     } else {
-        MirEdgeMap::from_dir_filtered(&out_dir, Some(crates))
+        MirEdgeMap::from_sqlite(&mir_db_path(project_root), Some(crates))
     };
     result
 }
@@ -1160,52 +1039,8 @@ pub struct MirChunk {
 }
 
 /// Load MIR chunks from a JSONL file.
-pub fn load_mir_chunks(path: &Path) -> Result<Vec<MirChunk>> {
-    let file = std::fs::File::open(path)
-        .with_context(|| format!("failed to open MIR chunks: {}", path.display()))?;
-    let reader = std::io::BufReader::new(file);
-    let mut chunks = Vec::new();
-    for line in reader.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let chunk: MirChunk = serde_json::from_str(&line)
-            .with_context(|| format!("failed to parse MIR chunk: {line}"))?;
-        chunks.push(chunk);
-    }
-    Ok(chunks)
-}
-
 /// Load all chunks from `.chunks.jsonl` files in a directory.
-pub fn load_all_mir_chunks(dir: &Path) -> Result<Vec<MirChunk>> {
-    load_mir_chunks_filtered(dir, None)
-}
-
 /// Load MIR chunks, optionally filtering to specific crates only.
-pub fn load_mir_chunks_filtered(dir: &Path, only_crates: Option<&[&str]>) -> Result<Vec<MirChunk>> {
-    let mut all = Vec::new();
-    let entries = std::fs::read_dir(dir)
-        .with_context(|| format!("failed to read MIR chunks dir: {}", dir.display()))?;
-    for entry in entries {
-        let path = entry?.path();
-        if path.to_string_lossy().ends_with(".chunks.jsonl") {
-            if let Some(filter) = only_crates {
-                let crate_name = path.file_stem()
-                    .and_then(|s| s.to_str())
-                    .and_then(|s| s.strip_suffix(".chunks"))
-                    .unwrap_or("");
-                let cn = crate_name.replace('-', "_");
-                if !filter.iter().any(|c| c.replace('-', "_") == cn) {
-                    continue;
-                }
-            }
-            all.extend(load_mir_chunks(&path)?);
-        }
-    }
-    Ok(all)
-}
-
 /// Detect workspace crates whose `.edges.jsonl` files are missing from the MIR output dir.
 ///
 /// Reads the root `Cargo.toml` `[workspace] members` list, extracts each member's
@@ -1376,7 +1211,3 @@ fn extract_package_name(content: &str) -> Option<String> {
     None
 }
 
-/// Normalize a file path for consistent lookup.
-fn normalize_path(path: &str) -> String {
-    path.replace('\\', "/").to_lowercase()
-}

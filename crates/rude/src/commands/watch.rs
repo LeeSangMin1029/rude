@@ -131,7 +131,7 @@ fn process_changes(changed: &[PathBuf], db_path: &Path, input_path: &Path) {
             }
         }
     } else {
-        match rude_intel::mir_edges::load_all_mir_chunks(&mir_out_dir) {
+        match rude_intel::mir_edges::MirEdgeMap::load_chunks_from_sqlite(&mir_db, None) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("[watch] failed to load MIR chunks: {e}");
