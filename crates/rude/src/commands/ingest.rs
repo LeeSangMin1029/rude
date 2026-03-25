@@ -21,7 +21,7 @@ pub struct CodeChunkEntry {
 ///
 /// For each call target, extracts the bare function name (last segment after
 /// `::` or `.`) and maps it to the set of callers (qualified chunk names).
-pub fn build_called_by_index(entries: &[CodeChunkEntry]) -> HashMap<String, Vec<String>> {
+pub fn build_callers(entries: &[CodeChunkEntry]) -> HashMap<String, Vec<String>> {
     let mut reverse: HashMap<String, Vec<String>> = HashMap::new();
 
     for entry in entries {
@@ -52,8 +52,8 @@ pub fn build_called_by_index(entries: &[CodeChunkEntry]) -> HashMap<String, Vec<
 /// Look up `called_by` entries for a given chunk name.
 ///
 /// Checks both the full qualified name and the bare (last segment) name
-/// against the reverse index built by [`build_called_by_index`].
-pub fn lookup_called_by<'a>(
+/// against the reverse index built by [`build_callers`].
+pub fn find_callers<'a>(
     reverse: &'a HashMap<String, Vec<String>>,
     chunk_name: &str,
 ) -> Vec<&'a str> {
@@ -89,7 +89,7 @@ pub fn lookup_called_by<'a>(
 
 /// Direct MirChunk → CodeChunkEntry conversion. No file I/O.
 /// Uses body/calls/type_refs from MIR extraction (sqlite or JSONL with body).
-pub fn chunks_from_mir_direct(
+pub fn ingest_mir(
     mir_chunks: &[rude_intel::mir_edges::MirChunk],
     db_path: &Path,
     entries: &mut Vec<CodeChunkEntry>,

@@ -179,7 +179,7 @@ pub(crate) fn locate_symbol(db: &Path, symbol: &str, file_hint: Option<&str>) ->
         let prev = lines[start_line - 1].trim();
         if prev.starts_with("///")
             || prev.starts_with("//!")
-            || prev.starts_with("#[")
+            || (prev.starts_with("#[") && !prev.starts_with("#[test") && !prev.starts_with("#[cfg(test"))
             || prev.starts_with("#![")
             || prev.starts_with("/** ")
             || prev.starts_with("* ")

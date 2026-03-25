@@ -200,7 +200,7 @@ pub fn run(db_path: PathBuf, input_path: PathBuf, exclude: &[String]) -> Result<
     let changed_sources: std::collections::HashSet<String> = code_files.iter()
         .filter_map(|f| source_cache.get(*f).cloned())
         .collect();
-    super::ingest::chunks_from_mir_direct(&mir_chunks, &db_path, &mut entries, &mut file_metadata_map, Some(&changed_sources))?;
+    super::ingest::ingest_mir(&mir_chunks, &db_path, &mut entries, &mut file_metadata_map, Some(&changed_sources))?;
 
     eprintln!("  chunk: {:.1}s ({} chunks)", t0.elapsed().as_secs_f64(), entries.len());
 
@@ -380,7 +380,7 @@ fn direct_bulk_write(
     let start = std::time::Instant::now();
 
     // Build called_by reverse index (needed for embed_text + tags).
-    let reverse_index = super::ingest::build_called_by_index(entries);
+    let reverse_index = super::ingest::build_callers(entries);
     let chunk_total_map: HashMap<&str, usize> = {
         let mut m: HashMap<&str, usize> = HashMap::new();
         for entry in entries {
@@ -404,7 +404,7 @@ fn direct_bulk_write(
             let chunk = &entry.chunk;
             let id = generate_id(&entry.source, chunk.chunk_index);
             let chunk_total = chunk_total_map.get(entry.source.as_str()).copied().unwrap_or(1);
-            let called_by_refs = super::ingest::lookup_called_by(&reverse_index, &chunk.name);
+            let called_by_refs = super::ingest::find_callers(&reverse_index, &chunk.name);
 
 
             let mut tags = Vec::with_capacity(4 + called_by_refs.len());

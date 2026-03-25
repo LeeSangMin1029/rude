@@ -145,7 +145,7 @@ fn process_changes(changed: &[PathBuf], db_path: &Path, input_path: &Path) {
 
     let mut entries = Vec::new();
     let mut file_metadata_map = HashMap::new();
-    if let Err(e) = super::ingest::chunks_from_mir_direct(
+    if let Err(e) = super::ingest::ingest_mir(
         &mir_chunks,
         db_path,
         &mut entries,
@@ -162,7 +162,7 @@ fn process_changes(changed: &[PathBuf], db_path: &Path, input_path: &Path) {
     }
 
     // 5. Build reverse index for called_by resolution
-    let reverse_index = super::ingest::build_called_by_index(&entries);
+    let reverse_index = super::ingest::build_callers(&entries);
 
     // 6. Write to DB
     if let Err(e) = update_db(db_path, &entries, &reverse_index, &file_metadata_map) {
@@ -211,7 +211,7 @@ fn update_db(
         let chunk = &entry.chunk;
         let id = generate_id(&entry.source, chunk.chunk_index);
 
-        let called_by_refs = super::ingest::lookup_called_by(reverse_index, &chunk.name);
+        let called_by_refs = super::ingest::find_callers(reverse_index, &chunk.name);
         let called_by_strings: Vec<String> =
             called_by_refs.iter().map(|s| (*s).to_owned()).collect();
 
