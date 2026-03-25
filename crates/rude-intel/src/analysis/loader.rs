@@ -1,4 +1,3 @@
-//! Load code chunks from a database with bincode caching.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -8,10 +7,8 @@ use rude_db::{PayloadValue, StorageEngine};
 
 use crate::data::parse::{self, ParsedChunk};
 
-/// Cache format version for `chunks.bin` — bump when `ParsedChunk` layout changes.
 const CHUNKS_CACHE_VERSION: u8 = 1;
 
-/// Load all code chunks from the database, using a bincode cache.
 pub fn load_chunks(path: &Path) -> Result<Vec<ParsedChunk>> {
     // Ensure project root is set for path normalization (idempotent).
     ensure_project_root(path);
@@ -48,7 +45,6 @@ pub fn load_chunks(path: &Path) -> Result<Vec<ParsedChunk>> {
     Ok(chunks)
 }
 
-/// Load chunks directly from mir.db, bypassing text format.
 pub fn load_chunks_from_mir_db(db_path: &Path) -> Result<Vec<ParsedChunk>> {
     let mir_db = crate::mir_edges::mir_db_path(db_path);
     if !mir_db.exists() {
@@ -58,7 +54,6 @@ pub fn load_chunks_from_mir_db(db_path: &Path) -> Result<Vec<ParsedChunk>> {
     Ok(crate::mir_edges::mir_chunks_to_parsed(&mir_chunks))
 }
 
-/// Load chunks directly from the database (no cache).
 pub fn load_chunks_from_db(path: &Path) -> Result<Vec<ParsedChunk>> {
     let engine = StorageEngine::open(path)
         .with_context(|| format!("failed to open database at {}", path.display()))?;
@@ -79,10 +74,6 @@ pub fn load_chunks_from_db(path: &Path) -> Result<Vec<ParsedChunk>> {
     Ok(chunks)
 }
 
-/// Save parsed chunks to the bincode cache file.
-///
-/// Called internally after DB load, and externally by `rude add`
-/// to pre-build the cache (avoids expensive text re-parsing on first verify).
 pub fn save_chunks_cache(path: &Path, chunks: &[ParsedChunk]) {
     let config = bincode::config::standard();
     // Prepend version byte, then encode chunks.
@@ -93,11 +84,6 @@ pub fn save_chunks_cache(path: &Path, chunks: &[ParsedChunk]) {
     }
 }
 
-/// Load chunks directly from the bincode cache file, bypassing mtime checks.
-///
-/// Used by `prebuild_caches` where we know the cache is valid (we just saved it
-/// or are about to merge into it). Returns `None` if the file doesn't exist or
-/// decoding fails.
 pub fn load_chunks_from_cache(db: &Path) -> Option<Vec<ParsedChunk>> {
     let cache = cache_path(db);
     let bytes = fs::read(&cache).ok()?;
@@ -109,12 +95,10 @@ pub fn load_chunks_from_cache(db: &Path) -> Option<Vec<ParsedChunk>> {
     Some(chunks)
 }
 
-/// Path to the chunks.bin cache file for a given database.
 pub fn cache_path(db: &Path) -> PathBuf {
     db.join("cache").join("chunks.bin")
 }
 
-/// Set project root from DB config's `input_path` if not already set.
 fn ensure_project_root(db: &Path) {
     use rude_db::DbConfig;
     if let Ok(config) = DbConfig::load(db) {
@@ -123,23 +107,11 @@ fn ensure_project_root(db: &Path) {
         }
     }
 }
-
-
-/// Load graph from cache or build from chunks + MIR edges.
-///
-/// Resolution strategy:
-/// 1. Graph cache hit → return immediately
-/// 2. MIR edges available → 100% accurate graph
-/// 3. Name-resolve fallback
 pub fn load_or_build_graph(db: &Path) -> Result<crate::graph::CallGraph> {
     let (g, _) = load_or_build_graph_with_chunks(db)?;
     Ok(g)
 }
 
-/// Load or build the call graph, also returning the parsed chunks if they were loaded.
-///
-/// Returns `(graph, Some(chunks))` when chunks were loaded for graph building,
-/// or `(graph, None)` when the graph was loaded from cache (chunks not needed).
 pub fn load_or_build_graph_with_chunks(
     db: &Path,
 ) -> Result<(crate::graph::CallGraph, Option<Vec<ParsedChunk>>)> {

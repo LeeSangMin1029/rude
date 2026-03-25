@@ -1,5 +1,3 @@
-//! Database configuration (shared between doc and code).
-
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -8,18 +6,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::StorageEngine;
 
-/// Database metadata stored in the `config` SQLite table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DbConfig {
-    /// Database format version.
     pub version: u32,
-    /// Whether Korean tokenizer is enabled.
     pub korean: bool,
     /// Embedding model used (for search auto-detection).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embed_model: Option<String>,
-    /// Whether this is a code database (uses CodeTokenizer for BM25).
-    #[serde(default)]
     pub code: bool,
     /// Original input path used during `add` (for `update` default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -49,15 +42,11 @@ impl Default for DbConfig {
 impl DbConfig {
     pub const CURRENT_VERSION: u32 = 1;
 
-    /// Load config from SQLite `store.db` in the given directory.
-    ///
-    /// Falls back to legacy `config.json` if the sqlite table is empty
-    /// or doesn't exist (one-time migration).
     pub fn load(path: &Path) -> Result<Self> {
         let store_db = path.join("store.db");
 
         if !store_db.exists() {
-            // No store.db — try legacy JSON
+            // Fall back to legacy JSON if store.db hasn't been created yet
             return Self::load_legacy_json(path);
         }
 
@@ -66,11 +55,9 @@ impl DbConfig {
         Self::load_from_engine(&engine)
     }
 
-    /// Load config from an already-open `StorageEngine`.
     pub fn load_from_engine(engine: &StorageEngine) -> Result<Self> {
         let conn = engine.connection();
 
-        // Check if config table exists
         let table_exists: bool = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='config'",
@@ -84,7 +71,6 @@ impl DbConfig {
             return Self::load_legacy_json(engine.dir());
         }
 
-        // Check if any rows exist
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM config", [], |row| row.get(0))
             .unwrap_or(0);
@@ -133,14 +119,12 @@ impl DbConfig {
         })
     }
 
-    /// Save config to SQLite `store.db` in the given directory.
     pub fn save(&self, path: &Path) -> Result<()> {
         let engine = StorageEngine::open(path)
             .with_context(|| "failed to open store.db for saving config")?;
         self.save_to_engine(&engine)
     }
 
-    /// Save config to an already-open `StorageEngine`.
     pub fn save_to_engine(&self, engine: &StorageEngine) -> Result<()> {
         let conn = engine.connection();
 
@@ -172,7 +156,6 @@ impl DbConfig {
         Ok(())
     }
 
-    /// Load from legacy `config.json` file.
     fn load_legacy_json(path: &Path) -> Result<Self> {
         let config_path = path.join("config.json");
         let data = std::fs::read_to_string(&config_path)

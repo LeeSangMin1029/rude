@@ -1,11 +1,3 @@
-//! Edge resolution strategies for call graph construction.
-//!
-//! Separates "how to connect edges" from the graph data structure itself.
-//! Three resolvers:
-//! - `resolve_by_name`: legacy name matching (exact → short fallback)
-//! - `resolve_with_mir`: MIR-first, 100% accurate, name fallback for unmatched
-//! - `resolve_incremental`: per-crate caching, only re-resolves changed crates
-
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -15,7 +7,6 @@ use crate::graph::index_tables::strip_generics_from_key;
 use crate::mir_edges::MirEdgeMap;
 use crate::data::parse::ParsedChunk;
 
-/// Bidirectional name index for resolving call names to chunk indices.
 pub(crate) struct ChunkIndex {
     pub exact: HashMap<String, u32>,
     pub short: HashMap<String, u32>,
@@ -64,7 +55,6 @@ impl ChunkIndex {
     }
 }
 
-/// Accumulated adjacency state from edge resolution.
 pub(crate) struct ResolvedEdges {
     pub callees: Vec<Vec<u32>>,
     pub callers: Vec<Vec<u32>>,
@@ -91,22 +81,17 @@ impl ResolvedEdges {
         for v in &mut self.call_sites { v.sort_by_key(|&(t, _)| t); v.dedup_by_key(|e| e.0); }
     }
 }
-
-
-/// Per-crate edge cache: index-based (src_idx, tgt_idx, call_line), validated by chunks_hash.
 #[derive(bincode::Encode, bincode::Decode)]
 pub(crate) struct CrateEdgeCache {
     pub idx_edges: Vec<(u32, u32, u32)>,
 }
 
-/// Bundle of all per-crate caches. Invalidated when `chunks_hash` doesn't match.
 #[derive(bincode::Encode, bincode::Decode)]
 pub(crate) struct EdgeCacheBundle {
     pub chunks_hash: u64,
     pub crates: Vec<(String, CrateEdgeCache)>,
 }
 
-/// Fingerprint of chunk identity (file + name). Excludes `lines` to survive body-only edits.
 fn compute_chunks_hash(chunks: &[ParsedChunk]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -166,7 +151,6 @@ fn is_crate_cache_stale(
     let jsonl = mtime(mir_edge_dir.join(format!("{crate_name}.edges.jsonl")));
     let sqlite = mtime(mir_edge_dir.join("mir.db"));
     let source = match (jsonl, sqlite) { (Some(j), Some(s)) => Some(j.max(s)), (j, s) => j.or(s) };
-    // No source at all → not stale; otherwise stale if source is newer.
     source.is_some_and(|t| t > cache_mtime)
 }
 
@@ -235,7 +219,6 @@ fn resolve_crate_edges(
     edges
 }
 
-/// Incremental MIR edge resolve with per-crate caching. Re-resolves stale/changed crates only.
 pub(crate) fn resolve_incremental(
     chunks: &[ParsedChunk],
     index: &ChunkIndex,
@@ -292,7 +275,6 @@ pub(crate) fn resolve_incremental(
     adj
 }
 
-/// Resolve call edges by name matching only (legacy).
 pub(crate) fn resolve_by_name(chunks: &[ParsedChunk], index: &ChunkIndex) -> ResolvedEdges {
     let mut adj = ResolvedEdges::new(chunks.len());
     for (src, chunk) in chunks.iter().enumerate() {
@@ -307,7 +289,6 @@ pub(crate) fn resolve_by_name(chunks: &[ParsedChunk], index: &ChunkIndex) -> Res
     adj
 }
 
-/// Resolve call edges from MIR edge map. Does not depend on chunk.calls.
 pub(crate) fn resolve_with_mir(
     chunks: &[ParsedChunk],
     index: &ChunkIndex,
@@ -388,5 +369,3 @@ fn resolve_type_refs(src: usize, chunk: &ParsedChunk, index: &ChunkIndex, adj: &
         }
     }
 }
-
-

@@ -1,26 +1,15 @@
-//! Execution flow tree — DFS-based callee traversal with tree structure.
-//!
-//! Given seed symbol(s), builds a recursive tree of callees up to a
-//! configurable depth limit, then renders as indented text.
 
 use std::collections::HashSet;
 
 use crate::graph::build::CallGraph;
 use crate::analysis::helpers::{apply_alias, format_lines_opt, relative_path};
 
-/// A node in the execution flow tree.
 pub struct FlowNode {
     pub idx: u32,
     pub children: Vec<FlowNode>,
-    /// `true` when this node was already expanded elsewhere in the tree.
     pub backreference: bool,
 }
 
-/// Build execution flow tree via depth-limited DFS on callees.
-///
-/// Each seed becomes a root. A node already expanded elsewhere appears
-/// as a childless leaf with `backreference = true` (no re-expansion).
-/// When `skip_test` is true, test nodes are excluded from the tree.
 pub fn build_flow_tree(graph: &CallGraph, seeds: &[u32], max_depth: u32, skip_test: bool) -> Vec<FlowNode> {
     let mut expanded = HashSet::new();
     seeds
@@ -63,13 +52,6 @@ fn build_subtree(
     FlowNode { idx, children, backreference: false }
 }
 
-/// Render the flow tree as indented text with box-drawing characters.
-///
-/// ```text
-/// [A]indexing.rs:18-77  build_indexes
-///   ├─→ [B]engine.rs:374-376  StorageEngine::payload_store
-///   └─→ [A]indexing.rs:255-280  build_bm25
-/// ```
 pub fn render_tree(
     graph: &CallGraph,
     nodes: &[FlowNode],

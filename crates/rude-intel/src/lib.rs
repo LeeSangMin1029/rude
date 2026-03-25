@@ -1,18 +1,8 @@
-//! Code intelligence library — structural queries on code-chunked databases.
-//!
-//! Provides reusable types and algorithms for code navigation:
-//! parsing, call graph construction, BFS traversal, and statistics.
-//!
-//! CLI command handlers live in `rude-cli`; this crate contains only
-//! the pure analysis logic.
-
 pub mod data;
 pub mod graph;
 pub mod analysis;
 pub mod mir_edges;
 
-// Re-export flat module paths for backward compatibility.
-// External crates use `rude_intel::parse::ParsedChunk` etc.
 pub use data::chunk_types;
 pub use data::minhash;
 pub use data::parse;

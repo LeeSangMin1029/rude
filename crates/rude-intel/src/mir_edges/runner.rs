@@ -1,4 +1,3 @@
-//! mir-callgraph subprocess execution and binary management.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -16,19 +15,16 @@ const MIR_CALLGRAPH_CARGO_TOML: &str =
 const MIR_CALLGRAPH_RUST_TOOLCHAIN: &str =
     include_str!("../../../../tools/mir-callgraph/rust-toolchain.toml");
 
-/// Binary name for mir-callgraph (platform-dependent).
 fn mir_callgraph_bin_name() -> &'static str {
     if cfg!(windows) { "mir-callgraph.exe" } else { "mir-callgraph" }
 }
 
-/// Base directory for rude data: `~/.rude/`.
 fn rude_home() -> Result<PathBuf> {
     let home = rude_db::home_dir()
         .context("cannot determine home directory")?;
     Ok(home.join(".rude"))
 }
 
-/// Get the current nightly rustc version string, or None if nightly is not installed.
 pub(super) fn nightly_rustc_version() -> Option<String> {
     Command::new("rustc")
         .args(["+nightly", "--version"])
@@ -39,8 +35,6 @@ pub(super) fn nightly_rustc_version() -> Option<String> {
         .map(|s| s.trim().to_owned())
 }
 
-/// Get the nightly sysroot bin path for rustc_driver DLL resolution.
-/// mir-callgraph dynamically links rustc_driver, which lives in the nightly bin dir.
 fn nightly_sysroot_bin() -> Option<String> {
     Command::new("rustc")
         .args(["+nightly", "--print", "sysroot"])
@@ -54,7 +48,6 @@ fn nightly_sysroot_bin() -> Option<String> {
         })
 }
 
-/// Append nightly sysroot/bin to a Command's PATH so rustc_driver DLL is found.
 pub(super) fn add_nightly_path(cmd: &mut Command) {
     if let Some(nightly_bin) = nightly_sysroot_bin() {
         let current = std::env::var("PATH").unwrap_or_default();
@@ -62,7 +55,6 @@ pub(super) fn add_nightly_path(cmd: &mut Command) {
     }
 }
 
-/// Extract embedded mir-callgraph source to the build directory.
 fn extract_mir_callgraph_source(build_dir: &Path) -> Result<()> {
     let src_dir = build_dir.join("src");
     std::fs::create_dir_all(&src_dir)
@@ -78,7 +70,6 @@ fn extract_mir_callgraph_source(build_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Build mir-callgraph from embedded source using nightly toolchain.
 fn build_mir_callgraph(base: &Path) -> Result<PathBuf> {
     let nightly_ver = nightly_rustc_version().ok_or_else(|| {
         anyhow::anyhow!(
@@ -144,13 +135,6 @@ fn build_mir_callgraph(base: &Path) -> Result<PathBuf> {
     Ok(cached_bin)
 }
 
-/// Find the mir-callgraph binary.
-///
-/// Search order:
-/// 1. Override path (explicit)
-/// 2. Sibling to current exe
-/// 3. Cached build in `~/.rude/bin/`
-/// 4. Auto-build from embedded source
 fn find_mir_callgraph_bin(override_path: Option<&Path>) -> Result<PathBuf> {
     // 1. Explicit override
     if let Some(p) = override_path {
@@ -170,14 +154,10 @@ fn find_mir_callgraph_bin(override_path: Option<&Path>) -> Result<PathBuf> {
     build_mir_callgraph(&base)
 }
 
-/// Run mir-callgraph on the entire workspace.
 pub fn run_mir_callgraph(project_root: &Path, mir_callgraph_bin: Option<&Path>) -> Result<MirEdgeMap> {
     run_mir_callgraph_for(project_root, mir_callgraph_bin, &[], false)
 }
 
-/// Run mir-callgraph for specific crates only (or all if `crates` is empty).
-///
-/// When `_rust_only` is true, Python/TypeScript extractors are skipped entirely.
 pub fn run_mir_callgraph_for(
     project_root: &Path,
     mir_callgraph_bin: Option<&Path>,
@@ -229,10 +209,6 @@ pub fn run_mir_callgraph_for(
     MirEdgeMap::from_sqlite(&mir_db, None)
 }
 
-/// Kill any background test processes from a previous `run_mir_direct` call.
-///
-/// Reads PIDs from `.test-bg.pid`, checks if they are still running, and
-/// terminates them. The PID file is always removed afterwards.
 fn kill_previous_test_bg(out_dir: &Path) {
     let pid_file = out_dir.join(".test-bg.pid");
     if !pid_file.exists() { return; }
@@ -249,9 +225,6 @@ fn kill_previous_test_bg(out_dir: &Path) {
     }
 }
 
-/// Best-effort process kill by PID with image-name guard against PID reuse.
-/// On Windows, uses `taskkill /FI "IMAGENAME eq mir-callgraph.exe"` to avoid
-/// killing unrelated processes that inherited the same PID.
 #[cfg(windows)]
 fn kill_process_by_pid(pid: u32) {
     let _ = Command::new("taskkill")
@@ -265,9 +238,6 @@ fn kill_process_by_pid(pid: u32) {
         .status();
 }
 
-/// Best-effort process kill by PID with process-name guard against PID reuse.
-/// On Unix, reads `/proc/{pid}/comm` to verify the process is `mir-callgraph`
-/// before sending SIGKILL.
 #[cfg(not(windows))]
 fn kill_process_by_pid(pid: u32) {
     // Guard: only kill if the process is actually mir-callgraph.
@@ -286,9 +256,6 @@ fn kill_process_by_pid(pid: u32) {
         .status();
 }
 
-/// Pre-truncate MIR data for crates about to be rebuilt.
-///
-/// Deletes rows from sqlite (if available) and truncates JSONL files as fallback.
 fn pre_truncate_crates(crates: &[&str], out_dir: &Path, _mir_db: &Path) {
     // SQLite: mir-callgraph now handles delta DELETE internally
     // (changed functions only, not whole crate), so no pre-truncate needed.
@@ -303,16 +270,6 @@ fn pre_truncate_crates(crates: &[&str], out_dir: &Path, _mir_db: &Path) {
     }
 }
 
-/// Run mir-callgraph in direct mode — always.
-///
-/// If prerequisites are missing (no cache, stale cache, missing artifacts),
-/// runs cargo once to satisfy them, then executes direct mode.
-/// Cargo is never used for MIR extraction itself, only for preparation.
-/// When `_rust_only` is true, Python/TypeScript extractors are skipped entirely,
-/// saving ~0.3s of directory-walk overhead.
-/// Test targets are spawned in the background (fire-and-forget) and their PIDs
-/// are recorded in `target/mir-edges/.test-bg.pid`. Only lib edges are included
-/// in the returned `MirEdgeMap`.
 pub fn run_mir_direct(
     project_root: &Path,
     mir_callgraph_bin: Option<&Path>,
@@ -322,7 +279,6 @@ pub fn run_mir_direct(
     let out_dir = project_root.join("target").join("mir-edges");
     let args_dir = out_dir.join("rustc-args");
 
-    // ── Phase 1: Ensure args cache is fresh ──────────────────────────
     let needs_cache_refresh = !args_dir.exists() || is_args_cache_stale(project_root, &args_dir);
     let needs_deps_rebuild = needs_cache_refresh || !all_extern_paths_valid(crates, &args_dir);
 
@@ -340,7 +296,6 @@ pub fn run_mir_direct(
         // to ensure consistent extraction path.
     }
 
-    // ── Phase 2: Collect args files (lib vs test separated) ─────────
     let mut lib_files = Vec::new();
     let mut test_files = Vec::new();
     for krate in crates {
@@ -365,14 +320,12 @@ pub fn run_mir_direct(
         return MirEdgeMap::from_sqlite(&mir_db, Some(crates));
     }
 
-    // ── Phase 3: Direct mode — lib sync, test fire-and-forget ──────
     let bin = find_mir_callgraph_bin(mir_callgraph_bin)?;
 
     kill_previous_test_bg(&out_dir);
 
     pre_truncate_crates(crates, &out_dir, &mir_db);
 
-    // ── Phase 3a: Launch lib builds synchronously ──────────────────
     let mut lib_children: Vec<(PathBuf, std::process::Child)> = Vec::new();
     let mut had_error = false;
 
@@ -405,15 +358,12 @@ pub fn run_mir_direct(
             }
         }
     }
-
-
     if had_error {
         eprintln!("  [mir] some lib builds failed, refreshing via cargo...");
         run_mir_callgraph_for(project_root, mir_callgraph_bin, crates, _rust_only)?;
         return MirEdgeMap::from_sqlite(&mir_db, Some(crates));
     }
 
-    // ── Phase 3b: Fire-and-forget test builds ──────────────────────
     // Test processes append to the same JSONL files after lib is done.
     // We record their PIDs so the next `add` can wait/kill if needed.
     if !test_files.is_empty() {

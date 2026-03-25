@@ -1,4 +1,3 @@
-//! `rude dead` — find functions with no callers (dead code candidates).
 
 use anyhow::Result;
 
@@ -6,7 +5,6 @@ use rude_intel::helpers::{apply_alias, extract_crate_name, format_lines_opt, rel
 
 use super::query::load_or_build_graph;
 
-/// `rude dead` — find functions with no callers (dead code candidates).
 pub fn run_dead(
     include_pub: bool,
     file_filter: Option<String>,

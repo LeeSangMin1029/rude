@@ -1,5 +1,3 @@
-//! rude command implementations.
-
 pub mod add;
 pub mod edit;
 pub mod intel;

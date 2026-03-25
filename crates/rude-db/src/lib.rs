@@ -1,5 +1,3 @@
-//! SQLite-based storage engine for rude.
-
 mod db;
 mod db_config;
 pub mod file_index;

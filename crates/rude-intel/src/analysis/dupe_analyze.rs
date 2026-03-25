@@ -1,14 +1,9 @@
-//! Duplicate pair analysis — callee/caller Jaccard, blast radius, merge safety.
-//!
-//! Given duplicate function pairs from clone detection, analyzes each pair's
-//! call graph relationships and blast radius to determine merge safety.
 
 use std::collections::HashSet;
 
 use crate::graph::build::CallGraph;
 use crate::graph::impact;
 
-/// Analysis result for a single duplicate pair.
 pub struct DupeAnalysis {
     pub idx_a: u32,
     pub idx_b: u32,
@@ -20,7 +15,6 @@ pub struct DupeAnalysis {
     pub verdict: Verdict,
 }
 
-/// Merge safety verdict.
 #[derive(Clone, Copy)]
 pub enum Verdict {
     SafeToMerge,
@@ -29,7 +23,6 @@ pub enum Verdict {
 }
 
 impl Verdict {
-    /// Human-readable label.
     pub fn label(self) -> &'static str {
         match self {
             Self::SafeToMerge => "SAFE TO MERGE",
@@ -39,7 +32,6 @@ impl Verdict {
     }
 }
 
-/// Analyze a single duplicate pair for merge safety.
 pub fn analyze_pair(graph: &CallGraph, idx_a: u32, idx_b: u32) -> DupeAnalysis {
     let callees_a: HashSet<u32> = graph.callees.get(idx_a as usize)
         .map(|v| v.iter().copied().collect())
@@ -106,14 +98,12 @@ pub fn analyze_pair(graph: &CallGraph, idx_a: u32, idx_b: u32) -> DupeAnalysis {
     }
 }
 
-/// Analyze multiple duplicate pairs.
 pub fn analyze_pairs(graph: &CallGraph, pairs: &[(u32, u32)]) -> Vec<DupeAnalysis> {
     pairs.iter()
         .map(|&(a, b)| analyze_pair(graph, a, b))
         .collect()
 }
 
-/// Jaccard similarity: |A ∩ B| / |A ∪ B|. Returns 1.0 if both sets are empty.
 fn jaccard(a: &HashSet<u32>, b: &HashSet<u32>) -> f32 {
     let intersection = a.intersection(b).count();
     let union = a.union(b).count();

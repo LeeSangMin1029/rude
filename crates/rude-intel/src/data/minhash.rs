@@ -1,10 +1,7 @@
-//! MinHash utilities for clone detection — extracted from rude-chunk.
-
 use std::hash::{Hash, Hasher};
 
 pub const MINHASH_K: usize = 64;
 
-/// Tokenize source code for MinHash: strips comments, splits on non-alphanumeric.
 pub fn code_tokens(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut in_block_comment = false;
@@ -39,7 +36,6 @@ fn tokenize_line(code: &str, tokens: &mut Vec<String>) {
     }
 }
 
-/// Compute MinHash signature from tokens (unigrams + bigrams).
 pub fn minhash_signature(tokens: &[String], k: usize) -> Vec<u64> {
     let bigrams: Vec<String> = tokens.windows(2).map(|w| format!("{}_{}", w[0], w[1])).collect();
     let mut features: Vec<&str> = tokens.iter().map(|t| t.as_str()).collect();
@@ -54,21 +50,18 @@ pub fn minhash_signature(tokens: &[String], k: usize) -> Vec<u64> {
     }).collect()
 }
 
-/// Estimate Jaccard similarity from two MinHash signatures.
 pub fn jaccard_from_minhash(a: &[u64], b: &[u64]) -> f64 {
     if a.len() != b.len() || a.is_empty() { return 0.0; }
     let matches = a.iter().zip(b.iter()).filter(|(x, y)| x == y).count();
     matches as f64 / a.len() as f64
 }
 
-/// Encode MinHash signature as hex string.
 pub fn minhash_to_hex(sig: &[u64]) -> String {
     let mut hex = String::with_capacity(sig.len() * 16);
     for h in sig { use std::fmt::Write; let _ = write!(hex, "{h:016x}"); }
     hex
 }
 
-/// Decode MinHash signature from hex string.
 pub fn minhash_from_hex(hex: &str) -> Option<Vec<u64>> {
     if hex.len() % 16 != 0 { return None; }
     let k = hex.len() / 16;

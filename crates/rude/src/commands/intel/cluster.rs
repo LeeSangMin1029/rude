@@ -1,10 +1,8 @@
-//! `rude cluster` — find independent function clusters within a file.
 
 use anyhow::Result;
 
 use super::query::load_or_build_graph;
 
-/// `rude cluster` — find independent function clusters within a file.
 pub fn run_cluster(file: String, min_lines: usize) -> Result<()> {
     let graph = load_or_build_graph()?;
     let n = graph.names.len();

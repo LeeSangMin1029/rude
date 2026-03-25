@@ -1,5 +1,3 @@
-//! File path, hashing, and scanning utilities.
-
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
@@ -22,21 +20,16 @@ pub fn strip_unc_prefix(path: &str) -> &str {
         .unwrap_or(path)
 }
 
-/// Like [`strip_unc_prefix`] but returns a `PathBuf`.
 pub fn strip_unc_prefix_path(path: &Path) -> PathBuf {
     PathBuf::from(strip_unc_prefix(&path.to_string_lossy()))
 }
 
-/// Normalize a file path to a canonical forward-slash form.
-///
-/// Resolves symlinks, strips Windows `\\?\` prefix, normalizes separators.
 pub fn normalize_source(path: &Path) -> String {
     let abs = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let s = abs.to_string_lossy();
     strip_unc_prefix(&s).replace('\\', "/")
 }
 
-/// Generate a stable ID from source path and chunk index.
 pub fn generate_id(source: &str, chunk_index: usize) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -49,15 +42,13 @@ pub fn generate_id(source: &str, chunk_index: usize) -> u64 {
 
 /// Compute a content hash (MD5 -> u64) for a file's raw bytes.
 ///
-/// Used for change detection: if mtime/size changed but content hash
-/// is identical, we skip expensive re-processing.
+/// If mtime/size changed but content hash is identical, we skip expensive re-processing.
 pub fn content_hash(path: &Path) -> Result<u64> {
     let bytes = std::fs::read(path)
         .with_context(|| format!("Failed to read file for hashing: {}", path.display()))?;
     Ok(content_hash_bytes(&bytes))
 }
 
-/// Compute content hash from raw bytes (DefaultHasher → u64).
 pub fn content_hash_bytes(bytes: &[u8]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -65,7 +56,6 @@ pub fn content_hash_bytes(bytes: &[u8]) -> u64 {
     h.finish()
 }
 
-/// Map file extension to language name. Returns `"other"` for unsupported extensions.
 pub fn lang_for_ext(ext: &str) -> &'static str {
     match ext {
         "rs" => "rust",
@@ -80,12 +70,10 @@ pub fn lang_for_ext(ext: &str) -> &'static str {
     }
 }
 
-/// Check if a file extension is a supported code file.
 pub fn is_code_ext(ext: &str) -> bool {
     lang_for_ext(ext) != "other"
 }
 
-/// Get the file modification time as seconds since UNIX epoch.
 pub fn get_file_mtime(path: &Path) -> Option<u64> {
     std::fs::metadata(path)
         .ok()
@@ -94,7 +82,6 @@ pub fn get_file_mtime(path: &Path) -> Option<u64> {
         .map(|d| d.as_secs())
 }
 
-/// Built-in directory names always skipped during file scanning.
 const BUILTIN_SKIP_DIRS: &[&str] = &[
     "target",
     "node_modules",
@@ -112,9 +99,6 @@ const BUILTIN_SKIP_DIRS: &[&str] = &[
     "mutants.out",
 ];
 
-/// Check if a directory entry should be skipped during walkdir scanning.
-///
-/// Skips built-in cache/build directories and any user-specified `--exclude` dirs.
 pub fn should_skip_dir(dir_name: &OsStr, exclude: &[String]) -> bool {
     let name = dir_name.to_string_lossy();
     if BUILTIN_SKIP_DIRS.iter().any(|s| *s == name.as_ref()) {
@@ -127,8 +111,6 @@ pub fn should_skip_dir(dir_name: &OsStr, exclude: &[String]) -> bool {
     exclude.iter().any(|e| e == name.as_ref())
 }
 
-/// Recursively scan `input` for files whose extension passes `ext_filter`,
-/// skipping built-in + user-specified directories.
 pub fn scan_files(
     input: &Path,
     exclude: &[String],

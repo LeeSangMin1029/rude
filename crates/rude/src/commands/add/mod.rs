@@ -1,5 +1,3 @@
-//! Code add/update: chunks files via MIR, stores text + payload (no embedding).
-
 pub(crate) mod ingest;
 mod run;
 

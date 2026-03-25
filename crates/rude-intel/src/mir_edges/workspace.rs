@@ -1,13 +1,9 @@
-//! Workspace analysis: crate detection, args cache staleness, extern path validation.
 
 use std::path::Path;
 
 use super::runner::nightly_rustc_version;
 use super::sqlite::mir_db_path;
 
-/// Detect which crates contain the given changed files.
-///
-/// Walks up from each file to find the nearest Cargo.toml, then extracts the package name.
 pub fn detect_changed_crates(project_root: &Path, changed_files: &[impl AsRef<Path>]) -> Vec<String> {
     let mut crates = std::collections::HashSet::new();
     for file in changed_files {
@@ -42,11 +38,6 @@ pub fn detect_changed_crates(project_root: &Path, changed_files: &[impl AsRef<Pa
     crates.into_iter().collect()
 }
 
-/// Detect workspace crates whose `.edges.jsonl` files are missing from the MIR output dir.
-///
-/// Reads the root `Cargo.toml` `[workspace] members` list, extracts each member's
-/// package name, then checks if `target/mir-edges/{crate_name}.edges.jsonl` exists.
-/// Returns the names of crates with missing edge files.
 pub fn detect_missing_edge_crates(project_root: &Path) -> Vec<String> {
     let edge_dir = project_root.join("target").join("mir-edges");
     let workspace_toml = project_root.join("Cargo.toml");
@@ -119,7 +110,6 @@ pub fn detect_missing_edge_crates(project_root: &Path) -> Vec<String> {
     missing
 }
 
-/// Check if all requested crates have valid --extern artifact paths.
 pub(super) fn all_extern_paths_valid(crates: &[&str], args_dir: &Path) -> bool {
     for krate in crates {
         let crate_underscore = krate.replace('-', "_");
@@ -133,8 +123,6 @@ pub(super) fn all_extern_paths_valid(crates: &[&str], args_dir: &Path) -> bool {
     true
 }
 
-/// Check if --extern artifact paths in a cached args file still exist.
-/// If any .rlib/.rmeta/.dll/.so is missing, direct mode will fail.
 fn validate_extern_paths(args_file: &Path) -> bool {
     let content = match std::fs::read_to_string(args_file) {
         Ok(c) => c,
@@ -163,11 +151,6 @@ fn validate_extern_paths(args_file: &Path) -> bool {
     true
 }
 
-/// Check if the rustc-args cache is stale.
-///
-/// Stale conditions:
-/// 1. Cargo.toml or Cargo.lock modified after the cache directory
-/// 2. Nightly rustc version changed
 pub(super) fn is_args_cache_stale(project_root: &Path, args_dir: &Path) -> bool {
     // Get the oldest cache file mtime as reference
     let cache_mtime = match args_dir_oldest_mtime(args_dir) {
@@ -239,7 +222,6 @@ pub(super) fn is_args_cache_stale(project_root: &Path, args_dir: &Path) -> bool 
     false
 }
 
-/// Get the oldest modification time among `.rustc-args.json` files in a directory.
 fn args_dir_oldest_mtime(dir: &Path) -> Option<std::time::SystemTime> {
     let mut oldest: Option<std::time::SystemTime> = None;
     if let Ok(entries) = std::fs::read_dir(dir) {
@@ -260,7 +242,6 @@ fn args_dir_oldest_mtime(dir: &Path) -> Option<std::time::SystemTime> {
     oldest
 }
 
-/// Parse `[workspace] members = [...]` from a Cargo.toml string.
 fn parse_workspace_members_raw(content: &str) -> Vec<String> {
     let mut members = Vec::new();
     let mut in_members = false;
@@ -306,8 +287,6 @@ fn parse_workspace_members_raw(content: &str) -> Vec<String> {
     members
 }
 
-/// Parse `[workspace] members = [...]` from a Cargo.toml string,
-/// expanding glob patterns like `crates/*` via directory listing.
 pub(super) fn parse_workspace_members(content: &str, project_root: &Path) -> Vec<String> {
     let raw = parse_workspace_members_raw(content);
     let mut expanded = Vec::new();
@@ -337,7 +316,6 @@ pub(super) fn parse_workspace_members(content: &str, project_root: &Path) -> Vec
     expanded
 }
 
-/// Extract `name = "..."` from the `[package]` section of a Cargo.toml.
 pub(super) fn extract_package_name(content: &str) -> Option<String> {
     let mut in_package = false;
     for line in content.lines() {

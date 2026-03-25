@@ -1,14 +1,3 @@
-//! `dupes` command — find duplicate code chunks.
-//!
-//! Three modes:
-//! - **Token Jaccard** (default): MinHash fingerprint-based near-duplicate detection.
-//!   Compares actual code body tokens (unigrams + bigrams). Catches Type-1~3 clones.
-//! - **AST hash** (`--ast`): structural clones ignoring identifier names (Type-1/2).
-//! - **All** (`--all`): unified Filter→Verify pipeline combining AST + MinHash signals.
-//!
-//! Detection algorithms live in [`rude_intel::clones`]; this module provides
-//! CLI argument handling and output formatting only.
-
 // serde_json::to_string only fails on non-string map keys, which we don't use.
 #![expect(clippy::expect_used)]
 
@@ -22,9 +11,6 @@ use rude_intel::clones::{
 };
 use rude_db::StorageEngine;
 
-// ── CLI entry point ──────────────────────────────────────────────────────
-
-/// Configuration for the dupes command.
 pub struct DupesConfig {
     pub threshold: f32,
     pub exclude_tests: bool,
@@ -37,7 +23,6 @@ pub struct DupesConfig {
     pub analyze: bool,
 }
 
-/// Run the dupes command.
 pub fn run(cfg: DupesConfig) -> Result<()> {
     let DupesConfig {
         threshold, exclude_tests, k, json,
@@ -55,7 +40,6 @@ pub fn run(cfg: DupesConfig) -> Result<()> {
         return Ok(());
     }
 
-    // Collect pair names for --analyze post-processing.
     let mut pair_names: Vec<(String, String)> = Vec::new();
 
     if ast_mode {
@@ -65,7 +49,6 @@ pub fn run(cfg: DupesConfig) -> Result<()> {
         } else {
             print_groups_text(&groups, pstore);
         }
-        // AST mode produces groups, not pairs — skip analyze.
         return Ok(());
     }
 
@@ -77,7 +60,6 @@ pub fn run(cfg: DupesConfig) -> Result<()> {
 
     let is_unified = stages.ast && stages.minhash;
 
-    // Single-signal fast path (MinHash only)
     if !is_unified {
         eprintln!("Comparing {n} chunks (Jaccard threshold={threshold:.2})...");
         let pairs = clones::find_minhash_pairs(pstore, &candidate_ids, threshold, k);
@@ -96,7 +78,6 @@ pub fn run(cfg: DupesConfig) -> Result<()> {
             }
         }
     } else {
-        // Unified multi-signal pipeline
         eprintln!("Unified pipeline: {n} chunks");
 
         let (unified_pairs, sub_clones) =
@@ -128,7 +109,6 @@ pub fn run(cfg: DupesConfig) -> Result<()> {
         }
     }
 
-    // --analyze: call graph analysis for each duplicate pair.
     if analyze && !pair_names.is_empty() {
         run_analyze(&pair_names)?;
     }
@@ -136,9 +116,6 @@ pub fn run(cfg: DupesConfig) -> Result<()> {
     Ok(())
 }
 
-// ── Output formatting ────────────────────────────────────────────────────
-
-/// Common interface for duplicate pair types, enabling shared output logic.
 trait DupePairLike {
     fn id_a(&self) -> u64;
     fn id_b(&self) -> u64;
@@ -161,14 +138,11 @@ impl DupePairLike for UnifiedDupePair {
     fn display_tag(&self) -> String { self.tag() }
 }
 
-/// An entry in a file-grouped duplicate listing.
 struct GroupEntry {
     pair_index: usize,
     name_a: String,
     name_b: String,
 }
-
-// ── Label parsing ────────────────────────────────────────────────────────
 
 struct ChunkLabel {
     name: String,
@@ -213,14 +187,9 @@ fn label(pstore: &(impl PayloadStore + ?Sized), id: u64) -> String {
     parse_label(pstore, id).display()
 }
 
-// ── Path alias helpers ───────────────────────────────────────────────────
-
 use rude_intel::helpers::{apply_alias, build_path_aliases};
 use rude_intel::parse::normalize_path;
 
-// ── File grouping ────────────────────────────────────────────────────────
-
-/// Return the index for `key` in `groups`, creating a new empty group if needed.
 fn get_or_insert_idx<T>(
     key: String,
     groups: &mut Vec<(String, Vec<T>)>,
@@ -281,13 +250,9 @@ fn group_by_file(
     by_file
 }
 
-// ── JSON output helper ───────────────────────────────────────────────────
-
 fn print_json<T: Serialize>(val: &T) {
     println!("{}", serde_json::to_string(val).expect("JSON serialize"));
 }
-
-// ── Pair output (text / JSON) ────────────────────────────────────────────
 
 fn print_pairs_text(
     pairs: &[impl DupePairLike],
@@ -354,8 +319,6 @@ fn print_unified_json(pairs: &[UnifiedDupePair], pstore: &(impl PayloadStore + ?
         }).collect(),
     });
 }
-
-// ── Group output (AST hash mode) ─────────────────────────────────────────
 
 fn print_groups_text(groups: &[(u64, Vec<u64>)], pstore: &(impl PayloadStore + ?Sized)) {
     if groups.is_empty() {
@@ -425,12 +388,9 @@ fn print_groups_json(groups: &[(u64, Vec<u64>)], pstore: &(impl PayloadStore + ?
     });
 }
 
-// ── Sub-block output ─────────────────────────────────────────────────────
-
 fn print_sub_block_text(clones: &[SubBlockClone], pstore: &(impl PayloadStore + ?Sized)) {
     println!("\n{} sub-block clones (intra-function):\n", clones.len());
 
-    // Collect all file paths for alias map
     let labels: Vec<(ChunkLabel, ChunkLabel)> = clones
         .iter()
         .map(|c| (parse_label(pstore, c.chunk_id_a), parse_label(pstore, c.chunk_id_b)))
@@ -471,15 +431,12 @@ fn print_sub_block_json(clones: &[SubBlockClone], pstore: &(impl PayloadStore + 
     });
 }
 
-// ── Analyze output ───────────────────────────────────────────────────────
-
 fn run_analyze(pair_names: &[(String, String)]) -> Result<()> {
     use rude_intel::dupe_analyze;
     use super::intel::load_or_build_graph;
 
     let graph = load_or_build_graph()?;
 
-    // Resolve each name pair to graph indices.
     let mut resolved_pairs: Vec<(u32, u32, &str, &str)> = Vec::new();
     for (name_a, name_b) in pair_names {
         let indices_a = graph.resolve(name_a);

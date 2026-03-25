@@ -1,15 +1,7 @@
-//! Shared helper functions for code intelligence.
-//!
-//! Format utilities, path normalization, JSON grouping helpers,
-//! and project root detection used across multiple modules.
 
 use std::path::{Path, PathBuf};
 
 use crate::data::parse::ParsedChunk;
-
-// ── Project Root Detection ──────────────────────────────────────────
-
-/// Walk up from the DB path to find a project root directory.
 pub fn find_project_root(db: &Path) -> Option<PathBuf> {
     let abs = db.canonicalize().ok()?;
     let start = if abs.is_dir() {
@@ -36,7 +28,6 @@ pub fn find_project_root(db: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Format an optional line range as `"start-end"` or empty string.
 pub fn format_lines_str_opt(lines: Option<(usize, usize)>) -> String {
     if let Some((s, e)) = lines {
         format!("{s}-{e}")
@@ -45,16 +36,11 @@ pub fn format_lines_str_opt(lines: Option<(usize, usize)>) -> String {
     }
 }
 
-/// Format an optional line range as `":start-end"` or empty string.
 pub fn format_lines_opt(lines: Option<(usize, usize)>) -> String {
     let s = format_lines_str_opt(lines);
     if s.is_empty() { s } else { format!(":{s}") }
 }
 
-/// Strip common absolute prefixes to produce a relative path.
-///
-/// Looks for `crates/` as the project-relative anchor. Falls back to the
-/// original path when no anchor is found.
 pub fn relative_path(path: &str) -> &str {
     if let Some(idx) = path.find("crates/") {
         &path[idx..]
@@ -65,18 +51,6 @@ pub fn relative_path(path: &str) -> &str {
     }
 }
 
-/// Build hierarchical crate-based alias map from a set of paths.
-///
-/// Each crate gets a letter (`[A]`, `[B]`, …), subdirectories within a crate
-/// get numbered suffixes (`[A1]`, `[A2]`, …). The crate root `src/` directory
-/// uses the bare letter.
-///
-/// ```text
-/// [A] = crates/rude/src/
-///   [A1] = commands/
-///   [A2] = commands/intel/
-/// [B] = crates/rude-intel/src/
-/// ```
 pub fn build_path_aliases(paths: &[&str]) -> (std::collections::BTreeMap<String, String>, Vec<(String, String)>) {
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -135,7 +109,6 @@ pub fn build_path_aliases(paths: &[&str]) -> (std::collections::BTreeMap<String,
     (alias_map, legend)
 }
 
-/// Extract the `crates/<name>/src/` root from a directory path.
 fn extract_crate_src_root(dir: &str) -> Option<&str> {
     let crate_start = dir.find("crates/")?;
     let after_crates = &dir[crate_start + 7..];
@@ -150,7 +123,6 @@ fn extract_crate_src_root(dir: &str) -> Option<&str> {
     }
 }
 
-/// Shorten a path using the alias map: replace the directory with its alias.
 pub fn apply_alias(path: &str, alias_map: &std::collections::BTreeMap<String, String>) -> String {
     // Find the longest matching directory prefix.
     let dir = match path.rfind('/') {
@@ -165,7 +137,6 @@ pub fn apply_alias(path: &str, alias_map: &std::collections::BTreeMap<String, St
     }
 }
 
-/// Format line range as `"start-end"` or empty string.
 pub fn lines_str(c: &ParsedChunk) -> String {
     if let Some((start, end)) = c.lines {
         format!("{start}-{end}")
@@ -174,7 +145,6 @@ pub fn lines_str(c: &ParsedChunk) -> String {
     }
 }
 
-/// Extract crate name from file path: `crates/foo-bar/src/...` -> `foo-bar`.
 pub fn extract_crate_name(path: &str) -> String {
     let normalized = path.replace('\\', "/");
     if let Some(start) = normalized.find("crates/") {

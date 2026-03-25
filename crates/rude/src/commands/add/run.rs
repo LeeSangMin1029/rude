@@ -14,7 +14,6 @@ use super::{build_callers, build_payload, ingest_mir, CodeChunkEntry};
 const TEXT_ONLY_DIM: usize = 1;
 const TEXT_ONLY_MODEL: &str = "text-only";
 
-/// Run the rude add command (auto-incremental: only re-processes changed files).
 pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     let db_path = crate::db().to_path_buf();
     use rude_db::file_utils::get_file_mtime;

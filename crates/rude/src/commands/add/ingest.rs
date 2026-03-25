@@ -1,12 +1,9 @@
-//! MIR ingest: MirChunk → CodeChunkEntry conversion and related helpers.
-
 use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::Result;
 use rude_intel::chunk_types as chunk_code;
 
-/// Intermediate data collected per code chunk before `called_by` resolution.
 pub(crate) struct CodeChunkEntry {
     pub chunk: chunk_code::CodeChunk,
     pub source: String,
@@ -15,10 +12,6 @@ pub(crate) struct CodeChunkEntry {
     pub lang: &'static str,
 }
 
-/// Build `called_by` reverse index from all chunks' `calls` data.
-///
-/// For each call target, extracts the bare function name (last segment after
-/// `::` or `.`) and maps it to the set of callers (qualified chunk names).
 pub(crate) fn build_callers(entries: &[CodeChunkEntry]) -> HashMap<String, Vec<String>> {
     let mut reverse: HashMap<String, Vec<String>> = HashMap::new();
 
@@ -46,10 +39,8 @@ pub(crate) fn build_callers(entries: &[CodeChunkEntry]) -> HashMap<String, Vec<S
     reverse
 }
 
-/// Look up `called_by` entries for a given chunk name.
-///
-/// Checks both the full qualified name and the bare (last segment) name
-/// against the reverse index built by [`build_callers`].
+// Checks both the full qualified name and the bare (last segment) name
+// to handle calls recorded as either "crate::mod::fn" or just "fn".
 fn find_callers<'a>(
     reverse: &'a HashMap<String, Vec<String>>,
     chunk_name: &str,
@@ -83,12 +74,6 @@ fn find_callers<'a>(
     result
 }
 
-/// Build `(id, Payload, embed_text)` for a single `CodeChunkEntry`.
-///
-/// `now` is a pre-computed Unix timestamp (seconds).
-/// `chunk_total` is the total number of chunks in the same source file.
-/// `reverse` is the reverse caller index built by [`build_callers`].
-/// `include_role_tag` — when `true`, appends `role:test` or `role:prod`.
 pub(crate) fn build_payload(
     entry: &CodeChunkEntry,
     now: u64,
@@ -138,9 +123,6 @@ pub(crate) fn build_payload(
     (id, payload, embed_text)
 }
 
-// ── Signature parsing helpers ─────────────────────────────────────────────────
-
-/// Parse `name: Type` parameter pairs from a function signature string.
 fn parse_param_types(signature: Option<&str>) -> Vec<(String, String)> {
     signature
         .and_then(|sig| {
@@ -166,7 +148,6 @@ fn parse_param_types(signature: Option<&str>) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
-/// Parse return type from signature: text after `->`.
 fn parse_return_type(signature: Option<&str>) -> Option<String> {
     signature.and_then(|sig| {
         let after_arrow = sig.split("->").nth(1)?;
@@ -175,7 +156,6 @@ fn parse_return_type(signature: Option<&str>) -> Option<String> {
     })
 }
 
-/// Parse `name: Type` field pairs from struct body lines.
 fn parse_field_types(chunk_lines: &[&str]) -> Vec<(String, String)> {
     if chunk_lines.len() <= 1 {
         return Vec::new();
@@ -198,7 +178,6 @@ fn parse_field_types(chunk_lines: &[&str]) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Parse enum variant names from enum body lines.
 fn parse_enum_variants(chunk_lines: &[&str]) -> Vec<String> {
     if chunk_lines.len() <= 1 {
         return Vec::new();
@@ -222,8 +201,6 @@ fn parse_enum_variants(chunk_lines: &[&str]) -> Vec<String> {
         .collect()
 }
 
-/// Direct MirChunk → CodeChunkEntry conversion. No file I/O.
-/// Uses body/calls/type_refs from MIR extraction (sqlite or JSONL with body).
 pub(crate) fn ingest_mir(
     mir_chunks: &[rude_intel::mir_edges::MirChunk],
     db_path: &Path,
@@ -234,7 +211,7 @@ pub(crate) fn ingest_mir(
     use rude_db::file_utils::{generate_id, normalize_source};
     use rude_intel::parse::normalize_path;
 
-    // Dedup: same name in same file, prefer prod over test
+    // Prefer prod over test when the same name appears in the same file.
     let mut seen: HashMap<(&str, &str), usize> = HashMap::new();
     let mut deduped: Vec<&rude_intel::mir_edges::MirChunk> = Vec::new();
     for mc in mir_chunks {
@@ -249,7 +226,6 @@ pub(crate) fn ingest_mir(
         }
     }
 
-    // Group by file for file_metadata_map
     let mut by_file: HashMap<&str, Vec<usize>> = HashMap::new();
     for (i, mc) in deduped.iter().enumerate() {
         by_file.entry(mc.file.as_str()).or_default().push(i);
@@ -257,7 +233,6 @@ pub(crate) fn ingest_mir(
 
     for (file_key, indices) in &by_file {
         let normalized_file = normalize_path(file_key);
-        // Try to resolve absolute path for source
         let db_parent = db_path.parent().unwrap_or(Path::new("."));
         let workspace = db_parent.canonicalize().unwrap_or_else(|_| db_parent.to_path_buf());
         let file_path = workspace.join(file_key);
@@ -266,7 +241,6 @@ pub(crate) fn ingest_mir(
         } else {
             normalize_source(Path::new(file_key))
         };
-        // Skip unchanged files
         if let Some(changed) = changed_sources {
             if !changed.contains(&source) { continue; }
         }
@@ -275,7 +249,7 @@ pub(crate) fn ingest_mir(
         let ext = std::path::Path::new(file_key).extension().and_then(|e| e.to_str()).unwrap_or("");
         let lang = rude_db::lang_for_ext(ext);
 
-        // Read file lines once for body recovery when body is empty (sqlite without body text)
+        // Read file lines once; needed when sqlite stores empty body (no-body mode).
         let file_lines: Option<Vec<String>> = if indices.iter().any(|&i| deduped[i].body.is_empty()) {
             std::fs::read_to_string(&file_path).ok().map(|content| {
                 content.lines().map(|l| l.to_owned()).collect()
@@ -291,7 +265,6 @@ pub(crate) fn ingest_mir(
             let id = generate_id(&source, idx);
             chunk_ids.push(id);
 
-            // Recover body from source file when sqlite stores empty body
             let body_text = if mc.body.is_empty() {
                 if let Some(ref lines) = file_lines {
                     let start = mc.start_line.saturating_sub(1);
@@ -308,7 +281,6 @@ pub(crate) fn ingest_mir(
                 mc.body.clone()
             };
 
-            // Parse calls from "callee@line, callee@line, ..." format
             let (calls, call_lines) = rude_intel::mir_edges::parse_calls_field(&mc.calls);
 
             let kind = match mc.kind.as_str() {
@@ -328,7 +300,7 @@ pub(crate) fn ingest_mir(
 
             let chunk_lines: Vec<&str> = body_text.lines().collect();
 
-            // Use MIR signature directly; fallback to first line of body
+            // Fallback to first line of body when MIR signature is absent.
             let signature = mc.signature.clone().or_else(|| {
                 let first = chunk_lines.first()?;
                 let sig_line = first.split('{').next()?.trim();
@@ -348,7 +320,6 @@ pub(crate) fn ingest_mir(
                 Vec::new()
             };
 
-            // Determine visibility
             let visibility = mc
                 .visibility
                 .clone()
@@ -365,7 +336,6 @@ pub(crate) fn ingest_mir(
                     }
                 });
 
-            // Compute is_test
             let is_test = mc.is_test
                 || mc.file.contains("/tests/") || mc.file.contains("\\tests\\")
                 || mc.name.contains("::test_") || mc.name.starts_with("test_")

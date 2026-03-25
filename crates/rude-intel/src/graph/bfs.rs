@@ -1,35 +1,16 @@
-//! Generic BFS traversal on the call graph.
-//!
-//! Provides `bfs_generic`, `BfsDirection`, and `HasIdx` —
-//! the building blocks for context, impact, and trace modules.
-
 use std::collections::VecDeque;
 
 use crate::graph::build::CallGraph;
 
-// ── Shared trait for BFS entry types ─────────────────────────────────────
-
-/// Trait for BFS entry types that carry a graph index.
 pub trait HasIdx {
     fn idx(&self) -> u32;
 }
 
-// ── Generic BFS ──────────────────────────────────────────────────────────
-
-/// Adjacency selector for BFS direction.
 pub enum BfsDirection {
-    /// Follow callees (forward traversal).
     Forward,
-    /// Follow callers (reverse traversal).
     Reverse,
 }
 
-/// Run a depth-limited BFS on the call graph.
-///
-/// The `direction` parameter selects which adjacency list to follow.
-/// For each visited node the `make_entry` callback produces the result entry;
-/// returning `None` skips the node (useful for test filtering) but still
-/// continues BFS through its neighbours.
 pub fn bfs_generic<T>(
     graph: &CallGraph,
     seeds: &[u32],

@@ -1,10 +1,3 @@
-//! Call graph adjacency list built from `ParsedChunk` data.
-//!
-//! Provides `CallGraph` — a pre-built, bincode-cached graph that maps
-//! chunk indices to their callees and callers for fast BFS traversal.
-//!
-//! Edge resolution (how calls are connected) is handled by [`crate::edge_resolve`].
-
 use std::fs;
 use std::path::Path;
 
@@ -15,23 +8,15 @@ use crate::graph::index_tables;
 use crate::mir_edges::MirEdgeMap;
 use crate::data::parse::ParsedChunk;
 
-/// Source hash — auto-computed by build.rs for cache invalidation.
 const GRAPH_SOURCE_HASH: &str = env!("GRAPH_SOURCE_HASH");
 
-// Re-export for external consumers (used by rude, stats, clones).
 pub use crate::graph::index_tables::{is_test_path, is_test_chunk};
 
-/// Arguments for incremental edge resolution.
 pub struct IncrementalArgs<'a> {
-    /// Crate names that changed and need re-resolution.
     pub changed_crates: &'a [String],
-    /// Directory containing per-crate `.edges.jsonl` files.
     pub mir_edge_dir: &'a Path,
 }
 
-// ── CallGraph struct ────────────────────────────────────────────────
-
-/// Pre-built call graph with bidirectional adjacency lists.
 #[derive(bincode::Encode, bincode::Decode)]
 pub struct CallGraph {
     version: String,
@@ -45,19 +30,14 @@ pub struct CallGraph {
     pub callers: Vec<Vec<u32>>,
     pub is_test: Vec<bool>,
     pub trait_impls: Vec<Vec<u32>>,
-    /// Reverse of `trait_impls`: impl_idx → trait_idx (None if not a trait impl).
     pub impl_of_trait: Vec<Option<u32>>,
-    /// Per-function: parent trait impl block index (None if not in a trait impl).
     pub fn_trait_impl: Vec<Option<u32>>,
     pub call_sites: Vec<Vec<(u32, u32)>>,
     pub field_access_index: Vec<(String, Vec<u32>)>,
 }
 
-// ── Build ───────────────────────────────────────────────────────────
-
 impl CallGraph {
 
-    /// Assemble CallGraph from resolved edges + chunk metadata.
     fn assemble(chunks: &[ParsedChunk], index: &ChunkIndex, adj: ResolvedEdges, ) -> Self {
         let t = std::time::Instant::now();
         let owner_field_types = index_tables::collect_owner_field_types(chunks);
@@ -107,17 +87,11 @@ impl CallGraph {
         }
     }
 
-    /// Build a simple call graph from chunks using name-based resolution.
-    ///
-    /// Convenience method for tests and simple use cases. For production use,
-    /// prefer `build_only` which supports MIR edges and incremental builds.
     pub fn build(chunks: &[ParsedChunk]) -> Self {
         let index = ChunkIndex::build(chunks);
         let adj = edge_resolve::resolve_by_name(chunks, &index);
         Self::assemble(chunks, &index, adj)
     }
-
-    // ── Query API ───────────────────────────────────────────────────
 
     pub fn resolve(&self, name: &str) -> Vec<u32> {
         let lower = name.to_lowercase();
@@ -150,14 +124,6 @@ impl CallGraph {
             .map(|(k, v)| (&k[prefix.len()..], v.as_slice())).collect()
     }
 
-    /// Build graph from chunks + optional MIR edges, then save to disk.
-    ///
-    /// Shared helper used by both `prebuild_caches` (add) and
-    /// `rebuild_graph_cache` (watch) to avoid duplicating the
-    /// build-dispatch + save logic.
-    ///
-    /// When `incremental` is provided, uses per-crate edge caching for
-    /// faster rebuild. Falls back to full resolve otherwise.
     pub fn rebuild(
         db: &Path,
         chunks: &[ParsedChunk],
@@ -169,11 +135,6 @@ impl CallGraph {
         Ok(graph)
     }
 
-    /// Build graph without saving — caller decides when/how to persist.
-    ///
-    /// - `mir_edges` = None → name-resolve (legacy)
-    /// - `mir_edges` = Some → MIR resolve
-    /// - `incremental` = Some → per-crate cached MIR resolve
     pub fn build_only(
         chunks: &[ParsedChunk],
         mir_edges: Option<&MirEdgeMap>,
@@ -200,21 +161,12 @@ impl CallGraph {
         Self::assemble(chunks, &index, adj)
     }
 
-    /// Encode and write graph to disk in a background thread.
-    ///
-    /// Both encoding and file I/O happen off the critical path.
-    /// The graph is moved into the thread (no clone needed).
-    /// If the process exits before the thread completes, the next run
-    /// will detect a stale/missing graph.bin and rebuild.
     pub fn save_background(self, db: &Path) {
         let path = graph_cache_path(db);
         let _ = fs::create_dir_all(path.parent().unwrap_or(Path::new(".")));
         std::thread::spawn(move || {
             match bincode::encode_to_vec(&self, bincode::config::standard()) {
                 Ok(bytes) => {
-                    // Atomic write: write to temp file first, then rename.
-                    // If the process exits mid-write, only the tmp file is
-                    // left behind and graph.bin retains its previous version.
                     let tmp_path = path.with_extension("tmp.bin");
                     if let Err(e) = fs::write(&tmp_path, bytes) {
                         eprintln!("[graph] background save write failed: {e}");
@@ -232,8 +184,6 @@ impl CallGraph {
         });
     }
 
-    // ── Persistence ─────────────────────────────────────────────────
-
     pub fn save(&self, db: &Path) -> Result<()> {
         let path = graph_cache_path(db);
         let _ = fs::create_dir_all(path.parent().unwrap_or(Path::new(".")));
@@ -244,12 +194,6 @@ impl CallGraph {
 
     pub fn load(db: &Path) -> Option<Self> {
         let path = graph_cache_path(db);
-        // No mtime comparison — save_background is async so graph.bin's
-        // mtime may legitimately be older than payload.dat. Instead we
-        // rely on version hash (GRAPH_SOURCE_HASH) for validity. If the
-        // background save was interrupted, the tmp file won't have been
-        // renamed, so graph.bin either holds a valid previous version or
-        // doesn't exist → rebuild.
         let bytes = fs::read(&path).ok()?;
         let (graph, _): (Self, _) = bincode::decode_from_slice(&bytes, bincode::config::standard()).ok()?;
         if graph.version != GRAPH_SOURCE_HASH { return None; }

@@ -1,4 +1,3 @@
-//! Code intelligence commands — structural queries on code-chunked databases.
 
 mod cluster;
 mod coverage;

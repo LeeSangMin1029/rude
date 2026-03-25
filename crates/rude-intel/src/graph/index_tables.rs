@@ -1,11 +1,6 @@
-//! Index table builders and utilities for call graph construction.
 
 use std::collections::HashMap;
 use crate::data::parse::ParsedChunk;
-
-// ── Field types ─────────────────────────────────────────────────────
-
-/// Collect struct field name → type mappings keyed by owning type (lowercase).
 pub(crate) fn collect_owner_field_types(chunks: &[ParsedChunk]) -> HashMap<String, HashMap<String, String>> {
     let mut result: HashMap<String, HashMap<String, String>> = HashMap::new();
     for c in chunks.iter().filter(|c| c.kind == "struct") {
@@ -17,10 +12,6 @@ pub(crate) fn collect_owner_field_types(chunks: &[ParsedChunk]) -> HashMap<Strin
     }
     result
 }
-
-// ── Field access index ──────────────────────────────────────────────
-
-/// Build field access index: `type::field` → chunk indices.
 pub(crate) fn build_field_access_index(
     chunks: &[ParsedChunk],
     owner_field_types: &HashMap<String, HashMap<String, String>>,
@@ -67,7 +58,6 @@ pub(crate) fn build_field_access_index(
     result
 }
 
-/// Build trait → impl mapping from impl chunk names.
 pub(crate) fn build_trait_impls(
     names: &[String],
     kinds: &[String],
@@ -105,8 +95,6 @@ pub(crate) fn build_trait_impls(
     trait_impls
 }
 
-/// For each function chunk, if its parent impl block is a trait impl,
-/// store that impl block's index. Otherwise `None`.
 pub(crate) fn build_fn_trait_impl(
     names: &[String],
     kinds: &[String],
@@ -136,10 +124,6 @@ pub(crate) fn build_fn_trait_impl(
     }
     result
 }
-
-// ── Type utilities ──────────────────────────────────────────────────
-
-/// Extract leaf type: `"result<foo, error>"` → `"foo"`, `"&mut bar"` → `"bar"`.
 pub fn extract_leaf_type(ty: &str) -> &str {
     let ty = ty.strip_prefix('&').unwrap_or(ty);
     let ty = if ty.starts_with('\'') { ty.find(' ').map_or(ty, |i| &ty[i + 1..]) } else { ty };
@@ -162,7 +146,6 @@ pub fn extract_leaf_type(ty: &str) -> &str {
     outer
 }
 
-/// Extract owning type: `"Foo::bar"` → `"foo"`, handles `impl Trait for Type`.
 pub fn owning_type(name: &str) -> Option<String> {
     let (prefix, _) = name.rsplit_once("::")?;
     let leaf = prefix.rsplit_once("::").map_or(prefix, |p| p.1);
@@ -170,7 +153,6 @@ pub fn owning_type(name: &str) -> Option<String> {
     Some(leaf.split('<').next().unwrap_or(leaf).to_lowercase())
 }
 
-/// Strip generic params: `"foo<t>::bar"` → `"foo::bar"`.
 pub(crate) fn strip_generics_from_key(key: &str) -> String {
     let mut out = String::with_capacity(key.len());
     let mut depth = 0u32;
@@ -185,7 +167,6 @@ pub(crate) fn strip_generics_from_key(key: &str) -> String {
     out
 }
 
-/// Parse generic trait bounds: `<T: Search>` → `[("t", "search")]`.
 pub fn extract_generic_bounds(sig: &str) -> Vec<(String, String)> {
     let Some(start) = sig.find('<') else { return Vec::new() };
     let mut depth = 0u32;
@@ -227,10 +208,6 @@ pub fn extract_generic_bounds(sig: &str) -> Vec<(String, String)> {
     }
     result
 }
-
-// ── Test helpers ────────────────────────────────────────────────────
-
-/// Check if a file path is in a test directory or has a test suffix.
 pub fn is_test_path(path: &str) -> bool {
     path.contains("/tests/") || path.contains("\\tests\\")
         || path.contains("/test/") || path.contains("\\test\\")
@@ -240,9 +217,6 @@ pub fn is_test_path(path: &str) -> bool {
 pub fn is_test_chunk(c: &ParsedChunk) -> bool {
     c.is_test || is_test_path(&c.file)
 }
-
-// ── Internal helpers ────────────────────────────────────────────────
-
 fn owner_leaf(name: &str) -> String {
     let lower = name.to_lowercase();
     let leaf = lower.rsplit("::").next().unwrap_or(&lower);

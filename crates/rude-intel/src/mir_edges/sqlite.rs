@@ -1,4 +1,3 @@
-//! SQLite-based loading of MIR edges and chunks.
 
 use std::path::{Path, PathBuf};
 
@@ -6,17 +5,10 @@ use anyhow::{Context, Result};
 use crate::data::parse::normalize_path;
 use super::types::{CalleeInfo, MirChunk, MirEdgeMap};
 
-/// Derive the sqlite path for MIR data from a project root.
-///
-/// Returns `{project_root}/target/mir-edges/mir.db`.
 pub fn mir_db_path(project_root: &Path) -> PathBuf {
     project_root.join("target").join("mir-edges").join("mir.db")
 }
 
-/// Clear mir_edges and mir_chunks tables for specific crates (or all if empty).
-///
-/// Must be called BEFORE running mir-callgraph so that lib + test compilations
-/// can safely INSERT OR IGNORE without race conditions.
 pub fn clear_mir_db(project_root: &Path, crates: &[&str]) -> Result<()> {
     let db_path = mir_db_path(project_root);
     if !db_path.exists() { return Ok(()); }
@@ -36,10 +28,6 @@ pub fn clear_mir_db(project_root: &Path, crates: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// Build SQLite positional placeholders and boxed params for a crate name filter.
-///
-/// Returns `(placeholders, params)` where `placeholders` is a comma-separated
-/// `?1,?2,...` string and `params` contains hyphen-normalized crate name values.
 pub(super) fn make_crate_params(crates: &[&str]) -> (String, Vec<Box<dyn rusqlite::types::ToSql>>) {
     let placeholders = crates.iter().enumerate()
         .map(|(i, _)| format!("?{}", i + 1))
@@ -52,7 +40,6 @@ pub(super) fn make_crate_params(crates: &[&str]) -> (String, Vec<Box<dyn rusqlit
 }
 
 impl MirEdgeMap {
-    /// Load edges from sqlite (mir-callgraph direct write mode).
     pub fn from_sqlite(db_path: &Path, only_crates: Option<&[&str]>) -> Result<Self> {
         let conn = rusqlite::Connection::open(db_path)
             .with_context(|| format!("failed to open MIR sqlite: {}", db_path.display()))?;
@@ -124,7 +111,6 @@ impl MirEdgeMap {
         Ok(combined)
     }
 
-    /// Load MIR chunks from sqlite.
     pub fn load_chunks_from_sqlite(db_path: &Path, only_crates: Option<&[&str]>) -> Result<Vec<MirChunk>> {
         let conn = rusqlite::Connection::open(db_path)
             .with_context(|| format!("failed to open MIR sqlite: {}", db_path.display()))?;

@@ -1,18 +1,8 @@
-//! Shortest call path between two symbols.
-//!
-//! Uses bidirectional BFS on the call graph (callees + callers) to find
-//! the shortest path from symbol A to symbol B.
 
 use std::collections::VecDeque;
 
 use crate::graph::build::CallGraph;
 
-/// BFS to find shortest path from any source index to any target index.
-///
-/// Traverses both callees and callers (bidirectional edges) so paths through
-/// common ancestors (e.g. A ← parent → B) can be found.
-/// Returns the path as a list of chunk indices (source first, target last),
-/// or `None` if no path exists.
 pub fn bfs_shortest_path(graph: &CallGraph, sources: &[u32], targets: &[u32]) -> Option<Vec<u32>> {
     let len = graph.len();
     let mut visited = vec![false; len];

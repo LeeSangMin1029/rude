@@ -1,5 +1,3 @@
-//! rude CLI definition — code intelligence commands only.
-
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};

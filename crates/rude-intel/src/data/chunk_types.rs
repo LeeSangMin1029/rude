@@ -5,21 +5,13 @@ use rude_db::PayloadValue;
 
 use crate::data::minhash;
 
-/// A sub-block within a code chunk, split at control structure boundaries.
-///
-/// Used for fine-grained (intra-function) clone detection: two functions may
-/// not be duplicates overall, but share identical internal blocks.
 #[derive(Debug, Clone)]
 pub struct SubBlock {
-    /// Byte offset in source file.
     pub start_byte: usize,
     pub end_byte: usize,
-    /// Line numbers (0-based).
     pub start_line: usize,
     pub end_line: usize,
-    /// Structural AST hash (identifiers normalized).
     pub ast_hash: u64,
-    /// Normalized body text hash.
     pub body_hash: u64,
 }
 
@@ -29,14 +21,10 @@ impl fmt::Display for SubBlock {
     }
 }
 
-/// Configuration for code chunking.
 #[derive(Debug, Clone)]
 pub struct CodeChunkConfig {
-    /// Minimum lines for a chunk to be included.
     pub min_lines: usize,
-    /// Extract file-level `use` statements.
     pub extract_imports: bool,
-    /// Extract function calls from bodies.
     pub extract_calls: bool,
 }
 
@@ -50,7 +38,6 @@ impl Default for CodeChunkConfig {
     }
 }
 
-/// Kind of code node extracted by tree-sitter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodeNodeKind {
     Function,
@@ -68,7 +55,6 @@ pub enum CodeNodeKind {
 }
 
 impl CodeNodeKind {
-    /// String label for payload storage.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Function => "function",
@@ -87,80 +73,40 @@ impl CodeNodeKind {
     }
 }
 
-/// A semantic code chunk extracted via tree-sitter.
 #[derive(Debug, Clone)]
 pub struct CodeChunk {
-    /// The raw source code text.
     pub text: String,
-    /// Kind of code node.
     pub kind: CodeNodeKind,
-    /// Symbol name (e.g., `process_payment`, `PaymentIntent`).
     pub name: String,
-    /// Function signature (params + return), if applicable.
     pub signature: Option<String>,
-    /// Doc comment text, if any.
     pub doc_comment: Option<String>,
-    /// Visibility: `"pub"`, `"pub(crate)"`, `""`.
     pub visibility: String,
-    /// Start line (0-based).
     pub start_line: usize,
-    /// End line (0-based).
     pub end_line: usize,
-    /// Byte offsets in source.
     pub start_byte: usize,
     pub end_byte: usize,
-    /// Sequential chunk index within the file.
     pub chunk_index: usize,
-    /// File-level import statements.
     pub imports: Vec<String>,
-    /// Function calls within the body.
     pub calls: Vec<String>,
-    /// Source line (0-based) of each call in `calls` (parallel array).
     pub call_lines: Vec<u32>,
-    /// Type names referenced in signature and body.
     pub type_refs: Vec<String>,
-    /// Parameter name-type pairs (e.g., `[("amount", "f64")]`).
     pub param_types: Vec<(String, String)>,
-    /// Struct field name-type pairs (e.g., `[("name", "String")]`).
     pub field_types: Vec<(String, String)>,
-    /// Return type string (e.g., `"Result<Vec<Item>>"`).
     pub return_type: Option<String>,
-    /// Structural AST hash for clone detection (0 = not computed).
     pub ast_hash: u64,
-    /// Normalized body text hash for exact-logic clone detection (0 = not computed).
     pub body_hash: u64,
-    /// Sub-blocks split at control structure boundaries for fine-grained clone detection.
     pub sub_blocks: Vec<SubBlock>,
-    /// String literal arguments found in function calls: `(callee, value, line, arg_pos)`.
     pub string_args: Vec<(String, String, u32, u8)>,
-    /// Parameter-to-callee argument flows: `(param_name, param_pos, callee, callee_arg, line)`.
     pub param_flows: Vec<(String, u8, String, u8, u32)>,
-    /// Local variable type annotations: `(variable_name, type_name)`.
-    /// Collected from `let x: Type = ...` patterns.
     pub local_types: Vec<(String, String)>,
-    /// Let-binding-to-call mappings: `(variable_name, callee_name)`.
-    /// Collected from `let x = some_fn()` / `let x = some_fn()?` patterns.
-    /// Used for 1-hop return type propagation in the call graph.
     pub let_call_bindings: Vec<(String, String)>,
-    /// Field accesses (non-call): `(receiver, field_name)`.
-    /// Collected from `payload.source`, `self.engine`, `node.incoming` etc.
-    /// Used for field-level blast radius analysis.
     pub field_accesses: Vec<(String, String)>,
-    /// Enum variant names (for enum chunks only).
-    /// Used to distinguish `Type::Variant(args)` from `Type::method(args)`.
     pub enum_variants: Vec<String>,
-    /// Whether this function has a test attribute (`#[test]`, `@Test`, etc.).
-    /// Detected from tree-sitter AST — language-specific.
     pub is_test: bool,
 }
 
 impl CodeChunk {
-    /// Build text optimized for embedding (semantic search).
-    ///
-    /// Includes doc comment, signature, calls, called_by — not the full body.
-    /// Use `called_by` to inject reverse-reference data from cross-file analysis.
     pub fn to_embed_text(&self, file_path: &str, called_by: &[String]) -> String {
-        // Helper: push "Label: items" if non-empty
         fn push_list(parts: &mut Vec<String>, label: &str, items: &[String]) {
             if !items.is_empty() {
                 parts.push(format!("{label}: {}", items.join(", ")));
@@ -214,11 +160,7 @@ impl CodeChunk {
         parts.join("\n")
     }
 
-    /// Convert code metadata to `payload.custom` fields.
-    ///
-    /// Pass `called_by` from cross-file reverse-reference analysis.
     pub fn to_custom_fields(&self, called_by: &[String]) -> HashMap<String, PayloadValue> {
-        // Helper: insert StringList only when non-empty
         fn ins_list(m: &mut HashMap<String, PayloadValue>, key: &str, v: Vec<String>) {
             if !v.is_empty() { m.insert(key.to_owned(), PayloadValue::StringList(v)); }
         }
@@ -256,7 +198,6 @@ impl CodeChunk {
         #[expect(clippy::cast_possible_wrap, reason = "hash bits reinterpreted")]
         if self.body_hash != 0 { c.insert("body_hash".to_owned(), PayloadValue::Integer(self.body_hash as i64)); }
 
-        // MinHash token fingerprint for near-duplicate detection
         let tokens = minhash::code_tokens(&self.text);
         if tokens.len() >= 10 {
             ins_str(&mut c, "minhash", minhash::minhash_to_hex(&minhash::minhash_signature(&tokens, minhash::MINHASH_K)));

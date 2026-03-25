@@ -1,6 +1,3 @@
-//! File watch mode — auto-updates DB on source changes via MIR.
-//!
-//! Event-driven: no sleep/timer. Uses notify + mpsc channel.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -12,10 +9,8 @@ use notify::{Event, EventKind, RecursiveMode, Watcher};
 use rude_db::file_index;
 use rude_db::file_utils::normalize_source;
 
-/// Directories to skip.
 const IGNORED_DIRS: &[&str] = &[".git", "target", "node_modules", "__pycache__"];
 
-/// Run watch mode — blocks indefinitely, updating DB on file changes.
 pub fn run(input_path: PathBuf) -> Result<()> {
     let db_path = crate::db().to_path_buf();
     // Set project root for path normalization (absolute → relative).
@@ -85,7 +80,6 @@ pub fn run(input_path: PathBuf) -> Result<()> {
     Ok(())
 }
 
-/// Process a batch of changed files: detect crates -> MIR -> chunk -> graph.
 fn process_changes(changed: &[PathBuf], db_path: &Path, input_path: &Path) {
     let t = std::time::Instant::now();
     let file_names: Vec<String> = changed
@@ -173,7 +167,6 @@ fn process_changes(changed: &[PathBuf], db_path: &Path, input_path: &Path) {
     );
 }
 
-/// Write chunk entries to DB.
 fn update_db(
     db_path: &Path,
     entries: &[super::add::CodeChunkEntry],
@@ -217,7 +210,6 @@ fn update_db(
     Ok(())
 }
 
-/// Rebuild graph.bin cache from current chunks + MIR edges.
 fn rebuild_graph_cache(
     db_path: &Path,
     mir_out_dir: &Path,
@@ -252,7 +244,6 @@ fn is_rust_source(path: &Path) -> bool {
         .is_some_and(|ext| ext == "rs")
 }
 
-/// Check if a path is inside an ignored directory.
 fn is_in_ignored_dir(path: &Path) -> bool {
     path.components().any(|c| {
         c.as_os_str()

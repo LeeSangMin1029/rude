@@ -1,8 +1,3 @@
-//! File metadata tracking for incremental updates.
-//!
-//! Maintains a SQLite table mapping source files to their modification time,
-//! size, and associated chunk IDs for efficient incremental processing.
-
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -12,16 +7,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::StorageEngine;
 
-/// Metadata for a single source file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileMetadata {
-    /// Source file path.
     pub path: String,
-    /// Last modification time (Unix timestamp).
     pub mtime: u64,
-    /// File size in bytes.
     pub size: u64,
-    /// IDs of chunks generated from this file.
     pub chunk_ids: Vec<u64>,
     /// MD5-based content hash (truncated to u64) for change detection.
     /// None for entries created before this field was added.
@@ -29,20 +19,15 @@ pub struct FileMetadata {
     pub content_hash: Option<u64>,
 }
 
-/// File index structure (in-memory cache backed by SQLite).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileIndex {
-    /// Index format version.
     pub version: u32,
-    /// Map from file path to metadata.
     pub files: HashMap<String, FileMetadata>,
 }
 
 impl FileIndex {
-    /// Current index version.
     pub const VERSION: u32 = 1;
 
-    /// Create a new empty file index.
     pub fn new() -> Self {
         Self {
             version: Self::VERSION,
@@ -50,7 +35,6 @@ impl FileIndex {
         }
     }
 
-    /// Add or update file metadata.
     pub fn update_file(&mut self, path: String, mtime: u64, size: u64, chunk_ids: Vec<u64>) {
         self.files.insert(
             path.clone(),
@@ -64,7 +48,6 @@ impl FileIndex {
         );
     }
 
-    /// Add or update file metadata with content hash.
     pub fn update_file_with_hash(
         &mut self,
         path: String,
@@ -85,11 +68,9 @@ impl FileIndex {
         );
     }
 
-    /// Get metadata for a file.
     pub fn get_file(&self, path: &str) -> Option<&FileMetadata> {
         self.files.get(path)
     }
-
 }
 
 impl Default for FileIndex {
@@ -98,15 +79,11 @@ impl Default for FileIndex {
     }
 }
 
-/// Load file index from SQLite `store.db` in the given directory.
-///
-/// Falls back to reading legacy `file_index.json` if the sqlite table is empty
-/// but the JSON file exists (one-time migration).
 pub fn load_file_index(db_path: &Path) -> Result<FileIndex> {
     let store_db = db_path.join("store.db");
 
     if !store_db.exists() {
-        // No store.db yet — check legacy JSON
+        // Fall back to legacy JSON if store.db hasn't been created yet
         let json_path = db_path.join("file_index.json");
         if json_path.exists() {
             let data = std::fs::read_to_string(&json_path)
@@ -123,11 +100,9 @@ pub fn load_file_index(db_path: &Path) -> Result<FileIndex> {
     load_file_index_from_engine(&engine)
 }
 
-/// Load file index from an already-open `StorageEngine`.
 pub fn load_file_index_from_engine(engine: &StorageEngine) -> Result<FileIndex> {
     let conn = engine.connection();
 
-    // Check if file_index table exists
     let table_exists: bool = conn
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='file_index'",
@@ -138,7 +113,7 @@ pub fn load_file_index_from_engine(engine: &StorageEngine) -> Result<FileIndex> 
         .unwrap_or(false);
 
     if !table_exists {
-        // Try legacy JSON migration
+        // One-time migration from legacy JSON
         let json_path = engine.dir().join("file_index.json");
         if json_path.exists() {
             let data = std::fs::read_to_string(&json_path)
@@ -189,14 +164,12 @@ pub fn load_file_index_from_engine(engine: &StorageEngine) -> Result<FileIndex> 
     })
 }
 
-/// Save file index to SQLite `store.db` in the given directory.
 pub fn save_file_index(db_path: &Path, index: &FileIndex) -> Result<()> {
     let engine = StorageEngine::open(db_path)
         .with_context(|| "failed to open store.db for saving file_index")?;
     save_file_index_to_engine(&engine, index)
 }
 
-/// Save file index to an already-open `StorageEngine`.
 pub fn save_file_index_to_engine(engine: &StorageEngine, index: &FileIndex) -> Result<()> {
     let conn = engine.connection();
 
@@ -226,7 +199,6 @@ pub fn save_file_index_to_engine(engine: &StorageEngine, index: &FileIndex) -> R
     Ok(())
 }
 
-/// Get file size in bytes.
 pub fn get_file_size(path: &Path) -> Result<u64> {
     let metadata = std::fs::metadata(path)
         .with_context(|| format!("Failed to read metadata for {}", path.display()))?;

@@ -1,5 +1,3 @@
-//! rude — Code intelligence CLI.
-
 mod cli;
 use rude_cli::commands;
 use commands::edit::{apply_edits, Op};
@@ -18,7 +16,7 @@ fn main() {
 
     rude_db::interrupt::install_handler();
 
-    // Run on a thread with 32 MB stack — graph build + SCIP parsing need deep stacks.
+    // 32 MB stack: graph build + deep recursion in SCIP parsing can exhaust default stack.
     let result = std::thread::Builder::new()
         .stack_size(32 * 1024 * 1024)
         .spawn(run)
@@ -32,7 +30,6 @@ fn main() {
     }
 }
 
-/// RUDE_COMPACT=1 makes --compact the default for all commands.
 fn env_compact() -> bool {
     std::env::var("RUDE_COMPACT").is_ok_and(|v| v == "1" || v == "true")
 }
@@ -102,7 +99,6 @@ fn run() -> anyhow::Result<()> {
 
 const DB_NAME: &str = ".code.db";
 
-/// Resolve DB path: use explicit path, or search upward from cwd for `.code.db`.
 fn resolve_db(explicit: Option<std::path::PathBuf>) -> anyhow::Result<std::path::PathBuf> {
     if let Some(p) = explicit {
         return Ok(p);
@@ -118,7 +114,6 @@ fn resolve_db(explicit: Option<std::path::PathBuf>) -> anyhow::Result<std::path:
     anyhow::bail!("No {DB_NAME} found (searched from cwd upward). Pass db path explicitly.")
 }
 
-/// Read body from `--body`, `--body-file`, or stdin (in that priority).
 fn read_body(body: Option<String>, body_file: Option<std::path::PathBuf>) -> anyhow::Result<String> {
     if let Some(b) = body {
         return Ok(b);

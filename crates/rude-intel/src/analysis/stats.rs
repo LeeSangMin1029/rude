@@ -1,4 +1,3 @@
-//! Per-crate statistics computation from code chunks.
 
 use std::collections::BTreeMap;
 
@@ -6,9 +5,6 @@ use crate::graph::index_tables::is_test_chunk;
 use crate::analysis::helpers::extract_crate_name;
 use crate::data::parse::ParsedChunk;
 
-/// Build per-crate statistics from code chunks.
-///
-/// Returns a map from crate name to `[prod_fn, test_fn, struct, enum]` counts.
 pub fn build_stats(chunks: &[ParsedChunk]) -> BTreeMap<String, [usize; 4]> {
     let mut stats: BTreeMap<String, [usize; 4]> = BTreeMap::new();
     for c in chunks {

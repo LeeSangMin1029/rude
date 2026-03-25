@@ -1,7 +1,3 @@
-//! Query command handlers — stats, symbols, context, trace, aliases.
-//!
-//! Each `run_*` function corresponds to a CLI subcommand. Pure analysis
-//! logic lives in `rude-intel`.
 
 use std::collections::BTreeMap;
 
@@ -22,10 +18,6 @@ pub(crate) fn load_or_build_graph() -> Result<graph::CallGraph> {
 pub(crate) fn load_or_build_graph_with_chunks() -> Result<(graph::CallGraph, Option<Vec<ParsedChunk>>)> {
     rude_intel::loader::load_or_build_graph_with_chunks(crate::db())
 }
-
-// ── Commands ─────────────────────────────────────────────────────────────
-
-/// `rude aliases` — print global path alias mapping.
 pub fn run_aliases() -> Result<()> {
     let graph = load_or_build_graph()?;
     let (_alias_map, legend) = graph.global_aliases();
@@ -35,7 +27,6 @@ pub fn run_aliases() -> Result<()> {
     Ok(())
 }
 
-/// `rude stats` — per-crate summary of code symbols.
 pub fn run_stats() -> Result<()> {
     let chunks = load_chunks(crate::db())?;
     let stats = build_stats(&chunks);
@@ -63,7 +54,6 @@ pub fn run_stats() -> Result<()> {
     Ok(())
 }
 
-/// `rude symbols` — list symbols matching filters.
 pub fn run_symbols(
     name: Option<String>,
     kind: Option<String>,
@@ -110,9 +100,6 @@ pub fn run_symbols(
     Ok(())
 }
 
-/// Check if a string looks like a file path rather than a symbol name.
-///
-/// Heuristic: contains a known source file extension or path separator.
 fn looks_like_file_path(s: &str) -> bool {
     const EXTENSIONS: &[&str] = &[
         ".rs", ".go", ".py", ".js", ".ts", ".tsx", ".jsx",
@@ -122,7 +109,6 @@ fn looks_like_file_path(s: &str) -> bool {
     EXTENSIONS.iter().any(|ext| s.ends_with(ext)) || s.contains('/')
 }
 
-/// If the symbol search matched any trait, print its implementations.
 fn print_trait_impls_if_relevant(name: Option<&str>) -> Result<()> {
     let name = match name {
         Some(n) => n,
@@ -149,7 +135,6 @@ fn print_trait_impls_if_relevant(name: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// `rude context <symbol> --depth N`
 pub fn run_context(
     symbol: String,
     depth: u32,
@@ -259,9 +244,6 @@ pub fn run_context(
 
     Ok(())
 }
-
-
-/// Shared tree-mode implementation used by both `context --tree` and `jump`.
 fn run_context_tree(symbol: &str, depth: u32, include_tests: bool) -> Result<()> {
     use rude_intel::jump;
 
@@ -276,9 +258,6 @@ fn run_context_tree(symbol: &str, depth: u32, include_tests: bool) -> Result<()>
 
     Ok(())
 }
-
-
-/// Common blast output: filter → build tagged → print header → print file-grouped.
 fn print_blast_result(
     all_entries: Vec<impact::BfsEntry>,
     graph: &graph::CallGraph,
@@ -295,7 +274,6 @@ fn print_blast_result(
     print_file_grouped(graph, &tagged, false, alias_map);
 }
 
-/// Build `TaggedEntry` list from a `ContextResult` for normal (non-blast) context output.
 fn build_context_entries(
     result: &rude_intel::context_cmd::ContextResult,
     graph: &graph::CallGraph,
@@ -326,7 +304,6 @@ fn build_context_entries(
     entries
 }
 
-/// Count prod/test callers in `all_entries`, skipping depth-0 seeds.
 fn count_prod_test(all_entries: &[impact::BfsEntry]) -> (usize, usize) {
     let mut prod = 0usize;
     let mut test = 0usize;
@@ -337,8 +314,6 @@ fn count_prod_test(all_entries: &[impact::BfsEntry]) -> (usize, usize) {
     (prod, test)
 }
 
-/// Build `TaggedEntry` list for blast output.
-/// When `field_chunks` is `Some`, entries whose `idx` is in the set get tag `"field"`.
 fn build_blast_tagged(entries: &[impact::BfsEntry], field_chunks: Option<&[u32]>) -> Vec<TaggedEntry> {
     entries.iter().map(|e| {
         let tag = if let Some(fc) = field_chunks {
@@ -360,8 +335,6 @@ fn depth_tag(depth: u32) -> &'static str {
     }
 }
 
-/// Resolve a symbol name to graph indices, printing a message if not found.
-/// Returns `None` (and prints) when resolution yields no results.
 fn resolve_symbol(graph: &graph::CallGraph, symbol: &str) -> Option<Vec<u32>> {
     let seeds = graph.resolve(symbol);
     if seeds.is_empty() {
@@ -398,7 +371,6 @@ fn filter_scope_entries(
     }
 }
 
-/// `rude trace <from> <to>`
 pub fn run_trace(
     from: String,
     to: String,
@@ -421,15 +393,10 @@ pub fn run_trace(
     Ok(())
 }
 
-/// Format an optional scope label for header output.
 #[inline]
 fn fmt_scope(scope: &Option<String>) -> String {
     scope.as_ref().map_or(String::new(), |s| format!(" (scope: {s})"))
 }
-
-// ── Internal helpers ─────────────────────────────────────────────────────
-
-/// Shared runner for chunk-filter commands (symbols).
 fn run_chunk_query(
     filter: impl Fn(&ParsedChunk) -> bool,
     empty_msg: &str,
@@ -458,19 +425,13 @@ fn run_chunk_query(
     }
     Ok(())
 }
-
-// ── File-grouped output (shared by context, blast) ──────────────────────
-
-/// A tagged graph entry: index + role tag + whether to show signature.
 struct TaggedEntry {
     idx: u32,
     tag: &'static str,
     sig: bool,
-    /// Source line where this entry calls/is-called-by the seed (0 = unknown).
     call_line: u32,
 }
 
-/// Print entries grouped by file, with multi-base path aliases.
 fn print_file_grouped(
     graph: &graph::CallGraph,
     entries: &[TaggedEntry],
@@ -542,7 +503,6 @@ fn print_file_grouped(
     }
 }
 
-/// Read and print source lines from a file.
 fn print_source_lines(file_path: &str, start: usize, end: usize) {
     let Ok(content) = std::fs::read_to_string(file_path) else {
         return;
@@ -580,9 +540,6 @@ fn print_trace_path(
     }
     println!();
 }
-
-
-/// Print chunks grouped by file with path aliases.
 fn print_grouped(
     chunks: &[&ParsedChunk],
     compact: bool,

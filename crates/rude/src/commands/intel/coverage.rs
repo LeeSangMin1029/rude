@@ -1,4 +1,3 @@
-//! `rude coverage` — test coverage via `cargo llvm-cov` with call-graph supplement.
 
 use anyhow::Result;
 
@@ -67,9 +66,6 @@ pub fn run_coverage(
 
     Ok(())
 }
-
-// ── llvm-cov integration ─────────────────────────────────────────────────
-
 struct LlvmCovResult {
     fn_total: usize,
     fn_covered: usize,

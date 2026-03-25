@@ -1,9 +1,3 @@
-//! SQLite-based storage engine for rude.
-//!
-//! Replaces the mmap + WAL + file-based payload store from v-hnsw-storage
-//! with a single SQLite database. API is kept similar so callers only need
-//! to change their import paths.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -12,21 +6,12 @@ use rusqlite::{Connection, params};
 use crate::payload::{Payload, PayloadValue};
 use crate::payload_store::PayloadStore;
 
-/// SQLite-backed storage engine.
-///
-/// The database file lives at `<dir>/store.db`. SQLite WAL mode provides
-/// single-writer + multi-reader concurrency automatically.
 pub struct StorageEngine {
     conn: Connection,
     dir: PathBuf,
 }
 
 impl StorageEngine {
-    // ------------------------------------------------------------------
-    // Open / create
-    // ------------------------------------------------------------------
-
-    /// Open an existing database in read-write mode (no exclusive lock).
     pub fn open(dir: impl AsRef<Path>) -> Result<Self> {
         let dir = dir.as_ref().to_path_buf();
         let db_path = dir.join("store.db");
@@ -36,9 +21,6 @@ impl StorageEngine {
         Self::open_impl(dir, false)
     }
 
-    /// Open (or create) a database with schema initialization.
-    ///
-    /// SQLite WAL mode handles write exclusivity automatically.
     pub fn open_exclusive(dir: impl AsRef<Path>) -> Result<Self> {
         let dir = dir.as_ref().to_path_buf();
         std::fs::create_dir_all(&dir)
@@ -46,7 +28,6 @@ impl StorageEngine {
         Self::open_impl(dir, true)
     }
 
-    /// Internal: open the SQLite connection, apply pragmas, and optionally initialize schema.
     fn open_impl(dir: PathBuf, init_schema: bool) -> Result<Self> {
         let db_path = dir.join("store.db");
         let conn = Connection::open(&db_path)
@@ -58,7 +39,6 @@ impl StorageEngine {
         Ok(Self { conn, dir })
     }
 
-    /// Apply performance-oriented PRAGMAs.
     fn apply_pragmas(conn: &Connection) -> Result<()> {
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
@@ -72,7 +52,6 @@ impl StorageEngine {
         Ok(())
     }
 
-    /// Create tables if they don't exist yet.
     fn ensure_schema(conn: &Connection) -> Result<()> {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS chunks (
@@ -105,18 +84,10 @@ impl StorageEngine {
         Ok(())
     }
 
-    /// Acquire a blocking exclusive lock on the database directory.
-    // ------------------------------------------------------------------
-    // Write operations
-    // ------------------------------------------------------------------
-
-    /// Insert a chunk (id, payload, text). No vector argument — vectors
-    /// are handled externally in rude.
     pub fn insert(&mut self, id: u64, payload: &Payload, text: &str) -> Result<()> {
         self.insert_batch(&[(id, payload.clone(), text)])
     }
 
-    /// Insert a batch of chunks inside a single transaction.
     pub fn insert_batch(&mut self, batch: &[(u64, Payload, &str)]) -> Result<()> {
         if batch.is_empty() {
             return Ok(());
@@ -159,7 +130,6 @@ impl StorageEngine {
         Ok(())
     }
 
-    /// Remove a point and all associated data.
     pub fn remove(&mut self, id: u64) -> Result<()> {
         self.conn
             .execute("DELETE FROM chunks WHERE id = ?1", params![id as i64])
@@ -167,11 +137,6 @@ impl StorageEngine {
         Ok(())
     }
 
-    // ------------------------------------------------------------------
-    // Read operations
-    // ------------------------------------------------------------------
-
-    /// Get payload for a point.
     pub fn get_payload(&self, id: u64) -> Result<Option<Payload>> {
         let mut stmt = self
             .conn
@@ -198,7 +163,6 @@ impl StorageEngine {
         row.map(|r| Self::row_to_payload(&r)).transpose()
     }
 
-    /// Get text for a point.
     pub fn get_text(&self, id: u64) -> Result<Option<String>> {
         let mut stmt = self
             .conn
@@ -209,9 +173,6 @@ impl StorageEngine {
             .context("failed to query text")
     }
 
-    /// Iterate all chunks: returns `(id, payload, text)` tuples.
-    ///
-    /// Used for `load_chunks_from_db` equivalent.
     pub fn iter_all(&self) -> Result<Vec<(u64, Payload, String)>> {
         let mut stmt = self
             .conn
@@ -250,7 +211,6 @@ impl StorageEngine {
         Ok(result)
     }
 
-    /// Get all stored point IDs sorted.
     pub fn all_ids(&self) -> Result<Vec<u64>> {
         let mut stmt = self
             .conn
@@ -269,10 +229,6 @@ impl StorageEngine {
         Ok(ids)
     }
 
-    // ------------------------------------------------------------------
-    // Checkpoint / maintenance
-    // ------------------------------------------------------------------
-
     /// WAL checkpoint — forces SQLite to merge the WAL into the main DB file.
     pub fn checkpoint(&self) -> Result<()> {
         self.conn
@@ -281,29 +237,18 @@ impl StorageEngine {
         Ok(())
     }
 
-    /// Database directory path.
     pub fn dir(&self) -> &Path {
         &self.dir
     }
 
-    /// Access the raw connection for advanced queries.
     pub fn connection(&self) -> &Connection {
         &self.conn
     }
 
-    /// Return self as a `PayloadStore` reference.
-    ///
-    /// Mirrors the v-hnsw-storage `payload_store()` API so callers can
-    /// pass `engine.payload_store()` to generic code.
     pub fn payload_store(&self) -> &dyn PayloadStore {
         self
     }
 
-    // ------------------------------------------------------------------
-    // Internal helpers
-    // ------------------------------------------------------------------
-
-    /// Execute a prepared statement with `params` and return the first mapped row, if any.
     fn query_first<T, P, F>(
         stmt: &mut rusqlite::CachedStatement<'_>,
         params: P,
@@ -338,11 +283,7 @@ impl StorageEngine {
     }
 }
 
-// StorageEngine is not Send+Sync (rusqlite::Connection is !Send),
-// so we provide a blanket impl only where the trait bound is met.
-// For single-threaded use, callers can use StorageEngine methods directly.
-// For PayloadStore trait usage across threads, wrap in a Mutex.
-
+// rusqlite::Connection is !Send, so for PayloadStore trait usage across threads, wrap in a Mutex.
 impl PayloadStore for StorageEngine {
     fn get_payload(&self, id: u64) -> Result<Option<Payload>> {
         self.get_payload(id)
@@ -353,7 +294,6 @@ impl PayloadStore for StorageEngine {
     }
 }
 
-/// Intermediate struct for reading payload columns from SQLite.
 struct PayloadRow {
     source: String,
     tags_json: String,

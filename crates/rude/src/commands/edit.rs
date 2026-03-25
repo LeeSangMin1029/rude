@@ -7,20 +7,15 @@ use fs2::FileExt;
 use rude_intel::loader::load_chunks;
 use rude_intel::parse::ParsedChunk;
 
-// ── Types ───────────────────────────────────────────────────────────
-
 pub(crate) struct SymbolLocation {
     pub(crate) abs_path: PathBuf,
     pub(crate) rel_path: String,
-    pub(crate) start_line: usize, // 0-based
-    pub(crate) end_line: usize,   // 0-based inclusive
+    pub(crate) start_line: usize,
+    pub(crate) end_line: usize,
 }
 
 pub enum Op<'a> { Replace(&'a str), Before(&'a str), After(&'a str), Delete }
 
-// ── Core: symbol-based editing ──────────────────────────────────────
-
-/// All symbol edits: locate → splice → write. One locked pass, no line drift.
 pub fn apply_edits(ops: &[(&str, Op)], file: Option<&str>) -> Result<()> {
     let db = crate::db();
     if ops.is_empty() { return Ok(()); }
@@ -48,9 +43,6 @@ pub fn apply_edits(ops: &[(&str, Op)], file: Option<&str>) -> Result<()> {
     })
 }
 
-// ── Core: line-based editing ────────────────────────────────────────
-
-/// Insert content at a line number (1-based).
 pub fn insert_at(file: String, line: usize, body: String) -> Result<()> {
     check_line(line)?;
     let (abs, rel) = resolve_path(crate::db(), &file)?;
@@ -63,7 +55,6 @@ pub fn insert_at(file: String, line: usize, body: String) -> Result<()> {
     })
 }
 
-/// Delete a line range (1-based inclusive).
 pub fn delete_lines(file: String, start: usize, end: usize) -> Result<()> {
     check_range(start, end)?;
     let (abs, rel) = resolve_path(crate::db(), &file)?;
@@ -75,7 +66,6 @@ pub fn delete_lines(file: String, start: usize, end: usize) -> Result<()> {
     })
 }
 
-/// Replace a line range (1-based inclusive) with new content.
 pub fn replace_lines(file: String, start: usize, end: usize, body: String) -> Result<()> {
     check_range(start, end)?;
     let (abs, rel) = resolve_path(crate::db(), &file)?;
@@ -86,7 +76,6 @@ pub fn replace_lines(file: String, start: usize, end: usize, body: String) -> Re
     })
 }
 
-/// Create a new file at a project-relative path.
 pub fn create_file(file: String, body: String) -> Result<()> {
     let root = rude_intel::helpers::find_project_root(crate::db())
         .context("Cannot determine project root")?;
@@ -98,9 +87,6 @@ pub fn create_file(file: String, body: String) -> Result<()> {
     Ok(())
 }
 
-// ── Splice engine ───────────────────────────────────────────────────
-
-/// Locked read-modify-write. Returns lines for splicing.
 fn splice_file(path: &Path, f: impl FnOnce(&mut Vec<String>)) -> Result<()> {
     locked_edit(path, |content| {
         let mut lines: Vec<String> = content.lines().map(String::from).collect();
@@ -111,7 +97,6 @@ fn splice_file(path: &Path, f: impl FnOnce(&mut Vec<String>)) -> Result<()> {
     })
 }
 
-/// Compute (drain_range, replacement) for a symbol Op.
 fn op_to_splice<'a>(start: usize, end: usize, op: &'a Op, len: usize) -> (std::ops::Range<usize>, Vec<&'a str>) {
     match op {
         Op::Replace(b) => {
@@ -143,8 +128,6 @@ fn op_label(op: &Op, start: usize, end: usize) -> String {
     }
 }
 
-// ── Shared utilities ────────────────────────────────────────────────
-
 pub(crate) fn locate_symbol(db: &Path, symbol: &str, file_hint: Option<&str>) -> Result<SymbolLocation> {
     let chunks = load_chunks(db)?;
 
@@ -157,7 +140,6 @@ pub(crate) fn locate_symbol(db: &Path, symbol: &str, file_hint: Option<&str>) ->
     }
 
     let mut candidates: Vec<usize> = idx.get(symbol).cloned().unwrap_or_default();
-    // Fallback: intermediate path (e.g. "MirEdgeMap::from_dir")
     if candidates.is_empty() && symbol.contains("::") {
         for (i, c) in chunks.iter().enumerate() {
             if c.name.ends_with(&format!("::{symbol}")) { candidates.push(i); }
@@ -190,7 +172,7 @@ pub(crate) fn locate_symbol(db: &Path, symbol: &str, file_hint: Option<&str>) ->
     let mut end = end_1.saturating_sub(1);
     if end >= lines.len() { bail!("L{start_1}-{end_1} exceeds file ({} lines)", lines.len()); }
 
-    // Extend upward: doc comments + attributes (not #[test])
+    // Extend upward to include doc comments and attributes (excluding #[test]).
     while start > 0 {
         let p = lines[start - 1].trim();
         if p.starts_with("///") || p.starts_with("//!")
@@ -198,7 +180,6 @@ pub(crate) fn locate_symbol(db: &Path, symbol: &str, file_hint: Option<&str>) ->
             || p.starts_with("#![") || p.starts_with("/** ") || p.starts_with("* ") || p == "*/"
         { start -= 1; } else { break; }
     }
-    // Extend downward: find matching closing brace
     if (start..=end).any(|i| lines[i].contains('{'))
         && !(start..=end).any(|i| lines[i].contains('}'))
     {
@@ -288,8 +269,6 @@ fn check_range(start: usize, end: usize) -> Result<()> {
     Ok(())
 }
 
-// ── Split command ────────────────────────────────────────────────────
-
 fn is_header_line(t: &str) -> bool {
     t.is_empty()
         || t.starts_with("use ")
@@ -302,7 +281,6 @@ fn is_header_line(t: &str) -> bool {
         || t.starts_with("extern ")
 }
 
-/// Extract use/import lines from the top of a file.
 fn extract_use_lines(content: &str) -> Vec<String> {
     let mut uses = Vec::new();
     for line in content.lines() {
@@ -411,13 +389,11 @@ fn insert_mod_decl(path: &std::path::Path, mod_decl: &str, module_name: &str) ->
     })
 }
 
-/// Split symbols from a source file into a new module file.
 pub fn split(symbols: String, to: String, dry_run: bool) -> Result<()> {
     let db = crate::db();
     let symbol_names: Vec<&str> = symbols.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
     if symbol_names.is_empty() { bail!("--symbols must contain at least one symbol name"); }
 
-    // Locate all symbols — all must be in the same source file.
     let locs: Vec<SymbolLocation> = symbol_names.iter()
         .map(|&s| locate_symbol(&db, s, None))
         .collect::<Result<_>>()?;
@@ -445,7 +421,6 @@ pub fn split(symbols: String, to: String, dry_run: bool) -> Result<()> {
         }
     }
 
-    // Build new file: use lines + symbol blocks.
     let mut parts: Vec<String> = Vec::new();
     if !use_lines.is_empty() { parts.extend(use_lines); parts.push(String::new()); }
     for (i, &(start, end, _)) in ranges.iter().enumerate() {
@@ -466,7 +441,6 @@ pub fn split(symbols: String, to: String, dry_run: bool) -> Result<()> {
         return Ok(());
     }
 
-    // Write new file.
     let root = rude_intel::helpers::find_project_root(&db)
         .context("Cannot determine project root from DB path")?;
     let target_path = root.join(&to);
@@ -481,11 +455,9 @@ pub fn split(symbols: String, to: String, dry_run: bool) -> Result<()> {
         .with_context(|| format!("Failed to write {}", target_path.display()))?;
     eprintln!("Created {} ({} line(s))", to, new_file_content.lines().count());
 
-    // Delete symbols from source.
     let ops: Vec<(&str, Op)> = symbol_names.iter().map(|&s| (s, Op::Delete)).collect();
     apply_edits(&ops, None)?;
 
-    // Insert re-export and mod declaration.
     insert_reexport(source_path, &reexport_line)?;
     eprintln!("Inserted re-export: {}", reexport_line);
 

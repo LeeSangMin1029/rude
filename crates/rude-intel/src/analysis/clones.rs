@@ -1,5 +1,3 @@
-//! Clone detection: AST hash (structural) + MinHash Jaccard (token-based near-dup).
-//! Modes: single-signal fast path, or unified pipeline (Filter → Verify → Score).
 
 use std::collections::{HashMap, HashSet};
 
@@ -8,20 +6,17 @@ use rayon::prelude::*;
 use crate::data::minhash;
 use rude_db::{PayloadStore, PayloadValue, StorageEngine};
 
-/// Which detection stages to enable.
 pub struct RunStages {
     pub ast: bool,
     pub minhash: bool,
 }
 
-/// A pair of duplicate chunks with similarity score.
 pub struct DupePair {
     pub id_a: u64,
     pub id_b: u64,
     pub similarity: f32,
 }
 
-/// Result of the unified multi-signal pipeline.
 pub struct UnifiedDupePair {
     pub id_a: u64,
     pub id_b: u64,
@@ -40,7 +35,6 @@ impl UnifiedDupePair {
     }
 }
 
-/// A pair of sub-blocks from different chunks that share the same AST hash.
 pub struct SubBlockClone {
     pub chunk_id_a: u64,
     pub chunk_id_b: u64,
@@ -51,16 +45,13 @@ pub struct SubBlockClone {
     pub body_match: bool,
 }
 
-/// Combined results from the clone detection pipeline.
 pub struct CloneResults {
     pub simple_pairs: Vec<DupePair>,
     pub unified_pairs: Vec<UnifiedDupePair>,
     pub sub_block_clones: Vec<SubBlockClone>,
-    /// Hash-based groups: (hash, Vec<member_ids>).
     pub hash_groups: Vec<(u64, Vec<u64>)>,
 }
 
-/// Collect candidate IDs from the vector store, applying test/line filters.
 pub fn collect_filtered_ids(
     engine: &StorageEngine,
     pstore: &(impl PayloadStore + ?Sized),
@@ -77,7 +68,6 @@ pub fn collect_filtered_ids(
     ids
 }
 
-/// Find clone groups by AST hash, sorted by size desc, truncated to `k`.
 pub fn find_hash_groups(
     pstore: &(impl PayloadStore + ?Sized),
     candidate_ids: &[u64],
@@ -95,7 +85,6 @@ pub fn find_hash_groups(
     groups
 }
 
-/// Find duplicate pairs by MinHash Jaccard similarity, sorted desc, truncated to `k`.
 pub fn find_minhash_pairs(
     pstore: &(impl PayloadStore + ?Sized),
     candidate_ids: &[u64],
@@ -108,9 +97,6 @@ pub fn find_minhash_pairs(
     finalize_pairs(&mut pairs, pstore, k);
     pairs
 }
-
-
-/// Run the full unified pipeline (Filter → Verify → Score); returns `(unified_pairs, sub_block_clones)`.
 pub fn run_unified_pipeline(
     _engine: &StorageEngine,
     pstore: &(impl PayloadStore + ?Sized),
@@ -200,7 +186,6 @@ fn stage1_minhash(
     candidates.extend(pairs.into_iter().map(|p| canonical_pair(p.id_a, p.id_b)));
 }
 
-/// Parse `sub_block_hashes` payload entries.
 fn parse_sub_block_entries(pstore: &(impl PayloadStore + ?Sized), id: u64) -> Vec<(u64, usize, usize)> {
     let Some(payload) = pstore.get_payload(id).ok().flatten() else { return Vec::new() };
     let Some(PayloadValue::StringList(hashes)) = payload.custom.get("sub_block_hashes") else { return Vec::new() };
@@ -211,7 +196,6 @@ fn parse_sub_block_entries(pstore: &(impl PayloadStore + ?Sized), id: u64) -> Ve
     }).collect()
 }
 
-/// Build `id → (source_file, start_line, end_line)` map.
 fn build_chunk_ranges(
     pstore: &(impl PayloadStore + ?Sized),
     ids: &[u64],
@@ -221,7 +205,6 @@ fn build_chunk_ranges(
         .collect()
 }
 
-/// Find sub-block clones across all candidate chunks.
 fn find_sub_block_clones(
     pstore: &(impl PayloadStore + ?Sized),
     candidate_ids: &[u64],
@@ -271,7 +254,6 @@ fn find_sub_block_clones(
     clones
 }
 
-/// Returns the index of the parent (larger) chunk to remove, or `None` if no containment.
 fn containment_remove_idx(
     ranges: &HashMap<u64, (String, i64, i64)>,
     id_a: u64, i: usize,
@@ -285,13 +267,11 @@ fn containment_remove_idx(
     else { None }
 }
 
-/// Check if one chunk fully contains the other (same file, line range containment).
 #[inline]
 fn chunk_contains(ranges: &HashMap<u64, (String, i64, i64)>, id_a: u64, id_b: u64) -> bool {
     containment_remove_idx(ranges, id_a, 0, id_b, 1).is_some()
 }
 
-/// Remove parent-chunk entries, keeping only the most-specific (smallest) child per file+block.
 fn deduplicate_contained_entries(
     entries: &mut Vec<(u64, usize, usize)>,
     ranges: &HashMap<u64, (String, i64, i64)>,
@@ -313,7 +293,6 @@ fn deduplicate_contained_entries(
     for &idx in to_remove.iter().rev() { entries.swap_remove(idx); }
 }
 
-/// Payload-based test detection — uses shared `is_test_path` + first-line `[test]` marker.
 fn is_test_chunk(pstore: &(impl PayloadStore + ?Sized), id: u64) -> bool {
     let Some(payload) = pstore.get_payload(id).ok().flatten() else { return false };
     if crate::graph::is_test_path(&payload.source) { return true; }
