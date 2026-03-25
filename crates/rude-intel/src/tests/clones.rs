@@ -39,7 +39,7 @@ fn ranges_single_point_overlap() {
 #[test]
 fn tag_ast_only() {
     let pair = UnifiedDupePair {
-        id_a: 1, id_b: 2, score: 1.0, jaccard: 0.3, ast_match: true,
+        idx_a: 1, idx_b: 2, score: 1.0, jaccard: 0.3, ast_match: true,
     };
     assert_eq!(pair.tag(), "AST");
 }
@@ -47,7 +47,7 @@ fn tag_ast_only() {
 #[test]
 fn tag_token_only() {
     let pair = UnifiedDupePair {
-        id_a: 1, id_b: 2, score: 0.8, jaccard: 0.7, ast_match: false,
+        idx_a: 1, idx_b: 2, score: 0.8, jaccard: 0.7, ast_match: false,
     };
     assert_eq!(pair.tag(), "Token");
 }
@@ -55,7 +55,7 @@ fn tag_token_only() {
 #[test]
 fn tag_ast_plus_token() {
     let pair = UnifiedDupePair {
-        id_a: 1, id_b: 2, score: 1.0, jaccard: 0.9, ast_match: true,
+        idx_a: 1, idx_b: 2, score: 1.0, jaccard: 0.9, ast_match: true,
     };
     assert_eq!(pair.tag(), "AST+Token");
 }
@@ -63,7 +63,7 @@ fn tag_ast_plus_token() {
 #[test]
 fn tag_weak() {
     let pair = UnifiedDupePair {
-        id_a: 1, id_b: 2, score: 0.2, jaccard: 0.1, ast_match: false,
+        idx_a: 1, idx_b: 2, score: 0.2, jaccard: 0.1, ast_match: false,
     };
     assert_eq!(pair.tag(), "Weak");
 }

@@ -36,53 +36,35 @@ pub struct ParsedChunk {
     pub text: String,
     #[serde(default)]
     pub chunk_index: usize,
+    #[serde(default)]
+    pub minhash: Option<String>,
 }
 
 impl ParsedChunk {
-    /// Build custom payload fields for DB storage (replaces CodeChunk::to_custom_fields).
+    /// Compute minhash from text and store it in the `minhash` field.
+    pub fn compute_minhash(&mut self) {
+        let tokens = crate::minhash::code_tokens(&self.text);
+        if tokens.len() >= 10 {
+            self.minhash = Some(crate::minhash::minhash_to_hex(
+                &crate::minhash::minhash_signature(&tokens, crate::minhash::MINHASH_K),
+            ));
+        }
+    }
+
+    /// Build custom payload fields for DB storage.
+    /// Most chunk data is read from graph.chunks (cached), so only
+    /// `called_by` and `minhash` are stored in the DB custom map.
     pub fn to_custom_fields(&self, called_by: &[String]) -> std::collections::HashMap<String, rude_db::PayloadValue> {
         use rude_db::PayloadValue;
         use std::collections::HashMap;
 
-        fn ins_list(m: &mut HashMap<String, PayloadValue>, key: &str, v: Vec<String>) {
-            if !v.is_empty() { m.insert(key.to_owned(), PayloadValue::StringList(v)); }
-        }
-        fn ins_str(m: &mut HashMap<String, PayloadValue>, key: &str, v: String) {
-            m.insert(key.to_owned(), PayloadValue::String(v));
-        }
-
         let mut c = HashMap::new();
 
-        ins_str(&mut c, "kind",       self.kind.clone());
-        ins_str(&mut c, "name",       self.name.clone());
-        ins_str(&mut c, "visibility", self.visibility.clone());
-
-        if let Some((s, _e)) = self.lines {
-            c.insert("start_line".to_owned(), PayloadValue::Integer(s as i64));
+        if !called_by.is_empty() {
+            c.insert("called_by".to_owned(), PayloadValue::StringList(called_by.to_vec()));
         }
-        if let Some((_s, e)) = self.lines {
-            c.insert("end_line".to_owned(), PayloadValue::Integer(e as i64));
-        }
-
-        if let Some(ref s) = self.signature   { ins_str(&mut c, "signature",    s.clone()); }
-        if let Some(ref r) = self.return_type  { ins_str(&mut c, "return_type",  r.clone()); }
-
-        ins_list(&mut c, "calls",     self.calls.clone());
-        ins_list(&mut c, "imports",   self.imports.clone());
-        ins_list(&mut c, "called_by", called_by.to_vec());
-        ins_list(&mut c, "type_refs", self.types.clone());
-        ins_list(&mut c, "string_args",
-            self.string_args.iter().map(|(cl, v, l, p)| format!("{cl}\t{v}\t{l}\t{p}")).collect());
-        ins_list(&mut c, "param_flows",
-            self.param_flows.iter().map(|(pn, pp, cl, ca, l)| format!("{pn}\t{pp}\t{cl}\t{ca}\t{l}")).collect());
-        ins_list(&mut c, "local_types",
-            self.local_types.iter().map(|(n, t)| format!("{n}\t{t}")).collect());
-
-        let tokens = crate::minhash::code_tokens(&self.text);
-        if tokens.len() >= 10 {
-            ins_str(&mut c, "minhash", crate::minhash::minhash_to_hex(
-                &crate::minhash::minhash_signature(&tokens, crate::minhash::MINHASH_K),
-            ));
+        if let Some(ref mh) = self.minhash {
+            c.insert("minhash".to_owned(), PayloadValue::String(mh.clone()));
         }
 
         c

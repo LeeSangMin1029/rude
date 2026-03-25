@@ -265,86 +265,34 @@ pub(crate) fn ingest_mir(
             let id = generate_id(&source, idx);
             chunk_ids.push(id);
 
-            let body_text = if mc.body.is_empty() {
+            let mut parsed_chunk = mc.to_parsed();
+            parsed_chunk.file = normalized_file.clone();
+            parsed_chunk.chunk_index = idx;
+
+            if parsed_chunk.text.is_empty() {
                 if let Some(ref lines) = file_lines {
                     let start = mc.start_line.saturating_sub(1);
                     let end = mc.end_line.min(lines.len());
-                    if start < end {
-                        lines[start..end].join("\n")
-                    } else {
-                        String::new()
-                    }
-                } else {
-                    String::new()
+                    if start < end { parsed_chunk.text = lines[start..end].join("\n"); }
                 }
-            } else {
-                mc.body.clone()
-            };
+            }
 
-            let (calls, call_lines) = rude_intel::mir_edges::parse_calls_field(&mc.calls);
+            if parsed_chunk.signature.is_none() {
+                parsed_chunk.signature = parsed_chunk.text.lines().next()
+                    .and_then(|l| { let s = l.split('{').next()?.trim(); (!s.is_empty()).then(|| s.to_owned()) });
+            }
 
-            let kind = match mc.kind.as_str() {
-                "fn" | "method" => "function",
-                other => other,
-            }.to_owned();
+            let chunk_lines_vec: Vec<&str> = parsed_chunk.text.lines().collect();
+            parsed_chunk.param_types = parse_param_types(parsed_chunk.signature.as_deref());
+            parsed_chunk.return_type = parse_return_type(parsed_chunk.signature.as_deref());
+            if parsed_chunk.kind == "struct" { parsed_chunk.field_types = parse_field_types(&chunk_lines_vec); }
+            if parsed_chunk.kind == "enum" { parsed_chunk.enum_variants = parse_enum_variants(&chunk_lines_vec); }
 
-            let type_refs: Vec<String> = if mc.type_refs.is_empty() {
-                Vec::new()
-            } else {
-                mc.type_refs.split(", ").map(|s| s.to_owned()).collect()
-            };
-
-            let chunk_lines_vec: Vec<&str> = body_text.lines().collect();
-
-            // Fallback to first line of body when MIR signature is absent.
-            let signature = mc.signature.clone().or_else(|| {
-                let first = chunk_lines_vec.first()?;
-                let sig_line = first.split('{').next()?.trim();
-                if sig_line.is_empty() { None } else { Some(sig_line.to_owned()) }
-            });
-
-            let param_types = parse_param_types(signature.as_deref());
-            let return_type = parse_return_type(signature.as_deref());
-            let field_types = if kind == "struct" {
-                parse_field_types(&chunk_lines_vec)
-            } else {
-                Vec::new()
-            };
-            let enum_variants = if kind == "enum" {
-                parse_enum_variants(&chunk_lines_vec)
-            } else {
-                Vec::new()
-            };
-
-            let visibility = mc.visibility.clone().unwrap_or_else(|| {
+            if parsed_chunk.visibility.is_empty() {
                 let fl = chunk_lines_vec.first().map(|l| l.trim()).unwrap_or("");
-                ["pub(crate)", "pub(super)", "pub"].iter()
-                    .find(|p| fl.starts_with(**p))
-                    .map(|p| (*p).to_owned())
-                    .unwrap_or_default()
-            });
-
-            let is_test = mc.is_test;
-
-            let parsed_chunk = ParsedChunk {
-                kind,
-                name: mc.name.clone(),
-                file: normalized_file.clone(),
-                lines: Some((mc.start_line, mc.end_line)),
-                signature,
-                calls,
-                call_lines,
-                types: type_refs,
-                visibility,
-                text: body_text,
-                chunk_index: idx,
-                param_types,
-                field_types,
-                return_type,
-                enum_variants,
-                is_test,
-                ..Default::default()
-            };
+                parsed_chunk.visibility = ["pub(crate)", "pub(super)", "pub"].iter()
+                    .find(|p| fl.starts_with(**p)).map(|p| (*p).to_owned()).unwrap_or_default();
+            }
 
             entries.push(CodeChunkEntry {
                 chunk: parsed_chunk,

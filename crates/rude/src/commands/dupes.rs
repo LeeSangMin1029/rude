@@ -3,12 +3,12 @@
 
 use std::collections::HashMap;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Serialize;
-use rude_db::StorageEngine;
 use rude_intel::clones::{
     self, DupePair, RunStages, SubBlockClone, UnifiedDupePair,
 };
+use rude_intel::parse::ParsedChunk;
 
 pub struct DupesConfig {
     pub threshold: f32,
@@ -27,12 +27,14 @@ pub fn run(cfg: DupesConfig) -> Result<()> {
         threshold, exclude_tests, k, json,
         ast_mode, all_mode, min_lines, min_sub_lines, analyze,
     } = cfg;
-    let db = crate::db();
-    let engine = StorageEngine::open(db)
-        .with_context(|| format!("failed to open database at {}", db.display()))?;
-    let candidate_ids = clones::collect_filtered_ids(&engine, &engine, exclude_tests, min_lines);
 
-    let n = candidate_ids.len();
+    use super::intel::load_or_build_graph;
+    let graph = load_or_build_graph()?;
+    let chunks = &graph.chunks;
+
+    let candidate_indices = clones::collect_filtered_indices(chunks, exclude_tests, min_lines);
+
+    let n = candidate_indices.len();
     if n < 2 {
         println!("Not enough chunks for comparison ({n}).");
         return Ok(());
@@ -41,11 +43,11 @@ pub fn run(cfg: DupesConfig) -> Result<()> {
     let mut pair_names: Vec<(String, String)> = Vec::new();
 
     if ast_mode {
-        let groups = clones::find_hash_groups(&engine, &candidate_ids, "ast_hash", k);
+        let groups = clones::find_hash_groups(chunks, &candidate_indices, k);
         if json {
-            print_groups_json(&groups, &engine);
+            print_groups_json(&groups, chunks);
         } else {
-            print_groups_text(&groups, &engine);
+            print_groups_text(&groups, chunks);
         }
         return Ok(());
     }
@@ -60,18 +62,18 @@ pub fn run(cfg: DupesConfig) -> Result<()> {
 
     if !is_unified {
         eprintln!("Comparing {n} chunks (Jaccard threshold={threshold:.2})...");
-        let pairs = clones::find_minhash_pairs(&engine, &candidate_ids, threshold, k);
+        let pairs = clones::find_minhash_pairs(chunks, &candidate_indices, threshold, k);
 
         if json {
-            print_pairs_json(&pairs, &engine);
+            print_pairs_json(&pairs, chunks);
         } else {
-            print_pairs_text(&pairs, &engine);
+            print_pairs_text(&pairs, chunks);
         }
 
         if analyze {
             for p in &pairs {
-                let a = parse_label(&engine, p.id_a).name;
-                let b = parse_label(&engine, p.id_b).name;
+                let a = parse_label(chunks, p.idx_a).name;
+                let b = parse_label(chunks, p.idx_b).name;
                 pair_names.push((a, b));
             }
         }
@@ -79,52 +81,52 @@ pub fn run(cfg: DupesConfig) -> Result<()> {
         eprintln!("Unified pipeline: {n} chunks");
 
         let (unified_pairs, sub_clones) =
-            clones::run_unified_pipeline(&engine, &engine, &candidate_ids, threshold, k, &stages, min_sub_lines)?;
+            clones::run_unified_pipeline(chunks, &candidate_indices, threshold, k, &stages, min_sub_lines)?;
 
         if unified_pairs.is_empty() {
             println!("No duplicates found.");
         } else if json {
-            print_pairs_json(&unified_pairs, &engine);
+            print_pairs_json(&unified_pairs, chunks);
         } else {
-            print_pairs_text(&unified_pairs, &engine);
+            print_pairs_text(&unified_pairs, chunks);
         }
 
         if !sub_clones.is_empty() {
             let capped: Vec<_> = sub_clones.into_iter().take(k).collect();
             if json {
-                print_sub_block_json(&capped, &engine);
+                print_sub_block_json(&capped, chunks);
             } else {
-                print_sub_block_text(&capped, &engine);
+                print_sub_block_text(&capped, chunks);
             }
         }
 
         if analyze {
             for p in &unified_pairs {
-                let a = parse_label(&engine, p.id_a).name;
-                let b = parse_label(&engine, p.id_b).name;
+                let a = parse_label(chunks, p.idx_a).name;
+                let b = parse_label(chunks, p.idx_b).name;
                 pair_names.push((a, b));
             }
         }
     }
 
     if analyze && !pair_names.is_empty() {
-        run_analyze(&pair_names)?;
+        run_analyze(&pair_names, &graph)?;
     }
 
     Ok(())
 }
 
 trait DupePairLike {
-    fn id_a(&self) -> u64;
-    fn id_b(&self) -> u64;
+    fn idx_a(&self) -> usize;
+    fn idx_b(&self) -> usize;
     fn display_score(&self) -> f32;
     fn display_tag(&self) -> String { String::new() }
     fn to_json_value(&self, a: String, b: String) -> serde_json::Value;
 }
 
 impl DupePairLike for DupePair {
-    fn id_a(&self) -> u64 { self.id_a }
-    fn id_b(&self) -> u64 { self.id_b }
+    fn idx_a(&self) -> usize { self.idx_a }
+    fn idx_b(&self) -> usize { self.idx_b }
     fn display_score(&self) -> f32 { self.similarity }
     fn to_json_value(&self, a: String, b: String) -> serde_json::Value {
         serde_json::json!({ "a": a, "b": b, "sim": self.similarity })
@@ -132,8 +134,8 @@ impl DupePairLike for DupePair {
 }
 
 impl DupePairLike for UnifiedDupePair {
-    fn id_a(&self) -> u64 { self.id_a }
-    fn id_b(&self) -> u64 { self.id_b }
+    fn idx_a(&self) -> usize { self.idx_a }
+    fn idx_b(&self) -> usize { self.idx_b }
     fn display_score(&self) -> f32 { self.score }
     fn display_tag(&self) -> String { self.tag() }
     fn to_json_value(&self, a: String, b: String) -> serde_json::Value {
@@ -162,37 +164,30 @@ impl ChunkLabel {
     }
 }
 
-fn parse_label(pstore: &StorageEngine, id: u64) -> ChunkLabel {
-    let Some(payload) = pstore.get_payload(id).ok().flatten() else {
-        return ChunkLabel {
-            name: format!("id:{id}"),
-            file: String::new(),
-        };
+fn parse_label(chunks: &[ParsedChunk], idx: usize) -> ChunkLabel {
+    let c = &chunks[idx];
+    let name = if c.name.is_empty() {
+        format!("idx:{idx}")
+    } else {
+        c.name.clone()
     };
-    let name = match payload.custom.get("title") {
-        Some(rude_db::PayloadValue::String(s)) => s.clone(),
-        _ => match payload.custom.get("name") {
-            Some(rude_db::PayloadValue::String(s)) => s.clone(),
-            _ => format!("id:{id}"),
-        },
-    };
-    ChunkLabel { name, file: payload.source }
+    ChunkLabel { name, file: c.file.clone() }
 }
 
-fn label(pstore: &StorageEngine, id: u64) -> String {
-    parse_label(pstore, id).display()
+fn label(chunks: &[ParsedChunk], idx: usize) -> String {
+    parse_label(chunks, idx).display()
 }
 
 use rude_intel::helpers::{apply_alias, build_path_aliases};
 use rude_intel::parse::normalize_path;
 
 fn group_by_file(
-    ids: &[(u64, u64)],
-    pstore: &StorageEngine,
+    idx_pairs: &[(usize, usize)],
+    chunks: &[ParsedChunk],
 ) -> Vec<(String, Vec<GroupEntry>)> {
-    let labels: Vec<(ChunkLabel, ChunkLabel)> = ids
+    let labels: Vec<(ChunkLabel, ChunkLabel)> = idx_pairs
         .iter()
-        .map(|&(a, b)| (parse_label(pstore, a), parse_label(pstore, b)))
+        .map(|&(a, b)| (parse_label(chunks, a), parse_label(chunks, b)))
         .collect();
 
     let all_files: Vec<String> = labels
@@ -205,7 +200,7 @@ fn group_by_file(
     let mut by_file: Vec<(String, Vec<GroupEntry>)> = Vec::new();
     let mut file_index: HashMap<String, usize> = HashMap::new();
 
-    for (i, _) in ids.iter().enumerate() {
+    for (i, _) in idx_pairs.iter().enumerate() {
         let raw = &all_files[i * 2];
         let key = if raw.is_empty() { "(unknown)".to_owned() } else { apply_alias(raw, &alias_map) };
         let idx = *file_index.entry(key.clone()).or_insert_with(|| {
@@ -230,7 +225,7 @@ fn print_json<T: Serialize>(val: &T) {
 
 fn print_pairs_text(
     pairs: &[impl DupePairLike],
-    pstore: &StorageEngine,
+    chunks: &[ParsedChunk],
 ) {
     if pairs.is_empty() {
         println!("No duplicates found above threshold.");
@@ -238,8 +233,8 @@ fn print_pairs_text(
     }
     println!("{} duplicate pairs found:\n", pairs.len());
 
-    let ids: Vec<(u64, u64)> = pairs.iter().map(|p| (p.id_a(), p.id_b())).collect();
-    let groups = group_by_file(&ids, pstore);
+    let idx_pairs: Vec<(usize, usize)> = pairs.iter().map(|p| (p.idx_a(), p.idx_b())).collect();
+    let groups = group_by_file(&idx_pairs, chunks);
 
     for (file, entries) in &groups {
         println!("  {file} ({} pairs)", entries.len());
@@ -256,26 +251,25 @@ fn print_pairs_text(
     eprintln!("Tip: rude context <symbol>  to inspect.");
 }
 
-fn print_pairs_json(pairs: &[impl DupePairLike], pstore: &StorageEngine) {
+fn print_pairs_json(pairs: &[impl DupePairLike], chunks: &[ParsedChunk]) {
     let vals: Vec<_> = pairs.iter()
-        .map(|p| p.to_json_value(label(pstore, p.id_a()), label(pstore, p.id_b())))
+        .map(|p| p.to_json_value(label(chunks, p.idx_a()), label(chunks, p.idx_b())))
         .collect();
     print_json(&serde_json::json!({ "pairs": vals }));
 }
 
-fn print_groups_text(groups: &[(u64, Vec<u64>)], pstore: &StorageEngine) {
+fn print_groups_text(groups: &[(u64, Vec<usize>)], chunks: &[ParsedChunk]) {
     if groups.is_empty() {
         println!("No clones found.");
         return;
     }
     println!("{} clone groups found:\n", groups.len());
 
-    // Collect (group_num, hash, label) entries and all file paths for alias building.
     let entries_flat: Vec<(usize, u64, ChunkLabel)> = groups
         .iter()
         .enumerate()
-        .flat_map(|(gi, (hash, ids))| {
-            ids.iter().map(move |&id| (gi + 1, *hash, parse_label(pstore, id)))
+        .flat_map(|(gi, (hash, indices))| {
+            indices.iter().map(move |&idx| (gi + 1, *hash, parse_label(chunks, idx)))
         })
         .collect();
 
@@ -309,25 +303,25 @@ fn print_groups_text(groups: &[(u64, Vec<u64>)], pstore: &StorageEngine) {
     eprintln!("Tip: rude context <symbol>  to inspect.");
 }
 
-fn print_groups_json(groups: &[(u64, Vec<u64>)], pstore: &StorageEngine) {
+fn print_groups_json(groups: &[(u64, Vec<usize>)], chunks: &[ParsedChunk]) {
     #[derive(Serialize)]
     struct GroupJson { hash: String, members: Vec<String> }
     #[derive(Serialize)]
     struct Out { groups: Vec<GroupJson> }
     print_json(&Out {
-        groups: groups.iter().map(|(hash, ids)| GroupJson {
+        groups: groups.iter().map(|(hash, indices)| GroupJson {
             hash: format!("{hash:016x}"),
-            members: ids.iter().map(|&id| label(pstore, id)).collect(),
+            members: indices.iter().map(|&idx| label(chunks, idx)).collect(),
         }).collect(),
     });
 }
 
-fn print_sub_block_text(clones: &[SubBlockClone], pstore: &StorageEngine) {
+fn print_sub_block_text(clones: &[SubBlockClone], chunks: &[ParsedChunk]) {
     println!("\n{} sub-block clones (intra-function):\n", clones.len());
 
     let labels: Vec<(ChunkLabel, ChunkLabel)> = clones
         .iter()
-        .map(|c| (parse_label(pstore, c.chunk_id_a), parse_label(pstore, c.chunk_id_b)))
+        .map(|c| (parse_label(chunks, c.chunk_idx_a), parse_label(chunks, c.chunk_idx_b)))
         .collect();
     let all_files: Vec<String> = labels
         .iter()
@@ -348,27 +342,24 @@ fn print_sub_block_text(clones: &[SubBlockClone], pstore: &StorageEngine) {
     println!();
 }
 
-fn print_sub_block_json(clones: &[SubBlockClone], pstore: &StorageEngine) {
+fn print_sub_block_json(clones: &[SubBlockClone], chunks: &[ParsedChunk]) {
     #[derive(Serialize)]
     struct SubBlockJson { a: String, a_lines: [usize; 2], b: String, b_lines: [usize; 2], body_match: bool }
     #[derive(Serialize)]
     struct Out { sub_block_clones: Vec<SubBlockJson> }
     print_json(&Out {
         sub_block_clones: clones.iter().map(|c| SubBlockJson {
-            a: label(pstore, c.chunk_id_a),
+            a: label(chunks, c.chunk_idx_a),
             a_lines: [c.block_a_start + 1, c.block_a_end + 1],
-            b: label(pstore, c.chunk_id_b),
+            b: label(chunks, c.chunk_idx_b),
             b_lines: [c.block_b_start + 1, c.block_b_end + 1],
             body_match: c.body_match,
         }).collect(),
     });
 }
 
-fn run_analyze(pair_names: &[(String, String)]) -> Result<()> {
+fn run_analyze(pair_names: &[(String, String)], graph: &rude_intel::graph::CallGraph) -> Result<()> {
     use rude_intel::dupe_analyze;
-    use super::intel::load_or_build_graph;
-
-    let graph = load_or_build_graph()?;
 
     let mut resolved_pairs: Vec<(u32, u32, &str, &str)> = Vec::new();
     for (name_a, name_b) in pair_names {
@@ -384,7 +375,7 @@ fn run_analyze(pair_names: &[(String, String)]) -> Result<()> {
     }
 
     let idx_pairs: Vec<(u32, u32)> = resolved_pairs.iter().map(|&(a, b, _, _)| (a, b)).collect();
-    let analyses = dupe_analyze::analyze_pairs(&graph, &idx_pairs);
+    let analyses = dupe_analyze::analyze_pairs(graph, &idx_pairs);
 
     println!("\n=== Analysis ===\n");
 

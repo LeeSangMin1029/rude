@@ -126,60 +126,6 @@ impl StorageEngine {
         Ok(())
     }
 
-    pub fn get_payload(&self, id: u64) -> Result<Option<Payload>> {
-        let mut stmt = self
-            .conn
-            .prepare_cached(
-                "SELECT source, tags, custom, created_at, source_modified_at,
-                        chunk_index, chunk_total
-                 FROM chunks WHERE id = ?1",
-            )
-            .context("failed to prepare get_payload")?;
-
-        let row = Self::query_first(&mut stmt, params![id as i64], |row| {
-            Ok(PayloadRow {
-                source: row.get(0)?,
-                tags_json: row.get(1)?,
-                custom_json: row.get(2)?,
-                created_at: row.get(3)?,
-                source_modified_at: row.get(4)?,
-                chunk_index: row.get(5)?,
-                chunk_total: row.get(6)?,
-            })
-        })
-        .context("failed to query payload")?;
-
-        row.map(|r| Self::row_to_payload(&r)).transpose()
-    }
-
-    pub fn get_text(&self, id: u64) -> Result<Option<String>> {
-        let mut stmt = self
-            .conn
-            .prepare_cached("SELECT text FROM chunks WHERE id = ?1")
-            .context("failed to prepare get_text")?;
-
-        Self::query_first(&mut stmt, params![id as i64], |row| row.get(0))
-            .context("failed to query text")
-    }
-
-    pub fn all_ids(&self) -> Result<Vec<u64>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id FROM chunks ORDER BY id")
-            .context("failed to prepare all_ids")?;
-
-        let ids: Vec<u64> = stmt
-            .query_map([], |row| {
-                let id: i64 = row.get(0)?;
-                Ok(id as u64)
-            })
-            .context("failed to query all ids")?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        Ok(ids)
-    }
-
     /// WAL checkpoint — forces SQLite to merge the WAL into the main DB file.
     pub fn checkpoint(&self) -> Result<()> {
         self.conn
@@ -244,30 +190,4 @@ impl StorageEngine {
         }
     }
 
-    fn row_to_payload(row: &PayloadRow) -> Result<Payload> {
-        let tags: Vec<String> =
-            serde_json::from_str(&row.tags_json).context("failed to parse tags JSON")?;
-        let custom: std::collections::HashMap<String, PayloadValue> =
-            serde_json::from_str(&row.custom_json).context("failed to parse custom JSON")?;
-
-        Ok(Payload {
-            source: row.source.clone(),
-            tags,
-            created_at: row.created_at as u64,
-            source_modified_at: row.source_modified_at as u64,
-            chunk_index: row.chunk_index,
-            chunk_total: row.chunk_total,
-            custom,
-        })
-    }
-}
-
-struct PayloadRow {
-    source: String,
-    tags_json: String,
-    custom_json: String,
-    created_at: i64,
-    source_modified_at: i64,
-    chunk_index: u32,
-    chunk_total: u32,
 }

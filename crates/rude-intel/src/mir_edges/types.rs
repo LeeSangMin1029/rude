@@ -39,6 +39,32 @@ pub struct MirChunk {
     pub type_refs: String,
 }
 
+impl MirChunk {
+    pub fn to_parsed(&self) -> crate::parse::ParsedChunk {
+        let kind = match self.kind.as_str() {
+            "fn" | "method" => "function", other => other,
+        }.to_owned();
+        let (calls, call_lines) = parse_calls_field(&self.calls);
+        let types = if self.type_refs.is_empty() {
+            Vec::new()
+        } else {
+            self.type_refs.split(", ").map(|s| s.to_owned()).collect()
+        };
+        let mut chunk = crate::parse::ParsedChunk {
+            kind, name: self.name.clone(), file: self.file.clone(),
+            lines: Some((self.start_line, self.end_line)),
+            signature: self.signature.clone(),
+            calls, call_lines, types,
+            visibility: self.visibility.clone().unwrap_or_default(),
+            text: self.body.clone(),
+            is_test: self.is_test,
+            ..Default::default()
+        };
+        chunk.compute_minhash();
+        chunk
+    }
+}
+
 impl MirEdgeMap {
     pub fn crate_names(&self) -> std::collections::HashSet<&str> {
         self.caller_crate.values().map(String::as_str).collect()

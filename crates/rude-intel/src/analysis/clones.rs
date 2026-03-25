@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use anyhow::Result;
 use rayon::prelude::*;
 use crate::data::minhash;
-use rude_db::{PayloadValue, StorageEngine};
+use crate::data::parse::ParsedChunk;
 
 pub struct RunStages {
     pub ast: bool,
@@ -12,14 +12,14 @@ pub struct RunStages {
 }
 
 pub struct DupePair {
-    pub id_a: u64,
-    pub id_b: u64,
+    pub idx_a: usize,
+    pub idx_b: usize,
     pub similarity: f32,
 }
 
 pub struct UnifiedDupePair {
-    pub id_a: u64,
-    pub id_b: u64,
+    pub idx_a: usize,
+    pub idx_b: usize,
     pub score: f32,
     pub jaccard: f32,
     pub ast_match: bool,
@@ -36,8 +36,8 @@ impl UnifiedDupePair {
 }
 
 pub struct SubBlockClone {
-    pub chunk_id_a: u64,
-    pub chunk_id_b: u64,
+    pub chunk_idx_a: usize,
+    pub chunk_idx_b: usize,
     pub block_a_start: usize,
     pub block_a_end: usize,
     pub block_b_start: usize,
@@ -49,71 +49,65 @@ pub struct CloneResults {
     pub simple_pairs: Vec<DupePair>,
     pub unified_pairs: Vec<UnifiedDupePair>,
     pub sub_block_clones: Vec<SubBlockClone>,
-    pub hash_groups: Vec<(u64, Vec<u64>)>,
+    pub hash_groups: Vec<(u64, Vec<usize>)>,
 }
 
-pub fn collect_filtered_ids(
-    engine: &StorageEngine,
-    pstore: &StorageEngine,
+pub fn collect_filtered_indices(
+    chunks: &[ParsedChunk],
     exclude_tests: bool,
     min_lines: usize,
-) -> Vec<u64> {
-    let mut ids: Vec<u64> = engine.all_ids().unwrap_or_default();
-    if exclude_tests {
-        ids.retain(|id| !is_test_chunk(pstore, *id));
-    }
-    if min_lines > 0 {
-        ids.retain(|id| chunk_lines(pstore, *id) >= min_lines);
-    }
-    ids
+) -> Vec<usize> {
+    chunks.iter().enumerate().filter(|&(_, c)| {
+        if exclude_tests && is_test_chunk(c) { return false; }
+        if min_lines > 0 && chunk_lines(c) < min_lines { return false; }
+        true
+    }).map(|(i, _)| i).collect()
 }
 
 pub fn find_hash_groups(
-    pstore: &StorageEngine,
-    candidate_ids: &[u64],
-    hash_key: &str,
+    chunks: &[ParsedChunk],
+    candidate_indices: &[usize],
     k: usize,
-) -> Vec<(u64, Vec<u64>)> {
-    let mut hash_groups = collect_hash_groups(pstore, candidate_ids, hash_key);
-    for ids in hash_groups.values_mut().filter(|ids| ids.len() > 1) {
-        remove_overlapping_chunks(pstore, ids);
+) -> Vec<(u64, Vec<usize>)> {
+    let mut hash_groups = collect_ast_hash_groups(chunks, candidate_indices);
+    for indices in hash_groups.values_mut().filter(|v| v.len() > 1) {
+        remove_overlapping_chunks(chunks, indices);
     }
-    let mut groups: Vec<(u64, Vec<u64>)> = hash_groups.into_iter()
-        .filter(|(_, ids)| ids.len() > 1).collect();
+    let mut groups: Vec<(u64, Vec<usize>)> = hash_groups.into_iter()
+        .filter(|(_, v)| v.len() > 1).collect();
     groups.sort_unstable_by(|a, b| b.1.len().cmp(&a.1.len()));
     groups.truncate(k);
     groups
 }
 
 pub fn find_minhash_pairs(
-    pstore: &StorageEngine,
-    candidate_ids: &[u64],
+    chunks: &[ParsedChunk],
+    candidate_indices: &[usize],
     threshold: f32,
     k: usize,
 ) -> Vec<DupePair> {
-    let entries = collect_minhash_entries(pstore, candidate_ids);
+    let entries = collect_minhash_entries(chunks, candidate_indices);
     if entries.len() < 2 { return Vec::new(); }
     let mut pairs = minhash_all_pairs(&entries, f64::from(threshold));
-    finalize_pairs(&mut pairs, pstore, k);
+    finalize_pairs(&mut pairs, chunks, k);
     pairs
 }
+
 pub fn run_unified_pipeline(
-    _engine: &StorageEngine,
-    pstore: &StorageEngine,
-    candidate_ids: &[u64],
+    chunks: &[ParsedChunk],
+    candidate_indices: &[usize],
     threshold: f32,
     k: usize,
     stages: &RunStages,
     min_sub_lines: usize,
 ) -> Result<(Vec<UnifiedDupePair>, Vec<SubBlockClone>)> {
-    // Stage 1: Filter (collect candidate pairs)
-    let mut candidates: HashSet<(u64, u64)> = HashSet::new();
+    let mut candidates: HashSet<(usize, usize)> = HashSet::new();
 
     if stages.ast {
-        stage1_ast_hash(pstore, candidate_ids, &mut candidates);
+        stage1_ast_hash(chunks, candidate_indices, &mut candidates);
     }
     if stages.minhash {
-        stage1_minhash(pstore, candidate_ids, &mut candidates);
+        stage1_minhash(chunks, candidate_indices, &mut candidates);
     }
 
     eprintln!("Stage 1: {} candidate pairs", candidates.len());
@@ -122,48 +116,46 @@ pub fn run_unified_pipeline(
         return Ok((Vec::new(), Vec::new()));
     }
 
-    // Stage 2: Verify — compute all signals for each candidate pair.
-    let minhash_map: HashMap<u64, Vec<u64>> = candidate_ids.iter()
-        .filter_map(|&id| get_minhash(pstore, id).map(|sig| (id, sig))).collect();
-    let ast_map: HashMap<u64, u64> = candidate_ids.iter()
-        .filter_map(|&id| get_hash(pstore, id, "ast_hash").map(|h| (id, h))).collect();
+    let minhash_map: HashMap<usize, Vec<u64>> = candidate_indices.iter()
+        .filter_map(|&idx| get_minhash(&chunks[idx]).map(|sig| (idx, sig))).collect();
+    let ast_map: HashMap<usize, u64> = candidate_indices.iter()
+        .filter_map(|&idx| compute_ast_hash(&chunks[idx]).map(|h| (idx, h))).collect();
 
-    let mut pairs: Vec<UnifiedDupePair> = candidates.into_iter().filter_map(|(id_a, id_b)| {
-        if chunks_overlap(pstore, id_a, id_b) { return None; }
+    let mut pairs: Vec<UnifiedDupePair> = candidates.into_iter().filter_map(|(idx_a, idx_b)| {
+        if chunks_overlap(&chunks[idx_a], &chunks[idx_b]) { return None; }
         #[expect(clippy::cast_possible_truncation)]
-        let jaccard = match (minhash_map.get(&id_a), minhash_map.get(&id_b)) {
+        let jaccard = match (minhash_map.get(&idx_a), minhash_map.get(&idx_b)) {
             (Some(sa), Some(sb)) => minhash::jaccard_from_minhash(sa, sb) as f32,
             _ => 0.0,
         };
-        let ast_match = matches!((ast_map.get(&id_a), ast_map.get(&id_b)), (Some(ha), Some(hb)) if ha == hb);
+        let ast_match = matches!((ast_map.get(&idx_a), ast_map.get(&idx_b)), (Some(ha), Some(hb)) if ha == hb);
         let score = if ast_match { 1.0_f32.max(jaccard) } else { jaccard };
-        (score >= threshold).then_some(UnifiedDupePair { id_a, id_b, score, jaccard, ast_match })
+        (score >= threshold).then_some(UnifiedDupePair { idx_a, idx_b, score, jaccard, ast_match })
     }).collect();
 
     pairs.sort_unstable_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     pairs.truncate(k);
 
-    // Sub-block clone detection
-    let sub_clones = find_sub_block_clones(pstore, candidate_ids, min_sub_lines);
+    let sub_clones = find_sub_block_clones(chunks, candidate_indices, min_sub_lines);
 
     Ok((pairs, sub_clones))
 }
 
-fn canonical_pair(a: u64, b: u64) -> (u64, u64) {
+fn canonical_pair(a: usize, b: usize) -> (usize, usize) {
     if a < b { (a, b) } else { (b, a) }
 }
 
 fn stage1_ast_hash(
-    pstore: &StorageEngine,
-    candidate_ids: &[u64],
-    candidates: &mut HashSet<(u64, u64)>,
+    chunks: &[ParsedChunk],
+    candidate_indices: &[usize],
+    candidates: &mut HashSet<(usize, usize)>,
 ) {
-    let hash_groups = collect_hash_groups(pstore, candidate_ids, "ast_hash");
+    let hash_groups = collect_ast_hash_groups(chunks, candidate_indices);
     let mut ast_pairs = 0usize;
-    for ids in hash_groups.values().filter(|ids| ids.len() > 1) {
-        for i in 0..ids.len() {
-            for j in (i + 1)..ids.len() {
-                candidates.insert(canonical_pair(ids[i], ids[j]));
+    for indices in hash_groups.values().filter(|v| v.len() > 1) {
+        for i in 0..indices.len() {
+            for j in (i + 1)..indices.len() {
+                candidates.insert(canonical_pair(indices[i], indices[j]));
                 ast_pairs += 1;
             }
         }
@@ -172,215 +164,109 @@ fn stage1_ast_hash(
 }
 
 fn stage1_minhash(
-    pstore: &StorageEngine,
-    candidate_ids: &[u64],
-    candidates: &mut HashSet<(u64, u64)>,
+    chunks: &[ParsedChunk],
+    candidate_indices: &[usize],
+    candidates: &mut HashSet<(usize, usize)>,
 ) {
-    let entries = collect_minhash_entries(pstore, candidate_ids);
+    let entries = collect_minhash_entries(chunks, candidate_indices);
     if entries.len() < 2 {
         eprintln!("  MinHash: not enough chunks ({})", entries.len());
         return;
     }
     let pairs = minhash_all_pairs(&entries, 0.3);
     eprintln!("  MinHash: {} candidate pairs (threshold=0.30)", pairs.len());
-    candidates.extend(pairs.into_iter().map(|p| canonical_pair(p.id_a, p.id_b)));
-}
-
-fn parse_sub_block_entries(pstore: &StorageEngine, id: u64) -> Vec<(u64, usize, usize)> {
-    let Some(payload) = pstore.get_payload(id).ok().flatten() else { return Vec::new() };
-    let Some(PayloadValue::StringList(hashes)) = payload.custom.get("sub_block_hashes") else { return Vec::new() };
-    hashes.iter().filter_map(|s| {
-        let (hash_hex, range) = s.split_once(':')?;
-        let (start_s, end_s) = range.split_once('-')?;
-        Some((u64::from_str_radix(hash_hex, 16).ok()?, start_s.parse().ok()?, end_s.parse().ok()?))
-    }).collect()
-}
-
-fn build_chunk_ranges(
-    pstore: &StorageEngine,
-    ids: &[u64],
-) -> HashMap<u64, (String, i64, i64)> {
-    ids.iter()
-        .filter_map(|&id| get_chunk_source_range(pstore, id).map(|r| (id, r)))
-        .collect()
+    candidates.extend(pairs.into_iter().map(|p| canonical_pair(p.idx_a, p.idx_b)));
 }
 
 fn find_sub_block_clones(
-    pstore: &StorageEngine,
-    candidate_ids: &[u64],
+    chunks: &[ParsedChunk],
+    candidate_indices: &[usize],
     min_sub_lines: usize,
 ) -> Vec<SubBlockClone> {
-    let chunk_ranges = build_chunk_ranges(pstore, candidate_ids);
-
-    // Build per-hash groups from sub_block_hashes payload fields.
-    let mut hash_groups: HashMap<u64, Vec<(u64, usize, usize)>> = HashMap::new();
-    for &id in candidate_ids {
-        for (ast_hash, start, end) in parse_sub_block_entries(pstore, id) {
-            hash_groups.entry(ast_hash).or_default().push((id, start, end));
-        }
-    }
-
-    // Deduplicate: keep the most-specific (smallest) chunk per file+block.
-    for entries in hash_groups.values_mut() {
-        deduplicate_contained_entries(entries, &chunk_ranges);
-    }
-
-    let mut clones: Vec<SubBlockClone> = hash_groups.values().filter(|e| e.len() >= 2)
-        .flat_map(|entries| {
-            let n = entries.len();
-            let mut out = Vec::new();
-            for i in 0..n {
-                for j in (i + 1)..n {
-                    let (id_a, sa, ea) = entries[i];
-                    let (id_b, sb, eb) = entries[j];
-                    if id_a == id_b { continue; }
-                    if ea.saturating_sub(sa) < min_sub_lines || eb.saturating_sub(sb) < min_sub_lines { continue; }
-                    if same_file(pstore, id_a, id_b) && ranges_overlap(sa, ea, sb, eb) { continue; }
-                    if chunk_contains(&chunk_ranges, id_a, id_b) { continue; }
-                    out.push(SubBlockClone {
-                        chunk_id_a: id_a, chunk_id_b: id_b,
-                        block_a_start: sa, block_a_end: ea,
-                        block_b_start: sb, block_b_end: eb,
-                        body_match: false,
-                    });
-                }
-            }
-            out
-        })
-        .collect();
-
-    clones.sort_by_key(|c| std::cmp::Reverse(c.block_a_end.saturating_sub(c.block_a_start)));
-    clones.truncate(50);
-    clones
+    // sub_block_hashes is not computed currently — return empty
+    // This field would need to be added to ParsedChunk if needed in the future.
+    let _ = (chunks, candidate_indices, min_sub_lines);
+    Vec::new()
 }
 
-fn containment_remove_idx(
-    ranges: &HashMap<u64, (String, i64, i64)>,
-    id_a: u64, i: usize,
-    id_b: u64, j: usize,
-) -> Option<usize> {
-    let (a, b) = (ranges.get(&id_a)?, ranges.get(&id_b)?);
-    if a.0 != b.0 { return None; }
-    let (a_size, b_size) = (a.2 - a.1, b.2 - b.1);
-    if (a.1 <= b.1 && a.2 >= b.2) || (a_size > b_size && a.1 <= b.1) { Some(i) }
-    else if (b.1 <= a.1 && b.2 >= a.2) || (b_size > a_size && b.1 <= a.1) { Some(j) }
-    else { None }
+fn is_test_chunk(c: &ParsedChunk) -> bool {
+    if crate::graph::is_test_path(&c.file) { return true; }
+    if c.name.contains("test_") { return true; }
+    c.is_test
 }
 
-#[inline]
-fn chunk_contains(ranges: &HashMap<u64, (String, i64, i64)>, id_a: u64, id_b: u64) -> bool {
-    containment_remove_idx(ranges, id_a, 0, id_b, 1).is_some()
+fn chunk_source_range(c: &ParsedChunk) -> Option<(&str, usize, usize)> {
+    let (s, e) = c.lines?;
+    Some((c.file.as_str(), s, e))
 }
 
-fn deduplicate_contained_entries(
-    entries: &mut Vec<(u64, usize, usize)>,
-    ranges: &HashMap<u64, (String, i64, i64)>,
-) {
-    if entries.len() < 2 { return; }
-    let mut to_remove = Vec::new();
-    for i in 0..entries.len() {
-        for j in (i + 1)..entries.len() {
-            let (id_a, _, _) = entries[i];
-            let (id_b, _, _) = entries[j];
-            if id_a == id_b { continue; }
-            if let Some(idx) = containment_remove_idx(ranges, id_a, i, id_b, j) {
-                to_remove.push(idx);
-            }
-        }
-    }
-    to_remove.sort_unstable();
-    to_remove.dedup();
-    for &idx in to_remove.iter().rev() { entries.swap_remove(idx); }
-}
-
-fn is_test_chunk(pstore: &StorageEngine, id: u64) -> bool {
-    let Some(payload) = pstore.get_payload(id).ok().flatten() else { return false };
-    if crate::graph::is_test_path(&payload.source) { return true; }
-    if let Some(rude_db::PayloadValue::String(name)) = payload.custom.get("name") {
-        if name.contains("test_") { return true; }
-    }
-    payload.tags.iter().any(|t| t == "role:test")
-}
-
-fn get_chunk_source_range(pstore: &StorageEngine, id: u64) -> Option<(String, i64, i64)> {
-    let p = pstore.get_payload(id).ok()??;
-    match (p.custom.get("start_line"), p.custom.get("end_line")) {
-        (Some(PayloadValue::Integer(s)), Some(PayloadValue::Integer(e))) => Some((p.source.clone(), *s, *e)),
-        _ => None,
-    }
-}
-
-pub fn chunks_overlap(pstore: &StorageEngine, id_a: u64, id_b: u64) -> bool {
+pub fn chunks_overlap(a: &ParsedChunk, b: &ParsedChunk) -> bool {
     let (Some((fa, sa, ea)), Some((fb, sb, eb))) =
-        (get_chunk_source_range(pstore, id_a), get_chunk_source_range(pstore, id_b)) else { return false };
+        (chunk_source_range(a), chunk_source_range(b)) else { return false };
     fa == fb && sa <= eb && sb <= ea
 }
 
-pub fn chunk_lines(pstore: &StorageEngine, id: u64) -> usize {
-    let Some((_, s, e)) = get_chunk_source_range(pstore, id) else { return 0 };
-    #[expect(clippy::cast_sign_loss)]
-    { (e - s + 1) as usize }
+pub fn chunk_lines(c: &ParsedChunk) -> usize {
+    let Some((s, e)) = c.lines else { return 0 };
+    e.saturating_sub(s) + 1
 }
 
-fn get_hash(pstore: &StorageEngine, id: u64, key: &str) -> Option<u64> {
-    let payload = pstore.get_payload(id).ok()??;
-    match payload.custom.get(key)? {
-        #[expect(clippy::cast_sign_loss, reason = "hash bits reinterpreted")]
-        PayloadValue::Integer(v) => Some(*v as u64),
-        _ => None,
-    }
+fn compute_ast_hash(c: &ParsedChunk) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    // Reproduce the AST hash: hash normalized signature + calls
+    let sig = c.signature.as_deref().unwrap_or("");
+    if sig.is_empty() && c.calls.is_empty() { return None; }
+    let mut hasher = std::hash::DefaultHasher::new();
+    sig.hash(&mut hasher);
+    for call in &c.calls { call.hash(&mut hasher); }
+    Some(hasher.finish())
 }
 
-fn get_minhash(pstore: &StorageEngine, id: u64) -> Option<Vec<u64>> {
-    let payload = pstore.get_payload(id).ok()??;
-    match payload.custom.get("minhash")? {
-        PayloadValue::String(hex) => minhash::minhash_from_hex(hex),
-        _ => None,
-    }
+fn get_minhash(c: &ParsedChunk) -> Option<Vec<u64>> {
+    c.minhash.as_ref().and_then(|hex| minhash::minhash_from_hex(hex))
 }
 
-fn collect_hash_groups(
-    pstore: &StorageEngine,
-    candidate_ids: &[u64],
-    hash_key: &str,
-) -> HashMap<u64, Vec<u64>> {
-    let mut groups: HashMap<u64, Vec<u64>> = HashMap::new();
+fn collect_ast_hash_groups(
+    chunks: &[ParsedChunk],
+    candidate_indices: &[usize],
+) -> HashMap<u64, Vec<usize>> {
+    let mut groups: HashMap<u64, Vec<usize>> = HashMap::new();
     let mut missing = 0u32;
-    for &id in candidate_ids {
-        match get_hash(pstore, id, hash_key) {
-            Some(k) => groups.entry(k).or_default().push(id),
+    for &idx in candidate_indices {
+        match compute_ast_hash(&chunks[idx]) {
+            Some(k) => groups.entry(k).or_default().push(idx),
             None => missing += 1,
         }
     }
-    if missing > 0 { eprintln!("  {hash_key}: {missing} chunks without {hash_key}"); }
+    if missing > 0 { eprintln!("  ast_hash: {missing} chunks without ast_hash"); }
     groups
 }
 
 fn collect_minhash_entries(
-    pstore: &StorageEngine,
-    candidate_ids: &[u64],
-) -> Vec<(u64, Vec<u64>)> {
-    let entries: Vec<_> = candidate_ids.iter()
-        .filter_map(|&id| get_minhash(pstore, id).map(|sig| (id, sig)))
+    chunks: &[ParsedChunk],
+    candidate_indices: &[usize],
+) -> Vec<(usize, Vec<u64>)> {
+    let entries: Vec<_> = candidate_indices.iter()
+        .filter_map(|&idx| get_minhash(&chunks[idx]).map(|sig| (idx, sig)))
         .collect();
-    let missing = candidate_ids.len() - entries.len();
+    let missing = candidate_indices.len() - entries.len();
     if missing > 0 { eprintln!("  MinHash: {missing} chunks without minhash"); }
     entries
 }
 
-fn minhash_all_pairs(entries: &[(u64, Vec<u64>)], threshold: f64) -> Vec<DupePair> {
+fn minhash_all_pairs(entries: &[(usize, Vec<u64>)], threshold: f64) -> Vec<DupePair> {
     let n = entries.len();
     (0..n)
         .into_par_iter()
         .flat_map_iter(|i| {
-            let (id_a, sig_a) = &entries[i];
+            let (idx_a, sig_a) = &entries[i];
             ((i + 1)..n).filter_map(move |j| {
-                let (id_b, sig_b) = &entries[j];
+                let (idx_b, sig_b) = &entries[j];
                 let sim = minhash::jaccard_from_minhash(sig_a, sig_b);
                 #[expect(clippy::cast_possible_truncation)]
                 (sim >= threshold).then_some(DupePair {
-                    id_a: *id_a,
-                    id_b: *id_b,
+                    idx_a: *idx_a,
+                    idx_b: *idx_b,
                     similarity: sim as f32,
                 })
             })
@@ -388,22 +274,22 @@ fn minhash_all_pairs(entries: &[(u64, Vec<u64>)], threshold: f64) -> Vec<DupePai
         .collect()
 }
 
-fn finalize_pairs(pairs: &mut Vec<DupePair>, pstore: &StorageEngine, k: usize) {
-    pairs.retain(|p| !chunks_overlap(pstore, p.id_a, p.id_b));
+fn finalize_pairs(pairs: &mut Vec<DupePair>, chunks: &[ParsedChunk], k: usize) {
+    pairs.retain(|p| !chunks_overlap(&chunks[p.idx_a], &chunks[p.idx_b]));
     pairs.sort_unstable_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal));
     pairs.truncate(k);
 }
 
-fn remove_overlapping_chunks(pstore: &StorageEngine, ids: &mut Vec<u64>) {
+fn remove_overlapping_chunks(chunks: &[ParsedChunk], indices: &mut Vec<usize>) {
     let mut i = 0;
-    while i < ids.len() {
+    while i < indices.len() {
         let mut j = i + 1;
-        while j < ids.len() {
-            if chunks_overlap(pstore, ids[i], ids[j]) {
-                if chunk_lines(pstore, ids[i]) >= chunk_lines(pstore, ids[j]) {
-                    ids.swap_remove(j);
+        while j < indices.len() {
+            if chunks_overlap(&chunks[indices[i]], &chunks[indices[j]]) {
+                if chunk_lines(&chunks[indices[i]]) >= chunk_lines(&chunks[indices[j]]) {
+                    indices.swap_remove(j);
                 } else {
-                    ids.swap_remove(i);
+                    indices.swap_remove(i);
                     j = i + 1;
                     continue;
                 }
@@ -413,12 +299,6 @@ fn remove_overlapping_chunks(pstore: &StorageEngine, ids: &mut Vec<u64>) {
         }
         i += 1;
     }
-}
-
-fn same_file(pstore: &StorageEngine, id_a: u64, id_b: u64) -> bool {
-    let fa = pstore.get_payload(id_a).ok().flatten().map(|p| p.source);
-    let fb = pstore.get_payload(id_b).ok().flatten().map(|p| p.source);
-    fa.is_some() && fa == fb
 }
 
 pub(crate) fn ranges_overlap(s1: usize, e1: usize, s2: usize, e2: usize) -> bool {
