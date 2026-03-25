@@ -116,10 +116,10 @@ fn clean_ty_name(ty: &rustc_public::ty::Ty) -> String {
     }
 }
 
-fn is_test_fn(filename: &str, name: &str, is_test_target: bool) -> bool {
-    is_test_target
-        || filename.contains("/tests/") || filename.contains("\\tests\\")
+fn is_test_fn(filename: &str, name: &str, _is_test_target: bool) -> bool {
+    filename.contains("/tests/") || filename.contains("\\tests\\")
         || name.starts_with("test_") || name.contains("::test_")
+        || name.contains("::tests::")
 }
 
 // ── Call edge visitor ───────────────────────────────────────────────
