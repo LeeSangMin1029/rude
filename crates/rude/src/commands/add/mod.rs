@@ -293,6 +293,28 @@ fn load_mir_edges(
     }
 }
 
+/// Merge new parsed chunks into the existing cache (or fall back to full sqlite load).
+fn merge_chunks_cache(
+    db_path: &std::path::Path,
+    new_entries: &[CodeChunkEntry],
+) -> Vec<rude_intel::parse::ParsedChunk> {
+    use rude_intel::parse::ParsedChunk;
+    let new_chunks: Vec<ParsedChunk> = new_entries.iter()
+        .map(|e| ParsedChunk::from_code_chunk(&e.chunk, &e.file_path_str, e.chunk.imports.clone()))
+        .collect();
+    if let Some(mut existing) = rude_intel::loader::load_chunks_from_cache(db_path) {
+        let new_files: std::collections::HashSet<&str> =
+            new_chunks.iter().map(|c| c.file.as_str()).collect();
+        existing.retain(|c| !new_files.contains(c.file.as_str()));
+        existing.extend(new_chunks);
+        existing.sort_by(|a, b| a.file.cmp(&b.file).then_with(|| a.lines.cmp(&b.lines)));
+        existing
+    } else {
+        let fallback = new_chunks;
+        rude_intel::loader::load_chunks_from_db(db_path).unwrap_or(fallback)
+    }
+}
+
 /// Rebuild chunks.bin + graph.bin caches.
 ///
 /// SQLite is the source of truth. Load all chunks from DB, rebuild caches.
@@ -303,33 +325,10 @@ fn prebuild_caches(
     mir_edges: Option<&rude_intel::mir_edges::MirEdgeMap>,
     mir_edge_dir: &std::path::Path,
 ) {
-    use rude_intel::parse::ParsedChunk;
-
     let cache = rude_intel::loader::cache_path(db_path);
-    if let Some(parent) = cache.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
+    if let Some(parent) = cache.parent() { let _ = std::fs::create_dir_all(parent); }
 
-    // Fast path: load chunks.bin cache + merge new entries (avoids 37K sqlite load).
-    // Fallback: load from sqlite if no cache.
-    let chunks: Vec<ParsedChunk> = {
-        let new_chunks: Vec<ParsedChunk> = new_entries.iter()
-            .map(|e| ParsedChunk::from_code_chunk(&e.chunk, &e.file_path_str, e.chunk.imports.clone()))
-            .collect();
-        let new_files: std::collections::HashSet<String> = new_chunks.iter()
-            .map(|c| c.file.clone()).collect();
-
-        if let Some(mut existing) = rude_intel::loader::load_chunks_from_cache(db_path) {
-            // Remove chunks from changed files, add new ones
-            existing.retain(|c| !new_files.contains(c.file.as_str()));
-            existing.extend(new_chunks);
-            existing.sort_by(|a, b| a.file.cmp(&b.file).then_with(|| a.lines.cmp(&b.lines)));
-            existing
-        } else {
-            // No cache — full load from sqlite
-            rude_intel::loader::load_chunks_from_db(db_path).unwrap_or(new_chunks)
-        }
-    };
+    let chunks = merge_chunks_cache(db_path, new_entries);
     eprintln!("    [cache] {} chunks", chunks.len());
 
     // Save chunks.bin

@@ -57,14 +57,12 @@ pub fn content_hash(path: &Path) -> Result<u64> {
     Ok(content_hash_bytes(&bytes))
 }
 
-/// Compute content hash from raw bytes (MD5 truncated to u64).
+/// Compute content hash from raw bytes (DefaultHasher → u64).
 pub fn content_hash_bytes(bytes: &[u8]) -> u64 {
-    use md5::{Digest, Md5};
-    let digest = Md5::digest(bytes);
-    // digest is 16 bytes, take first 8 as u64
-    let mut buf = [0u8; 8];
-    buf.copy_from_slice(&digest[..8]);
-    u64::from_le_bytes(buf)
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    h.finish()
 }
 
 /// Map file extension to language name. Returns `"other"` for unsupported extensions.

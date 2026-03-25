@@ -167,19 +167,17 @@ pub fn run_unified_pipeline(
     let ast_map: HashMap<u64, u64> = candidate_ids.iter()
         .filter_map(|&id| get_hash(pstore, id, "ast_hash").map(|h| (id, h))).collect();
 
-    let mut pairs: Vec<UnifiedDupePair> = candidates.into_iter()
-        .filter_map(|(id_a, id_b)| {
-            if chunks_overlap(pstore, id_a, id_b) { return None; }
-            #[expect(clippy::cast_possible_truncation)]
-            let jaccard = match (minhash_map.get(&id_a), minhash_map.get(&id_b)) {
-                (Some(sa), Some(sb)) => minhash::jaccard_from_minhash(sa, sb) as f32,
-                _ => 0.0,
-            };
-            let ast_match = matches!((ast_map.get(&id_a), ast_map.get(&id_b)), (Some(ha), Some(hb)) if ha == hb);
-            let score = if ast_match { 1.0_f32.max(jaccard) } else { jaccard };
-            (score >= threshold).then_some(UnifiedDupePair { id_a, id_b, score, jaccard, ast_match })
-        })
-        .collect();
+    let mut pairs: Vec<UnifiedDupePair> = candidates.into_iter().filter_map(|(id_a, id_b)| {
+        if chunks_overlap(pstore, id_a, id_b) { return None; }
+        #[expect(clippy::cast_possible_truncation)]
+        let jaccard = match (minhash_map.get(&id_a), minhash_map.get(&id_b)) {
+            (Some(sa), Some(sb)) => minhash::jaccard_from_minhash(sa, sb) as f32,
+            _ => 0.0,
+        };
+        let ast_match = matches!((ast_map.get(&id_a), ast_map.get(&id_b)), (Some(ha), Some(hb)) if ha == hb);
+        let score = if ast_match { 1.0_f32.max(jaccard) } else { jaccard };
+        (score >= threshold).then_some(UnifiedDupePair { id_a, id_b, score, jaccard, ast_match })
+    }).collect();
 
     pairs.sort_unstable_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     pairs.truncate(k);
@@ -276,19 +274,16 @@ fn find_sub_block_clones(
         deduplicate_contained_entries(entries, &chunk_ranges);
     }
 
-    let mut clones: Vec<SubBlockClone> = hash_groups
-        .values()
-        .filter(|e| e.len() >= 2)
+    let mut clones: Vec<SubBlockClone> = hash_groups.values().filter(|e| e.len() >= 2)
         .flat_map(|entries| {
+            let n = entries.len();
             let mut out = Vec::new();
-            for i in 0..entries.len() {
-                for j in (i + 1)..entries.len() {
+            for i in 0..n {
+                for j in (i + 1)..n {
                     let (id_a, sa, ea) = entries[i];
                     let (id_b, sb, eb) = entries[j];
                     if id_a == id_b { continue; }
-                    // Skip very small blocks — too noisy
-                    if ea.saturating_sub(sa) < min_sub_lines
-                        || eb.saturating_sub(sb) < min_sub_lines { continue; }
+                    if ea.saturating_sub(sa) < min_sub_lines || eb.saturating_sub(sb) < min_sub_lines { continue; }
                     if same_file(pstore, id_a, id_b) && ranges_overlap(sa, ea, sb, eb) { continue; }
                     if chunk_contains(&chunk_ranges, id_a, id_b) { continue; }
                     out.push(SubBlockClone {
@@ -415,32 +410,20 @@ fn get_minhash(pstore: &(impl PayloadStore + ?Sized), id: u64) -> Option<Vec<u64
     }
 }
 
-/// Generic grouping: iterate IDs, extract a u64 key via `f`, bucket into a HashMap.
-/// Returns (groups, missing_count).
-fn group_by_key<F>(candidate_ids: &[u64], mut f: F) -> (HashMap<u64, Vec<u64>>, u32)
-where
-    F: FnMut(u64) -> Option<u64>,
-{
-    let mut groups: HashMap<u64, Vec<u64>> = HashMap::new();
-    let mut missing = 0u32;
-    for &id in candidate_ids {
-        match f(id) {
-            Some(key) => groups.entry(key).or_default().push(id),
-            None => missing += 1,
-        }
-    }
-    (groups, missing)
-}
-
 fn collect_hash_groups(
     pstore: &(impl PayloadStore + ?Sized),
     candidate_ids: &[u64],
     hash_key: &str,
 ) -> HashMap<u64, Vec<u64>> {
-    let (groups, no_hash) = group_by_key(candidate_ids, |id| get_hash(pstore, id, hash_key));
-    if no_hash > 0 {
-        eprintln!("  {hash_key}: {no_hash} chunks without {hash_key}");
+    let mut groups: HashMap<u64, Vec<u64>> = HashMap::new();
+    let mut missing = 0u32;
+    for &id in candidate_ids {
+        match get_hash(pstore, id, hash_key) {
+            Some(k) => groups.entry(k).or_default().push(id),
+            None => missing += 1,
+        }
     }
+    if missing > 0 { eprintln!("  {hash_key}: {missing} chunks without {hash_key}"); }
     groups
 }
 
@@ -477,14 +460,9 @@ fn minhash_all_pairs(entries: &[(u64, Vec<u64>)], threshold: f64) -> Vec<DupePai
         .collect()
 }
 
-/// Sort pairs by similarity descending, filter overlapping chunks, truncate to top `k`.
 fn finalize_pairs(pairs: &mut Vec<DupePair>, pstore: &(impl PayloadStore + ?Sized), k: usize) {
     pairs.retain(|p| !chunks_overlap(pstore, p.id_a, p.id_b));
-    pairs.sort_unstable_by(|a, b| {
-        b.similarity
-            .partial_cmp(&a.similarity)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    pairs.sort_unstable_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal));
     pairs.truncate(k);
 }
 

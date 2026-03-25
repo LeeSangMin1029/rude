@@ -198,17 +198,15 @@ fn is_crate_cache_stale(
     source.is_some_and(|t| t > cache_mtime)
 }
 
-/// Build the three lookup tables shared by `resolve_with_mir` and `resolve_incremental`.
-///
-/// Returns `(loc_to_idx, name_to_idx, suffix_to_idx, file_suffix_to_normalized)`.
-fn build_mir_indexes<'a>(
-    chunks: &'a [ParsedChunk],
-) -> (
+type MirIndexes<'a> = (
     HashMap<(&'a str, usize), u32>,
     HashMap<String, u32>,
     HashMap<String, u32>,
     HashMap<String, Vec<String>>,
-) {
+);
+
+/// Build the four lookup tables shared by `resolve_with_mir` and `resolve_incremental`.
+fn build_mir_indexes(chunks: &[ParsedChunk]) -> MirIndexes<'_> {
     let mut loc_to_idx: HashMap<(&str, usize), u32> = HashMap::new();
     let mut name_to_idx: HashMap<String, u32> = HashMap::new();
     let mut suffix_to_idx: HashMap<String, u32> = HashMap::new();
@@ -223,10 +221,7 @@ fn build_mir_indexes<'a>(
         if let Some(last) = lower.rsplit("::").next() {
             suffix_to_idx.entry(last.to_owned()).or_insert(i as u32);
         }
-        file_suffix_to_normalized
-            .entry(c.file.to_lowercase())
-            .or_default()
-            .push(c.file.clone());
+        file_suffix_to_normalized.entry(c.file.to_lowercase()).or_default().push(c.file.clone());
     }
     for v in file_suffix_to_normalized.values_mut() { v.sort(); v.dedup(); }
     (loc_to_idx, name_to_idx, suffix_to_idx, file_suffix_to_normalized)
@@ -352,11 +347,7 @@ pub(crate) fn resolve_incremental(
     }
 
     adj.dedup();
-
-    eprintln!(
-        "      [edge-resolve] incremental: resolved={mir_resolved} cached={cache_loaded} re-resolved_crates={re_resolved_crates}/{}",
-        all_crate_names.len()
-    );
+    eprintln!("      [edge-resolve] incremental: resolved={mir_resolved} cached={cache_loaded} re-resolved_crates={re_resolved_crates}/{}", all_crate_names.len());
     adj
 }
 
