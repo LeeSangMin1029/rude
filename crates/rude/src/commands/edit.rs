@@ -419,6 +419,42 @@ pub fn delete_symbol(db: PathBuf, symbol: String, file: Option<String>) -> Resul
     })
 }
 
+/// Delete multiple symbols from the same file in one pass (no line drift).
+pub fn delete_symbols(db: PathBuf, symbols: &[&str], file: Option<&str>) -> Result<()> {
+    if symbols.is_empty() { return Ok(()); }
+
+    // Locate all symbols and collect ranges
+    let mut locs: Vec<(usize, usize, String)> = Vec::new();
+    for &sym in symbols {
+        let loc = locate_symbol(&db, sym, file)?;
+        locs.push((loc.start_line, loc.end_line, sym.to_string()));
+    }
+
+    // Sort by start line descending — remove from bottom to top
+    locs.sort_by(|a, b| b.0.cmp(&a.0));
+
+    // All must be same file
+    let first_loc = locate_symbol(&db, symbols[0], file)?;
+
+    locked_edit(&first_loc.abs_path, |content| {
+        let mut lines: Vec<&str> = content.lines().collect();
+        for (start, end, name) in &locs {
+            let end = (*end + 1).min(lines.len());
+            // Skip trailing blank lines
+            let mut after = end;
+            while after < lines.len() && lines[after].trim().is_empty() {
+                after += 1;
+            }
+            lines.drain(*start..after);
+            eprintln!("  Deleted {name} (L{}-{})", start + 1, end);
+        }
+        Ok(join_lines(&lines, content.ends_with('\n')))
+    })?;
+
+    eprintln!("Deleted {} symbols from {}", locs.len(), first_loc.rel_path);
+    Ok(())
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 /// Print lines with 1-based line numbers to stdout, so agents can verify edits.

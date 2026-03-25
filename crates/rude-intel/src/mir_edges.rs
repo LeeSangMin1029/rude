@@ -375,12 +375,12 @@ pub fn run_mir_callgraph(project_root: &Path, mir_callgraph_bin: Option<&Path>) 
 
 /// Run mir-callgraph for specific crates only (or all if `crates` is empty).
 ///
-/// When `rust_only` is true, Python/TypeScript extractors are skipped entirely.
+/// When `_rust_only` is true, Python/TypeScript extractors are skipped entirely.
 pub fn run_mir_callgraph_for(
     project_root: &Path,
     mir_callgraph_bin: Option<&Path>,
     crates: &[&str],
-    rust_only: bool,
+    _rust_only: bool,
 ) -> Result<MirEdgeMap> {
     let out_dir = project_root.join("target").join("mir-edges");
     // No pre-deletion: RUSTC_WRAPPER now truncates on lib build and appends on test.
@@ -514,7 +514,7 @@ fn pre_truncate_crates(crates: &[&str], out_dir: &Path, _mir_db: &Path) {
 /// If prerequisites are missing (no cache, stale cache, missing artifacts),
 /// runs cargo once to satisfy them, then executes direct mode.
 /// Cargo is never used for MIR extraction itself, only for preparation.
-/// When `rust_only` is true, Python/TypeScript extractors are skipped entirely,
+/// When `_rust_only` is true, Python/TypeScript extractors are skipped entirely,
 /// saving ~0.3s of directory-walk overhead.
 /// Test targets are spawned in the background (fire-and-forget) and their PIDs
 /// are recorded in `target/mir-edges/.test-bg.pid`. Only lib edges are included
@@ -523,7 +523,7 @@ pub fn run_mir_direct(
     project_root: &Path,
     mir_callgraph_bin: Option<&Path>,
     crates: &[&str],
-    rust_only: bool,
+    _rust_only: bool,
 ) -> Result<MirEdgeMap> {
     let out_dir = project_root.join("target").join("mir-edges");
     let args_dir = out_dir.join("rustc-args");
@@ -540,7 +540,7 @@ pub fn run_mir_direct(
         }
         // Run cargo with RUSTC_WRAPPER to (re)generate args cache + build deps.
         // This is preparation only — MIR extraction still happens via direct.
-        run_mir_callgraph_for(project_root, mir_callgraph_bin, crates, rust_only)?;
+        run_mir_callgraph_for(project_root, mir_callgraph_bin, crates, _rust_only)?;
 
         // After cargo run, args cache is fresh. Continue to direct mode below
         // to ensure consistent extraction path.
@@ -623,7 +623,7 @@ pub fn run_mir_direct(
 
     if had_error {
         eprintln!("  [mir] some lib builds failed, refreshing via cargo...");
-        run_mir_callgraph_for(project_root, mir_callgraph_bin, crates, rust_only)?;
+        run_mir_callgraph_for(project_root, mir_callgraph_bin, crates, _rust_only)?;
         return if mir_db.exists() {
             MirEdgeMap::from_sqlite(&mir_db, Some(crates))
         } else {

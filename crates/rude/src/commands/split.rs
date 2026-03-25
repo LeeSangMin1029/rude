@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 
-use super::edit::{locate_symbol, locked_edit, join_lines};
+use super::edit::{locate_symbol, locked_edit};
 use rude_intel::helpers::find_project_root;
 
 /// Extract use/import lines from the top of a file.
@@ -181,40 +181,8 @@ pub fn run(db: PathBuf, symbols: String, to: String, dry_run: bool) -> Result<()
         .with_context(|| format!("Failed to write {}", target_path.display()))?;
     eprintln!("Created {} ({} line(s))", to, new_file_content.lines().count());
 
-    // Delete symbols from source (process in reverse order to preserve line numbers).
-    locked_edit(source_path, |content| {
-        let lines: Vec<&str> = content.lines().collect();
-        let mut result: Vec<&str> = Vec::with_capacity(lines.len());
-
-        // Build a set of line ranges to skip (sorted by start).
-        let mut skip_ranges: Vec<(usize, usize)> = ranges.iter().map(|&(s, e, _)| (s, e)).collect();
-        skip_ranges.sort_by_key(|r| r.0);
-
-        let mut range_idx = 0;
-        let mut i = 0;
-        while i < lines.len() {
-            if range_idx < skip_ranges.len() && i == skip_ranges[range_idx].0 {
-                // Skip this symbol's lines.
-                let end = skip_ranges[range_idx].1;
-                // Also skip trailing blank lines.
-                let mut after = end + 1;
-                while after < lines.len() && lines[after].trim().is_empty() {
-                    after += 1;
-                }
-                i = after;
-                range_idx += 1;
-            } else {
-                result.push(lines[i]);
-                i += 1;
-            }
-        }
-
-        Ok(join_lines(&result, content.ends_with('\n')))
-    })?;
-
-    for &(start, end, name) in &ranges {
-        eprintln!("Deleted '{}' (L{}-{}) from {}", name, start + 1, end + 1, infos[0].rel_path);
-    }
+    // Delete symbols from source using shared delete_symbols logic.
+    super::edit::delete_symbols(db.clone(), &symbol_names, None)?;
 
     // ── Insert `pub use` re-export into the source file ─────────────
     locked_edit(source_path, |content| {
