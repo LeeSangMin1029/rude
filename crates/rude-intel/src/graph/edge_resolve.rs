@@ -48,11 +48,6 @@ impl ChunkIndex {
         Self { exact, short }
     }
 
-    fn resolve_name(&self, call: &str) -> Option<u32> {
-        let lower = call.to_lowercase();
-        let short = lower.rsplit("::").next().unwrap_or(&lower);
-        self.exact.get(&lower).copied().or_else(|| self.short.get(short).copied())
-    }
 }
 
 pub(crate) struct ResolvedEdges {
@@ -74,6 +69,8 @@ impl ResolvedEdges {
             self.call_sites[src].push((tgt, call_line));
         }
     }
+
+    pub(crate) fn empty(len: usize) -> Self { Self::new(len) }
 
     pub(crate) fn dedup(&mut self) {
         for v in &mut self.callees { v.sort_unstable(); v.dedup(); }
@@ -271,11 +268,17 @@ pub(crate) fn resolve_incremental(
     adj
 }
 
-pub(crate) fn resolve_by_name(chunks: &[ParsedChunk], index: &ChunkIndex) -> ResolvedEdges {
+/// Name-based resolution used only in tests (no MIR available).
+pub(crate) fn resolve_by_name_test(chunks: &[ParsedChunk], index: &ChunkIndex) -> ResolvedEdges {
+    fn resolve_name(index: &ChunkIndex, call: &str) -> Option<u32> {
+        let lower = call.to_lowercase();
+        let short = lower.rsplit("::").next().unwrap_or(&lower);
+        index.exact.get(&lower).copied().or_else(|| index.short.get(short).copied())
+    }
     let mut adj = ResolvedEdges::new(chunks.len());
     for (src, chunk) in chunks.iter().enumerate() {
         for (call_idx, call) in chunk.calls.iter().enumerate() {
-            if let Some(tgt) = index.resolve_name(call) {
+            if let Some(tgt) = resolve_name(index, call) {
                 adj.add_edge(src, tgt, chunk.call_lines.get(call_idx).copied().unwrap_or(0));
             }
         }

@@ -86,7 +86,7 @@ pub fn run(cfg: DupesConfig) -> Result<()> {
         if unified_pairs.is_empty() {
             println!("No duplicates found.");
         } else if json {
-            print_unified_json(&unified_pairs, pstore);
+            print_pairs_json(&unified_pairs, pstore);
         } else {
             print_pairs_text(&unified_pairs, pstore);
         }
@@ -120,15 +120,17 @@ trait DupePairLike {
     fn id_a(&self) -> u64;
     fn id_b(&self) -> u64;
     fn display_score(&self) -> f32;
-    fn display_tag(&self) -> String {
-        String::new()
-    }
+    fn display_tag(&self) -> String { String::new() }
+    fn to_json_value(&self, a: String, b: String) -> serde_json::Value;
 }
 
 impl DupePairLike for DupePair {
     fn id_a(&self) -> u64 { self.id_a }
     fn id_b(&self) -> u64 { self.id_b }
     fn display_score(&self) -> f32 { self.similarity }
+    fn to_json_value(&self, a: String, b: String) -> serde_json::Value {
+        serde_json::json!({ "a": a, "b": b, "sim": self.similarity })
+    }
 }
 
 impl DupePairLike for UnifiedDupePair {
@@ -136,6 +138,9 @@ impl DupePairLike for UnifiedDupePair {
     fn id_b(&self) -> u64 { self.id_b }
     fn display_score(&self) -> f32 { self.score }
     fn display_tag(&self) -> String { self.tag() }
+    fn to_json_value(&self, a: String, b: String) -> serde_json::Value {
+        serde_json::json!({ "a": a, "b": b, "score": self.score, "jaccard": self.jaccard, "ast_match": self.ast_match, "tag": self.tag() })
+    }
 }
 
 struct GroupEntry {
@@ -190,22 +195,6 @@ fn label(pstore: &(impl PayloadStore + ?Sized), id: u64) -> String {
 use rude_intel::helpers::{apply_alias, build_path_aliases};
 use rude_intel::parse::normalize_path;
 
-fn get_or_insert_idx<T>(
-    key: String,
-    groups: &mut Vec<(String, Vec<T>)>,
-    index: &mut HashMap<String, usize>,
-) -> usize {
-    if let Some(&i) = index.get(&key) {
-        i
-    } else {
-        let i = groups.len();
-        index.insert(key.clone(), i);
-        groups.push((key, Vec::new()));
-        i
-    }
-}
-
-#[expect(clippy::type_complexity, reason = "return type is consumed locally")]
 fn group_by_file(
     ids: &[(u64, u64)],
     pstore: &(impl PayloadStore + ?Sized),
@@ -220,25 +209,19 @@ fn group_by_file(
         .flat_map(|(a, b)| [normalize_path(&a.file), normalize_path(&b.file)])
         .collect();
 
-    let refs: Vec<&str> = all_files.iter().map(String::as_str).collect();
-    let (alias_map, _) = build_path_aliases(&refs);
-
-    let aliased: Vec<(String, String)> = all_files
-        .chunks_exact(2)
-        .map(|c| (apply_alias(&c[0], &alias_map), apply_alias(&c[1], &alias_map)))
-        .collect();
+    let (alias_map, _) = build_path_aliases(&all_files.iter().map(String::as_str).collect::<Vec<_>>());
 
     let mut by_file: Vec<(String, Vec<GroupEntry>)> = Vec::new();
     let mut file_index: HashMap<String, usize> = HashMap::new();
 
     for (i, _) in ids.iter().enumerate() {
-        let (ref file_a, _) = aliased[i];
-        let key = if file_a.is_empty() {
-            "(unknown)".to_owned()
-        } else {
-            file_a.clone()
-        };
-        let idx = get_or_insert_idx(key, &mut by_file, &mut file_index);
+        let raw = &all_files[i * 2];
+        let key = if raw.is_empty() { "(unknown)".to_owned() } else { apply_alias(raw, &alias_map) };
+        let idx = *file_index.entry(key.clone()).or_insert_with(|| {
+            let i = by_file.len();
+            by_file.push((key, Vec::new()));
+            i
+        });
         by_file[idx].1.push(GroupEntry {
             pair_index: i,
             name_a: labels[i].0.name.clone(),
@@ -273,15 +256,8 @@ fn print_pairs_text(
             let p = &pairs[e.pair_index];
             let score = p.display_score();
             let tag = p.display_tag();
-            if tag.is_empty() {
-                println!("    [{score:.2}]  {} \u{2194} {}", e.name_a, e.name_b);
-            } else {
-                let tag_padded = format!("{tag:<12}");
-                println!(
-                    "    [{score:.2}] {tag_padded} {} \u{2194} {}",
-                    e.name_a, e.name_b
-                );
-            }
+            let tag_part = if tag.is_empty() { " ".to_owned() } else { format!(" {tag:<12} ") };
+            println!("    [{score:.2}]{tag_part}{} \u{2194} {}", e.name_a, e.name_b);
         }
         println!();
     }
@@ -289,35 +265,11 @@ fn print_pairs_text(
     eprintln!("Tip: rude context <symbol>  to inspect.");
 }
 
-fn print_pairs_json(pairs: &[DupePair], pstore: &(impl PayloadStore + ?Sized)) {
-    #[derive(Serialize)]
-    struct PairJson { a: String, b: String, sim: f32 }
-    #[derive(Serialize)]
-    struct Out { pairs: Vec<PairJson> }
-    print_json(&Out {
-        pairs: pairs.iter().map(|p| PairJson {
-            a: label(pstore, p.id_a),
-            b: label(pstore, p.id_b),
-            sim: p.similarity,
-        }).collect(),
-    });
-}
-
-fn print_unified_json(pairs: &[UnifiedDupePair], pstore: &(impl PayloadStore + ?Sized)) {
-    #[derive(Serialize)]
-    struct PairJson { a: String, b: String, score: f32, jaccard: f32, ast_match: bool, tag: String }
-    #[derive(Serialize)]
-    struct Out { pairs: Vec<PairJson> }
-    print_json(&Out {
-        pairs: pairs.iter().map(|p| PairJson {
-            a: label(pstore, p.id_a),
-            b: label(pstore, p.id_b),
-            score: p.score,
-            jaccard: p.jaccard,
-            ast_match: p.ast_match,
-            tag: p.tag(),
-        }).collect(),
-    });
+fn print_pairs_json(pairs: &[impl DupePairLike], pstore: &(impl PayloadStore + ?Sized)) {
+    let vals: Vec<_> = pairs.iter()
+        .map(|p| p.to_json_value(label(pstore, p.id_a()), label(pstore, p.id_b())))
+        .collect();
+    print_json(&serde_json::json!({ "pairs": vals }));
 }
 
 fn print_groups_text(groups: &[(u64, Vec<u64>)], pstore: &(impl PayloadStore + ?Sized)) {
@@ -327,39 +279,30 @@ fn print_groups_text(groups: &[(u64, Vec<u64>)], pstore: &(impl PayloadStore + ?
     }
     println!("{} clone groups found:\n", groups.len());
 
-    let all_labels: Vec<Vec<(usize, u64, ChunkLabel)>> = groups
+    // Collect (group_num, hash, label) entries and all file paths for alias building.
+    let entries_flat: Vec<(usize, u64, ChunkLabel)> = groups
         .iter()
         .enumerate()
-        .map(|(gi, (hash, ids))| {
-            ids.iter()
-                .map(|&id| (gi + 1, *hash, parse_label(pstore, id)))
-                .collect()
+        .flat_map(|(gi, (hash, ids))| {
+            ids.iter().map(move |&id| (gi + 1, *hash, parse_label(pstore, id)))
         })
         .collect();
 
-    let all_files: Vec<String> = all_labels
-        .iter()
-        .flat_map(|g| g.iter().map(|(_, _, cl)| normalize_path(&cl.file)))
-        .collect();
-
-    let refs: Vec<&str> = all_files.iter().map(String::as_str).collect();
-    let (alias_map, _) = build_path_aliases(&refs);
+    let all_files: Vec<String> = entries_flat.iter().map(|(_, _, cl)| normalize_path(&cl.file)).collect();
+    let (alias_map, _) = build_path_aliases(&all_files.iter().map(String::as_str).collect::<Vec<_>>());
 
     type FileGroup = (String, Vec<(usize, u64, String)>);
     let mut by_file: Vec<FileGroup> = Vec::new();
     let mut file_index: HashMap<String, usize> = HashMap::new();
 
-    for group in &all_labels {
-        for (group_num, hash, cl) in group {
-            let normalized = normalize_path(&cl.file);
-            let key = if normalized.is_empty() {
-                "(unknown)".to_owned()
-            } else {
-                apply_alias(&normalized, &alias_map)
-            };
-            let idx = get_or_insert_idx(key, &mut by_file, &mut file_index);
-            by_file[idx].1.push((*group_num, *hash, cl.name.clone()));
-        }
+    for (i, (group_num, hash, cl)) in entries_flat.iter().enumerate() {
+        let key = if all_files[i].is_empty() { "(unknown)".to_owned() } else { apply_alias(&all_files[i], &alias_map) };
+        let idx = *file_index.entry(key.clone()).or_insert_with(|| {
+            let n = by_file.len();
+            by_file.push((key, Vec::new()));
+            n
+        });
+        by_file[idx].1.push((*group_num, *hash, cl.name.clone()));
     }
 
     by_file.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
@@ -399,18 +342,17 @@ fn print_sub_block_text(clones: &[SubBlockClone], pstore: &(impl PayloadStore + 
         .iter()
         .flat_map(|(a, b)| [normalize_path(&a.file), normalize_path(&b.file)])
         .collect();
-    let refs: Vec<&str> = all_files.iter().map(String::as_str).collect();
-    let (alias_map, _) = build_path_aliases(&refs);
+    let (alias_map, _) = build_path_aliases(&all_files.iter().map(String::as_str).collect::<Vec<_>>());
 
     for (i, c) in clones.iter().enumerate() {
+        let (name_a, name_b) = (&labels[i].0.name, &labels[i].1.name);
         let file_a = apply_alias(&all_files[i * 2], &alias_map);
         let file_b = apply_alias(&all_files[i * 2 + 1], &alias_map);
-        let name_a = &labels[i].0.name;
-        let name_b = &labels[i].1.name;
-        let lines_a = format!("L{}-{}", c.block_a_start + 1, c.block_a_end + 1);
-        let lines_b = format!("L{}-{}", c.block_b_start + 1, c.block_b_end + 1);
         let body_tag = if c.body_match { " [exact]" } else { "" };
-        println!("    {name_a}  ({file_a} {lines_a}) \u{2194} {name_b}  ({file_b} {lines_b}){body_tag}");
+        println!(
+            "    {name_a}  ({file_a} L{}-{}) \u{2194} {name_b}  ({file_b} L{}-{}){body_tag}",
+            c.block_a_start + 1, c.block_a_end + 1, c.block_b_start + 1, c.block_b_end + 1,
+        );
     }
     println!();
 }
