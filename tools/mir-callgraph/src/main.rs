@@ -126,7 +126,7 @@ struct MirCallbacks {
     json: bool,
     /// True if compiling with --test flag (all functions are test-related).
     is_test_target: bool,
-    /// Optional sqlite DB path for delta detection and direct output.
+    /// Optional sqlite DB path for direct output.
     db_path: Option<String>,
 }
 
@@ -195,17 +195,7 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool, db_path: &Opti
     }
 
     // ── Phase 2: MIR keys — functions, closures (call edges + fn chunks) ──
-    // Load previous MIR hashes from sqlite for delta detection.
-    let prev_hashes: std::collections::HashMap<String, u64> = if let Some(db) = db_path {
-        load_prev_hashes(db, &crate_name)
-    } else {
-        std::collections::HashMap::new()
-    };
-    let mut new_hashes: Vec<(String, u64)> = Vec::new();
-    // Track names of changed items for targeted delta DELETE before INSERT.
-    // HIR items (struct/enum/trait/impl) are always included since they lack MIR hashes.
-    let mut changed_names: Vec<String> = chunks.iter().map(|c| c.name.clone()).collect();
-    let incremental = !prev_hashes.is_empty();
+    let mut fn_count: usize = 0;
 
     for &def_id in tcx.mir_keys(()) {
         let def_kind = tcx.def_kind(def_id);
@@ -221,32 +211,8 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool, db_path: &Opti
         }
 
         let body = tcx.optimized_mir(def_id);
-
-        // Compute MIR body hash for delta detection.
-        let mir_hash = {
-            use std::hash::{Hash, Hasher};
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            // Hash basic blocks count + terminator kinds as a fast fingerprint
-            body.basic_blocks.len().hash(&mut hasher);
-            for block in body.basic_blocks.iter() {
-                std::mem::discriminant(&block.terminator().kind).hash(&mut hasher);
-                block.statements.len().hash(&mut hasher);
-            }
-            hasher.finish()
-        };
         let caller_name = canonical_name(tcx, def_id.to_def_id());
-
-        // Delta detection: skip unchanged functions.
-        new_hashes.push((caller_name.clone(), mir_hash));
-        if incremental {
-            if let Some(&prev) = prev_hashes.get(&caller_name) {
-                if prev == mir_hash {
-                    continue; // MIR unchanged — skip edge extraction + chunk emission
-                }
-            }
-            // Track changed function names for targeted DELETE before INSERT
-            changed_names.push(caller_name.clone());
-        }
+        fn_count += 1;
 
         let caller_file = extract_filename(source_map, body.span);
         let caller_kind = match def_kind {
@@ -276,7 +242,11 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool, db_path: &Opti
                 || caller_file.contains("\\tests\\")
                 || caller_name.starts_with("test_")
                 || caller_name.contains("::test_")
-                || tcx.has_attr(def_id.to_def_id(), rustc_span::Symbol::intern("test"));
+                || {
+                    let hir_id = tcx.local_def_id_to_hir_id(def_id);
+                    let attrs = tcx.hir_attrs(hir_id);
+                    attrs.iter().any(|a| a.has_name(rustc_span::Symbol::intern("test")))
+                };
 
             let body_text = source_map.span_to_snippet(body.span).ok();
             chunks.push(MirChunk {
@@ -312,20 +282,93 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool, db_path: &Opti
                     .lookup_char_pos(terminator.source_info.span.lo())
                     .line;
 
-                let callee_span = tcx.def_span(callee_def_id);
-                let callee_file_str = extract_filename(source_map, callee_span);
-                let callee_start = source_map.lookup_char_pos(callee_span.lo()).line;
+                // Trait method call → resolve to all concrete impls.
+                // MIR pre-monomorphization calls trait methods, not concrete impls.
+                // We expand to all local implementations so the call graph is complete.
+                let is_trait_method = matches!(tcx.def_kind(callee_def_id), DefKind::AssocFn)
+                    && matches!(tcx.def_kind(tcx.parent(callee_def_id)), DefKind::Trait);
 
-                edges.push(CallEdge {
-                    caller: caller_name.clone(),
-                    caller_file: caller_file.clone(),
-                    caller_kind: caller_kind.to_string(),
-                    callee: callee_name,
-                    callee_file: callee_file_str,
-                    callee_start_line: callee_start,
-                    line: call_line,
-                    is_local: callee_def_id.is_local(),
-                });
+                if is_trait_method {
+                    let trait_def_id = tcx.parent(callee_def_id);
+                    let method_name = tcx.item_name(callee_def_id);
+                    let impls = tcx.trait_impls_of(trait_def_id);
+                    let mut emitted = false;
+                    for impl_def_id in impls.blanket_impls().iter()
+                        .chain(impls.non_blanket_impls().values().flat_map(|v| v.iter()))
+                    {
+                        // Include workspace-local impls (not just current crate).
+                        // Check if the impl's source file is a real file (not from external deps).
+                        let impl_span = tcx.def_span(*impl_def_id);
+                        let impl_file = extract_filename(source_map, impl_span);
+                        if impl_file.is_empty() || impl_file.starts_with('/') && impl_file.contains("/.cargo/") || impl_file.contains("\\.cargo\\") {
+                            continue;
+                        }
+                        for item in tcx.associated_items(*impl_def_id).in_definition_order() {
+                            if item.name() == method_name && matches!(item.kind, rustc_middle::ty::AssocKind::Fn { .. }) {
+                                let impl_span = tcx.def_span(item.def_id);
+                                let impl_file = extract_filename(source_map, impl_span);
+                                let impl_start = source_map.lookup_char_pos(impl_span.lo()).line;
+                                edges.push(CallEdge {
+                                    caller: caller_name.clone(),
+                                    caller_file: caller_file.clone(),
+                                    caller_kind: caller_kind.to_string(),
+                                    callee: canonical_name(tcx, item.def_id),
+                                    callee_file: impl_file,
+                                    callee_start_line: impl_start,
+                                    line: call_line,
+                                    is_local: item.def_id.is_local(),
+                                });
+                                emitted = true;
+                            }
+                        }
+                    }
+                    // Also emit edge to default impl if it has a body.
+                    // callee_def_id points to the trait method, which has a body
+                    // if it provides a default implementation.
+                    if tcx.is_mir_available(callee_def_id) {
+                        let callee_span = tcx.def_span(callee_def_id);
+                        let callee_file_str = extract_filename(source_map, callee_span);
+                        if !callee_file_str.is_empty() {
+                            edges.push(CallEdge {
+                                caller: caller_name.clone(),
+                                caller_file: caller_file.clone(),
+                                caller_kind: caller_kind.to_string(),
+                                callee: callee_name.clone(),
+                                callee_file: callee_file_str,
+                                callee_start_line: source_map.lookup_char_pos(callee_span.lo()).line,
+                                line: call_line,
+                                is_local: callee_def_id.is_local(),
+                            });
+                            emitted = true;
+                        }
+                    }
+                    // Fallback: emit trait method edge if nothing found (external trait)
+                    if !emitted {
+                        let callee_span = tcx.def_span(callee_def_id);
+                        edges.push(CallEdge {
+                            caller: caller_name.clone(),
+                            caller_file: caller_file.clone(),
+                            caller_kind: caller_kind.to_string(),
+                            callee: callee_name,
+                            callee_file: extract_filename(source_map, callee_span),
+                            callee_start_line: source_map.lookup_char_pos(callee_span.lo()).line,
+                            line: call_line,
+                            is_local: callee_def_id.is_local(),
+                        });
+                    }
+                } else {
+                    let callee_span = tcx.def_span(callee_def_id);
+                    edges.push(CallEdge {
+                        caller: caller_name.clone(),
+                        caller_file: caller_file.clone(),
+                        caller_kind: caller_kind.to_string(),
+                        callee: callee_name,
+                        callee_file: extract_filename(source_map, callee_span),
+                        callee_start_line: source_map.lookup_char_pos(callee_span.lo()).line,
+                        line: call_line,
+                        is_local: callee_def_id.is_local(),
+                    });
+                }
                 seen_refs.insert(callee_def_id);
 
                 // 2. Function references passed as arguments
@@ -366,55 +409,38 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool, db_path: &Opti
         }
     }
 
-    // Save MIR hashes for next run's delta detection.
-    if let Some(db) = db_path {
-        save_hashes(db, &crate_name, &new_hashes);
-    }
-
-    let total_fns = new_hashes.len();
-    let changed_fns = if incremental { edges.len().min(total_fns) } else { total_fns };
-
     // ── Output ──────────────────────────────────────────────────────
     let out_dir = env::var("MIR_CALLGRAPH_OUT").ok();
 
     // Prefer sqlite direct write; fall back to JSONL for compatibility.
     if let Some(db) = &db_path {
         if let Ok(conn) = rusqlite::Connection::open(db) {
+            // WAL mode + busy timeout for safe concurrent writes (lib + test targets).
+            let _ = conn.pragma_update(None, "journal_mode", "wal");
+            conn.busy_timeout(std::time::Duration::from_secs(30)).ok();
+
             let _ = conn.execute_batch("
                 CREATE TABLE IF NOT EXISTS mir_edges (
                     caller TEXT, caller_file TEXT, caller_kind TEXT,
                     callee TEXT, callee_file TEXT, callee_start_line INTEGER,
-                    line INTEGER, is_local INTEGER, crate_name TEXT
+                    line INTEGER, is_local INTEGER, crate_name TEXT,
+                    UNIQUE(caller, callee, line, crate_name)
                 );
                 CREATE TABLE IF NOT EXISTS mir_chunks (
                     name TEXT, file TEXT, kind TEXT,
                     start_line INTEGER, end_line INTEGER,
                     signature TEXT, visibility TEXT, is_test INTEGER,
-                    body TEXT, calls TEXT, type_refs TEXT, crate_name TEXT
+                    body TEXT, calls TEXT, type_refs TEXT, crate_name TEXT,
+                    UNIQUE(name, kind, crate_name)
                 );
             ");
 
             if let Ok(tx) = conn.unchecked_transaction() {
-                // Delta DELETE: only remove rows for changed functions (or all if not incremental)
-                if incremental && !changed_names.is_empty() {
-                    let mut del_edge = tx.prepare_cached(
-                        "DELETE FROM mir_edges WHERE caller = ?1 AND crate_name = ?2"
-                    ).unwrap();
-                    let mut del_chunk = tx.prepare_cached(
-                        "DELETE FROM mir_chunks WHERE name = ?1 AND crate_name = ?2"
-                    ).unwrap();
-                    for name in &changed_names {
-                        let _ = del_edge.execute(rusqlite::params![name, crate_name]);
-                        let _ = del_chunk.execute(rusqlite::params![name, crate_name]);
-                    }
-                } else if !incremental {
-                    // First run: clear all rows for this crate
-                    let _ = tx.execute("DELETE FROM mir_edges WHERE crate_name = ?1", [&crate_name]);
-                    let _ = tx.execute("DELETE FROM mir_chunks WHERE crate_name = ?1", [&crate_name]);
-                }
+                // INSERT OR IGNORE only — caller (rude add) clears tables before build.
+                // This allows lib + test compilations to safely accumulate edges.
                 {
                     let mut edge_stmt = tx.prepare_cached(
-                        "INSERT INTO mir_edges VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)"
+                        "INSERT OR IGNORE INTO mir_edges VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)"
                     ).unwrap();
                     for e in &edges {
                         let _ = edge_stmt.execute(rusqlite::params![
@@ -426,7 +452,7 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool, db_path: &Opti
                 }
                 {
                     let mut chunk_stmt = tx.prepare_cached(
-                        "INSERT INTO mir_chunks VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)"
+                        "INSERT OR IGNORE INTO mir_chunks VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)"
                     ).unwrap();
                     for c in &chunks {
                         let _ = chunk_stmt.execute(rusqlite::params![
@@ -441,7 +467,7 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool, db_path: &Opti
             }
         }
         eprintln!(
-            "[mir-callgraph] {crate_name}: {} edges, {} chunks (sqlite, {changed_fns}/{total_fns} changed)",
+            "[mir-callgraph] {crate_name}: {} edges, {} chunks (sqlite, {fn_count} fns)",
             edges.len(), chunks.len()
         );
     } else if let Some(dir) = &out_dir {
@@ -468,7 +494,7 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool, db_path: &Opti
         }
 
         eprintln!(
-            "[mir-callgraph] {crate_name}: {} edges, {} chunks ({changed_fns}/{total_fns} changed)",
+            "[mir-callgraph] {crate_name}: {} edges, {} chunks ({fn_count} fns)",
             edges.len(), chunks.len()
         );
     } else if json {
@@ -675,36 +701,3 @@ fn main() {
     std::process::exit(status.code().unwrap_or(1));
 }
 
-// ── MIR hash helpers for delta detection ─────────────────────────
-
-fn load_prev_hashes(db_path: &str, crate_name: &str) -> std::collections::HashMap<String, u64> {
-    let mut map = std::collections::HashMap::new();
-    let Ok(conn) = rusqlite::Connection::open(db_path) else { return map };
-    let _ = conn.execute_batch("CREATE TABLE IF NOT EXISTS mir_hashes (name TEXT, hash INTEGER, crate_name TEXT)");
-    let Ok(mut stmt) = conn.prepare("SELECT name, hash FROM mir_hashes WHERE crate_name = ?1") else { return map };
-    let cn = crate_name.replace('-', "_");
-    if let Ok(rows) = stmt.query_map([&cn], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
-    }) {
-        for r in rows.flatten() {
-            map.insert(r.0, r.1);
-        }
-    }
-    map
-}
-
-fn save_hashes(db_path: &str, crate_name: &str, hashes: &[(String, u64)]) {
-    let Ok(conn) = rusqlite::Connection::open(db_path) else { return };
-    let _ = conn.execute_batch("CREATE TABLE IF NOT EXISTS mir_hashes (name TEXT, hash INTEGER, crate_name TEXT)");
-    let cn = crate_name.replace('-', "_");
-    let _ = conn.execute("DELETE FROM mir_hashes WHERE crate_name = ?1", [&cn]);
-    if let Ok(tx) = conn.unchecked_transaction() {
-        {
-            let mut stmt = tx.prepare_cached("INSERT INTO mir_hashes VALUES (?1, ?2, ?3)").unwrap();
-            for (name, hash) in hashes {
-                let _ = stmt.execute(rusqlite::params![name, *hash as i64, cn]);
-            }
-        }
-        let _ = tx.commit();
-    }
-}

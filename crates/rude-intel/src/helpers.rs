@@ -185,5 +185,3 @@ pub fn extract_crate_name(path: &str) -> String {
     }
     "(root)".to_owned()
 }
-
-

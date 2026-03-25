@@ -196,7 +196,14 @@ impl MirEdgeMap {
                 .push(callee.clone());
 
             let callee_file_normalized = normalize_path(&callee_file);
-            combined.caller_crate.insert(caller.clone(), crate_name);
+            // Track caller→crate mapping; a caller may appear in multiple crates
+            // (e.g. lib + test), so we always keep the first association.
+            combined.caller_crate.entry(caller.clone()).or_insert(crate_name.clone());
+            // Also register in crate→callers reverse index immediately
+            combined.crate_to_callers
+                .entry(crate_name)
+                .or_default()
+                .push(caller.clone());
             combined.by_caller
                 .entry(caller)
                 .or_default()
@@ -210,12 +217,10 @@ impl MirEdgeMap {
             combined.total += 1;
         }
 
-        // Build reverse index
-        for (caller, crate_name) in &combined.caller_crate {
-            combined.crate_to_callers
-                .entry(crate_name.clone())
-                .or_default()
-                .push(caller.clone());
+        // Dedup crate_to_callers
+        for callers in combined.crate_to_callers.values_mut() {
+            callers.sort_unstable();
+            callers.dedup();
         }
 
         Ok(combined)
@@ -454,6 +459,29 @@ fn find_mir_callgraph_bin(override_path: Option<&Path>) -> Result<PathBuf> {
 /// Returns `{project_root}/target/mir-edges/mir.db`.
 pub fn mir_db_path(project_root: &Path) -> PathBuf {
     project_root.join("target").join("mir-edges").join("mir.db")
+}
+
+/// Clear mir_edges and mir_chunks tables for specific crates (or all if empty).
+///
+/// Must be called BEFORE running mir-callgraph so that lib + test compilations
+/// can safely INSERT OR IGNORE without race conditions.
+pub fn clear_mir_db(project_root: &Path, crates: &[&str]) -> Result<()> {
+    let db_path = mir_db_path(project_root);
+    if !db_path.exists() { return Ok(()); }
+    let conn = rusqlite::Connection::open(&db_path)
+        .with_context(|| format!("failed to open mir.db: {}", db_path.display()))?;
+    conn.busy_timeout(std::time::Duration::from_secs(5)).ok();
+
+    if crates.is_empty() {
+        conn.execute_batch("DELETE FROM mir_edges; DELETE FROM mir_chunks;").ok();
+    } else {
+        for krate in crates {
+            let cn = krate.replace('-', "_");
+            conn.execute("DELETE FROM mir_edges WHERE crate_name = ?1", [&cn]).ok();
+            conn.execute("DELETE FROM mir_chunks WHERE crate_name = ?1", [&cn]).ok();
+        }
+    }
+    Ok(())
 }
 
 /// Run mir-callgraph on the entire workspace.

@@ -162,6 +162,8 @@ pub fn run(db_path: PathBuf, input_path: PathBuf, exclude: &[String]) -> Result<
         if !changed_crates.is_empty() {
             let crate_refs: Vec<&str> = changed_crates.iter().map(|s| s.as_str()).collect();
             eprintln!("  [mir] incremental: {} crate(s) — {}", crate_refs.len(), crate_refs.join(", "));
+            // Clear mir.db tables for changed crates BEFORE cargo runs.
+            rude_intel::mir_edges::clear_mir_db(&input_path, &crate_refs).ok();
             let rust_only = code_files.iter().all(|f| {
                 f.extension().and_then(|e| e.to_str()) == Some("rs")
             });
@@ -173,7 +175,8 @@ pub fn run(db_path: PathBuf, input_path: PathBuf, exclude: &[String]) -> Result<
             incremental_crates = changed_crates;
         }
     } else {
-        // Initial: analyze entire workspace
+        // Initial: analyze entire workspace.
+        rude_intel::mir_edges::clear_mir_db(&input_path, &[]).ok();
         rude_intel::mir_edges::run_mir_callgraph(&input_path, None)
             .context("mir-callgraph failed — ensure nightly rustc and mir-callgraph are installed")?;
     }

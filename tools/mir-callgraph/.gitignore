@@ -1,1 +1,2 @@
-tools/mir-callgraph/target/
+target/
+*.db

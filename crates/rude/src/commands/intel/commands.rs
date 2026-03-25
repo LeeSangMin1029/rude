@@ -620,8 +620,10 @@ pub fn run_dead(
                 continue;
             }
         }
-        // Skip trait impls (called via dynamic dispatch)
-        if graph.fn_trait_impl[i].is_some() {
+        // Skip trait impls: "<T as Trait>::method" pattern.
+        // These may be called via dynamic dispatch or MIR-inlined (e.g. PartialEq::eq
+        // becomes discriminant comparison), so MIR edges may not exist even if used.
+        if graph.names[i].starts_with('<') && graph.names[i].contains(" as ") {
             continue;
         }
         // Skip main/entry points
@@ -844,11 +846,6 @@ fn is_derive_generated(name: &str) -> bool {
     || name.contains("as bincode::Encode>::encode")
     || name.contains("as bincode::Decode<")
     || name.contains("as bincode::BorrowDecode<")
-    // std derives
-    || name.contains("as std::clone::Clone>::clone")
-    || name.contains("as std::fmt::Debug>::fmt")
-    || name.contains("as std::default::Default>::default")
-    || name.contains("as std::marker::Copy>")
     // clap derives
     || name.contains("as clap::")
 }

@@ -307,7 +307,9 @@ pub(crate) fn resolve_incremental(
             || is_crate_cache_stale(db_path, mir_edge_dir, crate_name, bundle_mtime);
 
         if needs_resolve {
-            let idx_edges = resolve_crate_edges(crate_name, mir_edges, &loc_to_idx, &name_to_idx, &suffix_to_idx, &file_suffix_to_normalized, chunks);
+            let mut idx_edges = resolve_crate_edges(crate_name, mir_edges, &loc_to_idx, &name_to_idx, &suffix_to_idx, &file_suffix_to_normalized, chunks);
+            idx_edges.sort_unstable();
+            idx_edges.dedup();
             re_resolved_crates += 1;
             mir_resolved += idx_edges.len();
             new_crates.insert(crate_name.to_string(), CrateEdgeCache { idx_edges: idx_edges.clone() });
@@ -320,7 +322,9 @@ pub(crate) fn resolve_incremental(
                 adj.add_edge(s as usize, t, line);
             }
         } else {
-            let edges = resolve_crate_edges(crate_name, mir_edges, &loc_to_idx, &name_to_idx, &suffix_to_idx, &file_suffix_to_normalized, chunks);
+            let mut edges = resolve_crate_edges(crate_name, mir_edges, &loc_to_idx, &name_to_idx, &suffix_to_idx, &file_suffix_to_normalized, chunks);
+            edges.sort_unstable();
+            edges.dedup();
             re_resolved_crates += 1;
             mir_resolved += edges.len();
             new_crates.insert(crate_name.to_string(), CrateEdgeCache { idx_edges: edges.clone() });
@@ -432,7 +436,6 @@ pub(crate) fn resolve_with_mir(
             } else {
                 None
             }.or_else(|| {
-                // Fallback: name match (for edges without callee location)
                 let lower = callee.name.to_lowercase();
                 resolve_mir_name(&lower, &name_to_idx)
             });
