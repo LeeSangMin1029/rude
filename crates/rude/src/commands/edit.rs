@@ -370,77 +370,46 @@ pub fn insert_before(
 }
 
 /// Delete a symbol from the source file.
-pub fn delete_symbol(db: PathBuf, symbol: String, file: Option<String>) -> Result<()> {
-    let loc = locate_symbol(&db, &symbol, file.as_deref())?;
+/// Delete one or more symbols. Warns about callers before deletion.
+/// Multiple symbols are deleted in one pass (no line drift).
+pub fn delete_symbols(db: PathBuf, symbols: &[&str], file: Option<&str>) -> Result<()> {
+    if symbols.is_empty() { return Ok(()); }
 
-    // Warn about callers that will break after deletion
+    // Warn about callers
     if let Ok((graph, _)) = crate::commands::intel::load_or_build_graph_with_chunks(&db) {
-        // Match symbol against graph names (same logic as locate_symbol)
-        let target_idx: Vec<usize> = graph.names.iter().enumerate()
-            .filter(|(_, n)| *n == &symbol || n.ends_with(&format!("::{symbol}")))
-            .map(|(i, _)| i)
-            .collect();
-        for &idx in &target_idx {
-            let callers: Vec<_> = graph.callers[idx].iter()
-                .filter(|&&c| !graph.is_test[c as usize] && !target_idx.contains(&(c as usize)))
+        for &sym in symbols {
+            let target_idx: Vec<usize> = graph.names.iter().enumerate()
+                .filter(|(_, n)| *n == sym || n.ends_with(&format!("::{sym}")))
+                .map(|(i, _)| i)
                 .collect();
-            if !callers.is_empty() {
-                eprintln!("  warning: {symbol} has {} caller(s):", callers.len());
-                for &&c in &callers {
-                    eprintln!("    → {} ({})", graph.names[c as usize], graph.files[c as usize]);
+            for &idx in &target_idx {
+                let callers: Vec<_> = graph.callers[idx].iter()
+                    .filter(|&&c| !graph.is_test[c as usize] && !target_idx.contains(&(c as usize)))
+                    .collect();
+                if !callers.is_empty() {
+                    eprintln!("  warning: {sym} has {} caller(s):", callers.len());
+                    for &&c in &callers {
+                        eprintln!("    → {} ({})", graph.names[c as usize], graph.files[c as usize]);
+                    }
                 }
             }
         }
     }
 
-    locked_edit(&loc.abs_path, |content| {
-        let lines: Vec<&str> = content.lines().collect();
-
-        let mut result: Vec<&str> = Vec::with_capacity(lines.len());
-        result.extend_from_slice(&lines[..loc.start_line]);
-
-        // Skip blank lines immediately after the deleted symbol to avoid double-spacing.
-        let mut after = loc.end_line + 1;
-        while after < lines.len() && lines[after].trim().is_empty() {
-            after += 1;
-        }
-        if after < lines.len() {
-            result.extend_from_slice(&lines[after..]);
-        }
-
-        eprintln!(
-            "Deleted {} (L{}-{}) from {}",
-            symbol,
-            loc.start_line + 1,
-            loc.end_line + 1,
-            loc.rel_path
-        );
-        Ok(join_lines(&result, content.ends_with('\n')))
-    })
-}
-
-/// Delete multiple symbols from the same file in one pass (no line drift).
-pub fn delete_symbols(db: PathBuf, symbols: &[&str], file: Option<&str>) -> Result<()> {
-    if symbols.is_empty() { return Ok(()); }
-
-    // Locate all symbols and collect ranges
+    // Locate all symbols
     let mut locs: Vec<(usize, usize, String)> = Vec::new();
     for &sym in symbols {
         let loc = locate_symbol(&db, sym, file)?;
         locs.push((loc.start_line, loc.end_line, sym.to_string()));
     }
+    locs.sort_by(|a, b| b.0.cmp(&a.0)); // back-to-front
 
-    // Sort by start line descending — remove from bottom to top
-    locs.sort_by(|a, b| b.0.cmp(&a.0));
-
-    // All must be same file
     let first_loc = locate_symbol(&db, symbols[0], file)?;
 
     locked_edit(&first_loc.abs_path, |content| {
         let mut lines: Vec<&str> = content.lines().collect();
         for (start, end, name) in &locs {
             let end = (*end + 1).min(lines.len());
-            // Skip trailing blank lines
             let mut after = end;
             while after < lines.len() && lines[after].trim().is_empty() {
                 after += 1;
@@ -449,10 +418,12 @@ pub fn delete_symbols(db: PathBuf, symbols: &[&str], file: Option<&str>) -> Resu
             eprintln!("  Deleted {name} (L{}-{})", start + 1, end);
         }
         Ok(join_lines(&lines, content.ends_with('\n')))
-    })?;
+    })
+}
 
-    eprintln!("Deleted {} symbols from {}", locs.len(), first_loc.rel_path);
-    Ok(())
+/// Single-symbol convenience wrapper.
+pub fn delete_symbol(db: PathBuf, symbol: String, file: Option<String>) -> Result<()> {
+    delete_symbols(db, &[&symbol], file.as_deref())
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
