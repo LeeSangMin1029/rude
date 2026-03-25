@@ -133,22 +133,16 @@ fn print_trait_impls_if_relevant(name: Option<&str>) -> Result<()> {
         Some(g) => g,
         None => return Ok(()),
     };
-    let indices = graph.resolve(name);
-    for idx in indices {
+    for idx in graph.resolve(name) {
         let i = idx as usize;
-        if graph.kinds[i] != "trait" {
-            continue;
-        }
         let impls = &graph.trait_impls[i];
-        if impls.is_empty() {
-            continue;
-        }
+        if graph.kinds[i] != "trait" || impls.is_empty() { continue; }
         println!("  implementations of {}:", graph.names[i]);
-        for &impl_idx in impls {
-            let ii = impl_idx as usize;
-            let file = relative_path(&graph.files[ii]);
-            let lines = format_lines_opt(graph.lines[ii]);
-            println!("    {file}{lines}  [{}] {}", graph.kinds[ii], graph.names[ii]);
+        for ii in impls.iter().map(|&x| x as usize) {
+            println!("    {}{}  [{}] {}",
+                relative_path(&graph.files[ii]),
+                format_lines_opt(graph.lines[ii]),
+                graph.kinds[ii], graph.names[ii]);
         }
         println!();
     }
@@ -187,13 +181,9 @@ pub fn run_context(
             }
             let all_entries = impact::bfs_reverse(&graph, &field_chunks, effective_depth);
             let (prod_count, test_count) = count_prod_test(&all_entries);
-            let mut entries = filter_scope_entries(all_entries, &graph, &scope);
-            entries = filter_test_entries(entries, include_tests);
-            let tagged = build_blast_tagged(&entries, Some(&field_chunks));
-            let scope_label = scope.as_ref().map_or(String::new(), |s| format!(" (scope: {s})"));
-            println!("=== context: {symbol}{scope_label} ({} field accessors, {} affected, {} prod, {} test) ===\n",
-                field_chunks.len(), prod_count + test_count, prod_count, test_count);
-            print_file_grouped(&graph, &tagged, false, &alias_map);
+            let header = format!("=== context: {symbol}{} ({} field accessors, {} affected, {} prod, {} test) ===\n",
+                fmt_scope(&scope), field_chunks.len(), prod_count + test_count, prod_count, test_count);
+            print_blast_result(all_entries, &graph, &scope, include_tests, Some(&field_chunks), &header, &alias_map);
             return Ok(());
         }
 
@@ -201,13 +191,9 @@ pub fn run_context(
         let seeds = impact::expand_seeds_with_traits(&graph, &seeds);
         let all_entries = impact::bfs_reverse(&graph, &seeds, effective_depth);
         let (prod_count, test_count) = count_prod_test(&all_entries);
-        let mut entries = filter_scope_entries(all_entries, &graph, &scope);
-        entries = filter_test_entries(entries, include_tests);
-        let tagged = build_blast_tagged(&entries, None);
-        let scope_label = scope.as_ref().map_or(String::new(), |s| format!(" (scope: {s})"));
-        println!("=== context: {symbol}{scope_label} ({} affected, {} prod, {} test) ===\n",
-            prod_count + test_count, prod_count, test_count);
-        print_file_grouped(&graph, &tagged, false, &alias_map);
+        let header = format!("=== context: {symbol}{} ({} affected, {} prod, {} test) ===\n",
+            fmt_scope(&scope), prod_count + test_count, prod_count, test_count);
+        print_blast_result(all_entries, &graph, &scope, include_tests, None, &header, &alias_map);
         return Ok(());
     }
 
@@ -223,29 +209,7 @@ pub fn run_context(
     }
 
     // Build tagged entries for file-grouped output
-    let mut entries: Vec<TaggedEntry> = Vec::new();
-    for &idx in &result.seeds {
-        entries.push(TaggedEntry { idx, tag: "def", sig: true, call_line: 0 });
-    }
-    for e in &result.callers {
-        // Caller calls the seed — look up call site line
-        let cl = result.seeds.first().map_or(0, |&seed| graph.call_site_line(e.idx, seed));
-        entries.push(TaggedEntry { idx: e.idx, tag: "caller", sig: false, call_line: cl });
-    }
-    for e in &result.callees {
-        // Seed calls this callee — look up call site line from seed
-        let cl = result.seeds.first().map_or(0, |&seed| graph.call_site_line(seed, e.idx));
-        entries.push(TaggedEntry { idx: e.idx, tag: "callee", sig: false, call_line: cl });
-    }
-    for &idx in &result.types {
-        entries.push(TaggedEntry { idx, tag: "type", sig: false, call_line: 0 });
-    }
-    if include_tests {
-        for &idx in &result.tests {
-            let cl = result.seeds.first().map_or(0, |&seed| graph.call_site_line(idx, seed));
-            entries.push(TaggedEntry { idx, tag: "test", sig: false, call_line: cl });
-        }
-    }
+    let mut entries = build_context_entries(&result, &graph, include_tests);
 
     // Apply scope filter: keep seeds (def) always, filter others by file path
     if let Some(ref scope) = scope {
@@ -264,11 +228,7 @@ pub fn run_context(
         result.types.len(), result.tests.len(),
     );
     let (alias_map, _) = graph.global_aliases();
-    if let Some(ref scope) = scope {
-        println!("=== context: {symbol} (scope: {scope}) ({counts}) ===\n");
-    } else {
-        println!("=== context: {symbol} ({counts}) ===\n");
-    }
+    println!("=== context: {symbol}{} ({counts}) ===\n", fmt_scope(&scope));
     print_file_grouped(&graph, &entries, source, &alias_map);
 
     if !include_tests && !result.tests.is_empty() {
@@ -317,6 +277,54 @@ fn run_context_tree(symbol: &str, depth: u32, include_tests: bool) -> Result<()>
     Ok(())
 }
 
+
+/// Common blast output: filter → build tagged → print header → print file-grouped.
+fn print_blast_result(
+    all_entries: Vec<impact::BfsEntry>,
+    graph: &graph::CallGraph,
+    scope: &Option<String>,
+    include_tests: bool,
+    field_chunks: Option<&[u32]>,
+    header: &str,
+    alias_map: &std::collections::BTreeMap<String, String>,
+) {
+    let mut entries = filter_scope_entries(all_entries, graph, scope);
+    entries = filter_test_entries(entries, include_tests);
+    let tagged = build_blast_tagged(&entries, field_chunks);
+    print!("{header}");
+    print_file_grouped(graph, &tagged, false, alias_map);
+}
+
+/// Build `TaggedEntry` list from a `ContextResult` for normal (non-blast) context output.
+fn build_context_entries(
+    result: &rude_intel::context_cmd::ContextResult,
+    graph: &graph::CallGraph,
+    include_tests: bool,
+) -> Vec<TaggedEntry> {
+    let seed0 = result.seeds.first().copied();
+    let mut entries: Vec<TaggedEntry> = Vec::new();
+    for &idx in &result.seeds {
+        entries.push(TaggedEntry { idx, tag: "def", sig: true, call_line: 0 });
+    }
+    for e in &result.callers {
+        let cl = seed0.map_or(0, |seed| graph.call_site_line(e.idx, seed));
+        entries.push(TaggedEntry { idx: e.idx, tag: "caller", sig: false, call_line: cl });
+    }
+    for e in &result.callees {
+        let cl = seed0.map_or(0, |seed| graph.call_site_line(seed, e.idx));
+        entries.push(TaggedEntry { idx: e.idx, tag: "callee", sig: false, call_line: cl });
+    }
+    for &idx in &result.types {
+        entries.push(TaggedEntry { idx, tag: "type", sig: false, call_line: 0 });
+    }
+    if include_tests {
+        for &idx in &result.tests {
+            let cl = seed0.map_or(0, |seed| graph.call_site_line(idx, seed));
+            entries.push(TaggedEntry { idx, tag: "test", sig: false, call_line: cl });
+        }
+    }
+    entries
+}
 
 /// Count prod/test callers in `all_entries`, skipping depth-0 seeds.
 fn count_prod_test(all_entries: &[impact::BfsEntry]) -> (usize, usize) {
@@ -411,6 +419,12 @@ pub fn run_trace(
     }
 
     Ok(())
+}
+
+/// Format an optional scope label for header output.
+#[inline]
+fn fmt_scope(scope: &Option<String>) -> String {
+    scope.as_ref().map_or(String::new(), |s| format!(" (scope: {s})"))
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────
