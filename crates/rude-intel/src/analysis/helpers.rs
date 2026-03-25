@@ -1,7 +1,6 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::data::parse::ParsedChunk;
 pub fn find_project_root(db: &Path) -> Option<PathBuf> {
     let abs = db.canonicalize().ok()?;
     let start = if abs.is_dir() {
@@ -28,17 +27,8 @@ pub fn find_project_root(db: &Path) -> Option<PathBuf> {
     None
 }
 
-pub fn format_lines_str_opt(lines: Option<(usize, usize)>) -> String {
-    if let Some((s, e)) = lines {
-        format!("{s}-{e}")
-    } else {
-        String::new()
-    }
-}
-
 pub fn format_lines_opt(lines: Option<(usize, usize)>) -> String {
-    let s = format_lines_str_opt(lines);
-    if s.is_empty() { s } else { format!(":{s}") }
+    lines.map_or(String::new(), |(s, e)| format!(":{s}-{e}"))
 }
 
 pub fn relative_path(path: &str) -> &str {
@@ -71,11 +61,13 @@ pub fn build_path_aliases(paths: &[&str]) -> (std::collections::BTreeMap<String,
     let mut crate_dirs: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
     for &dir in &dirs {
-        if let Some(root) = extract_crate_src_root(dir) {
-            let suffix = &dir[root.len()..];
-            crate_dirs.entry(root.to_owned()).or_default().insert(suffix.to_owned());
+        if let Some(root_end) = dir.find("crates/").and_then(|cs| {
+            let after = &dir[cs + 7..];
+            let ne = after.find('/')?;
+            if after[ne + 1..].starts_with("src/") { Some(cs + 7 + ne + 5) } else { None }
+        }) {
+            crate_dirs.entry(dir[..root_end].to_owned()).or_default().insert(dir[root_end..].to_owned());
         }
-        // Non-crate directories (no src/) are skipped — not code paths.
     }
 
     let mut alias_map: BTreeMap<String, String> = BTreeMap::new();
@@ -109,19 +101,6 @@ pub fn build_path_aliases(paths: &[&str]) -> (std::collections::BTreeMap<String,
     (alias_map, legend)
 }
 
-fn extract_crate_src_root(dir: &str) -> Option<&str> {
-    let crate_start = dir.find("crates/")?;
-    let after_crates = &dir[crate_start + 7..];
-    let name_end = after_crates.find('/')?;
-    let after_name = &after_crates[name_end + 1..];
-    // Expect "src/" after crate name
-    if after_name.starts_with("src/") {
-        let root_end = crate_start + 7 + name_end + 1 + 4; // "src/"
-        Some(&dir[..root_end])
-    } else {
-        None
-    }
-}
 
 pub fn apply_alias(path: &str, alias_map: &std::collections::BTreeMap<String, String>) -> String {
     // Find the longest matching directory prefix.
@@ -134,14 +113,6 @@ pub fn apply_alias(path: &str, alias_map: &std::collections::BTreeMap<String, St
         format!("{alias}{file}")
     } else {
         path.to_owned()
-    }
-}
-
-pub fn lines_str(c: &ParsedChunk) -> String {
-    if let Some((start, end)) = c.lines {
-        format!("{start}-{end}")
-    } else {
-        String::new()
     }
 }
 
