@@ -277,7 +277,7 @@ pub fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -
     let mut name_cache: HashMap<String, String> = HashMap::new();
 
     // Phase 1: type chunks (trait/impl/struct/enum)
-    collect_type_chunks(&krate, &mut chunks);
+    let mut seen_types = collect_type_chunks(&krate, &mut chunks);
 
     // Phase 2: function chunks + call edges
     for item in rustc_public::all_local_items() {
@@ -317,6 +317,11 @@ pub fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -
             is_test: is_test_fn(&filename, &chunks.last().map(|c| c.name.as_str()).unwrap_or(""), is_test_target),
             body: String::new(), calls: String::new(), type_refs: String::new(),
         });
+
+        // Scan local variable types for additional struct/enum
+        for local in body.locals() {
+            try_add_adt(&local.ty, &mut seen_types, &mut chunks);
+        }
     }
 
     // Fill calls per chunk
@@ -328,7 +333,7 @@ pub fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -
     ControlFlow::Continue(())
 }
 
-fn collect_type_chunks(krate: &rustc_public::Crate, chunks: &mut Vec<MirChunk>) {
+fn collect_type_chunks(krate: &rustc_public::Crate, chunks: &mut Vec<MirChunk>) -> std::collections::HashSet<String> {
     let _phase = tracing::info_span!("type_chunks").entered();
     let mut seen_types: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -344,20 +349,68 @@ fn collect_type_chunks(krate: &rustc_public::Crate, chunks: &mut Vec<MirChunk>) 
         chunks.push(make_chunk(strip_crate_prefix(&imp.name()), file, "impl", &imp.span()));
 
         if let Some(ty) = impl_self_ty(&imp) {
-            if let TyKind::RigidTy(RigidTy::Adt(adt_def, _)) = ty.kind() {
-                let type_name = strip_crate_prefix(&adt_def.name());
-                let adt_file = span_file(&adt_def.span());
-                if is_local_file(&adt_file) && seen_types.insert(type_name.clone()) {
-                    let sig = build_adt_signature(&type_name, &adt_def);
-                    let kind_str = adt_kind_str(adt_def.kind());
-                    let (s, e) = span_lines(&adt_def.span());
-                    chunks.push(MirChunk {
-                        name: type_name, file: adt_file, kind: kind_str.to_string(),
-                        start_line: s, end_line: e,
-                        signature: Some(sig), visibility: String::new(),
-                        is_test: false, body: String::new(),
-                        calls: String::new(), type_refs: String::new(),
-                    });
+            try_add_adt(&ty, &mut seen_types, chunks);
+        }
+    }
+
+    // Scan all local items' types for additional ADTs (structs without trait impls)
+    for item in rustc_public::all_local_items() {
+        let ty = item.ty();
+        // Direct ADT (e.g. Ctor returns the struct type)
+        try_add_adt(&ty, &mut seen_types, chunks);
+
+        // Scan function signature params + return type
+        if let TyKind::RigidTy(RigidTy::FnDef(def, _)) = ty.kind() {
+            let sig = def.fn_sig().value;
+            for param in sig.inputs() {
+                try_add_adt(param, &mut seen_types, chunks);
+                // Also check inside &T, &mut T
+                if let TyKind::RigidTy(RigidTy::Ref(_, inner, _)) = param.kind() {
+                    try_add_adt(&inner, &mut seen_types, chunks);
+                }
+            }
+            try_add_adt(&sig.output(), &mut seen_types, chunks);
+            if let TyKind::RigidTy(RigidTy::Ref(_, inner, _)) = sig.output().kind() {
+                try_add_adt(&inner, &mut seen_types, chunks);
+            }
+        }
+    }
+
+    seen_types
+}
+
+/// If ty is an ADT with a local source file, add a struct/enum chunk.
+/// Also recursively scans field types to find nested ADTs.
+fn try_add_adt(
+    ty: &rustc_public::ty::Ty,
+    seen: &mut std::collections::HashSet<String>,
+    chunks: &mut Vec<MirChunk>,
+) {
+    // Unwrap references/slices to get inner type
+    let inner = match ty.kind() {
+        TyKind::RigidTy(RigidTy::Ref(_, inner, _)) => inner,
+        TyKind::RigidTy(RigidTy::Slice(inner)) => inner,
+        _ => *ty,
+    };
+
+    if let TyKind::RigidTy(RigidTy::Adt(adt_def, _)) = inner.kind() {
+        let name = strip_crate_prefix(&adt_def.name());
+        let file = span_file(&adt_def.span());
+        if is_local_file(&file) && seen.insert(name.clone()) {
+            let sig = build_adt_signature(&name, &adt_def);
+            let kind_str = adt_kind_str(adt_def.kind());
+            let (s, e) = span_lines(&adt_def.span());
+            chunks.push(MirChunk {
+                name, file, kind: kind_str.to_string(),
+                start_line: s, end_line: e,
+                signature: Some(sig), visibility: String::new(),
+                is_test: false, body: String::new(),
+                calls: String::new(), type_refs: String::new(),
+            });
+            // Recurse into field types
+            for variant in adt_def.variants() {
+                for field in variant.fields() {
+                    try_add_adt(&field.ty(), seen, chunks);
                 }
             }
         }
