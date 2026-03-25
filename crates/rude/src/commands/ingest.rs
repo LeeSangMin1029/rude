@@ -203,11 +203,19 @@ pub fn chunks_from_mir_direct(
                 mc.type_refs.split(", ").map(|s| s.to_owned()).collect()
             };
 
+            // Prefer source signature (has pub, param names) over MIR signature
+            let source_sig = if !body_text.is_empty() {
+                body_text.split('{').next()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            } else { None };
+            let signature = source_sig.or_else(|| mc.signature.clone());
+
             let code_chunk = chunk_code::CodeChunk {
                 text: body_text.clone(),
                 kind,
                 name: mc.name.clone(),
-                signature: mc.signature.clone(),
+                signature,
                 calls,
                 call_lines,
                 type_refs,
