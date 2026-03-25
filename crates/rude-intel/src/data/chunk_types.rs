@@ -38,8 +38,9 @@ impl Default for CodeChunkConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CodeNodeKind {
+    #[default]
     Function,
     Struct,
     Enum,
@@ -73,7 +74,7 @@ impl CodeNodeKind {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CodeChunk {
     pub text: String,
     pub kind: CodeNodeKind,

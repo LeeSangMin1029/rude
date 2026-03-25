@@ -320,21 +320,13 @@ pub(crate) fn ingest_mir(
                 Vec::new()
             };
 
-            let visibility = mc
-                .visibility
-                .clone()
-                .unwrap_or_else(|| {
-                    let first_line = chunk_lines.first().map(|l| l.trim()).unwrap_or("");
-                    if first_line.starts_with("pub(crate)") {
-                        "pub(crate)".to_owned()
-                    } else if first_line.starts_with("pub(super)") {
-                        "pub(super)".to_owned()
-                    } else if first_line.starts_with("pub") {
-                        "pub".to_owned()
-                    } else {
-                        String::new()
-                    }
-                });
+            let visibility = mc.visibility.clone().unwrap_or_else(|| {
+                let fl = chunk_lines.first().map(|l| l.trim()).unwrap_or("");
+                ["pub(crate)", "pub(super)", "pub"].iter()
+                    .find(|p| fl.starts_with(**p))
+                    .map(|p| (*p).to_owned())
+                    .unwrap_or_default()
+            });
 
             let is_test = mc.is_test
                 || mc.file.contains("/tests/") || mc.file.contains("\\tests\\")
@@ -344,34 +336,14 @@ pub(crate) fn ingest_mir(
                     .is_some_and(|l| l.contains("#[test]") || l.contains("#[cfg(test)]"));
 
             let code_chunk = chunk_code::CodeChunk {
+                end_byte: body_text.len(),
                 text: body_text.clone(),
-                kind,
-                name: mc.name.clone(),
-                signature,
-                calls,
-                call_lines,
-                type_refs,
+                kind, name: mc.name.clone(), signature, calls, call_lines, type_refs,
                 start_line: mc.start_line.saturating_sub(1),
                 end_line: mc.end_line.saturating_sub(1),
-                start_byte: 0,
-                end_byte: body_text.len(),
-                chunk_index: idx,
-                imports: Vec::new(),
-                visibility,
-                string_args: Vec::new(),
-                param_flows: Vec::new(),
-                param_types,
-                field_types,
-                local_types: Vec::new(),
-                let_call_bindings: Vec::new(),
-                return_type,
-                field_accesses: Vec::new(),
-                enum_variants,
-                is_test,
-                sub_blocks: Vec::new(),
-                ast_hash: 0,
-                body_hash: 0,
-                doc_comment: None,
+                chunk_index: idx, visibility, param_types, field_types,
+                return_type, enum_variants, is_test,
+                ..Default::default()
             };
 
             entries.push(CodeChunkEntry {

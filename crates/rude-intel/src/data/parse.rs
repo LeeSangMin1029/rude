@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, bincode::Encode, bincode::Decode)]
 pub struct ParsedChunk {
     pub kind: String,
     pub name: String,
@@ -43,12 +43,11 @@ impl ParsedChunk {
             kind: chunk.kind.as_str().to_owned(),
             name: chunk.name.clone(),
             file: normalize_path(file),
-            lines,
+            lines, imports, is_test: chunk.is_test,
             signature: chunk.signature.clone(),
             calls: chunk.calls.clone(),
             call_lines: chunk.call_lines.iter().map(|l| l + 1).collect(),
             types: chunk.type_refs.clone(),
-            imports,
             string_args: chunk.string_args.clone(),
             param_flows: chunk.param_flows.clone(),
             param_types: chunk.param_types.clone(),
@@ -58,7 +57,6 @@ impl ParsedChunk {
             return_type: chunk.return_type.clone(),
             field_accesses: chunk.field_accesses.clone(),
             enum_variants: chunk.enum_variants.clone(),
-            is_test: chunk.is_test,
         }
     }
 }
@@ -183,25 +181,10 @@ pub fn parse_chunk(text: &str) -> Option<ParsedChunk> {
     }
 
     Some(ParsedChunk {
-        kind,
-        name,
-        file,
-        lines: line_range,
-        signature,
-        calls,
-        call_lines,
-        types,
-        imports: Vec::new(),
-        string_args,
-        param_flows,
-        param_types,
-        field_types,
-        local_types,
-        let_call_bindings,
-        field_accesses,
-        return_type,
-        enum_variants,
-        is_test: false,
+        kind, name, file, lines: line_range, signature, calls, call_lines,
+        types, string_args, param_flows, param_types, field_types,
+        local_types, let_call_bindings, field_accesses, return_type, enum_variants,
+        ..Default::default()
     })
 }
 
