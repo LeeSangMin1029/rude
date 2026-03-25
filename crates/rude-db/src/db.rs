@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, params};
 
-use crate::payload::{Payload, PayloadValue};
+use crate::payload::Payload;
 
 pub struct StorageEngine {
     conn: Connection,
@@ -172,22 +172,6 @@ impl StorageEngine {
             )
             .context("failed to set kv_cache value")?;
         Ok(())
-    }
-
-    fn query_first<T, P, F>(
-        stmt: &mut rusqlite::CachedStatement<'_>,
-        params: P,
-        f: F,
-    ) -> Result<Option<T>>
-    where
-        P: rusqlite::Params,
-        F: FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
-    {
-        let mut rows = stmt.query_map(params, f)?;
-        match rows.next() {
-            Some(val) => Ok(Some(val?)),
-            None => Ok(None),
-        }
     }
 
 }
