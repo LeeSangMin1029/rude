@@ -16,23 +16,9 @@ pub struct IncrementalArgs<'a> {
     pub mir_edge_dir: &'a Path,
 }
 
-/// Serializable edge-only cache (chunks are stored separately).
 #[derive(bincode::Encode, bincode::Decode)]
-struct EdgeCache {
+pub struct Edges {
     version: String,
-    name_index: Vec<(String, u32)>,
-    callees: Vec<Vec<u32>>,
-    callers: Vec<Vec<u32>>,
-    is_test: Vec<bool>,
-    trait_impls: Vec<Vec<u32>>,
-    impl_of_trait: Vec<Option<u32>>,
-    fn_trait_impl: Vec<Option<u32>>,
-    call_sites: Vec<Vec<(u32, u32)>>,
-    field_access_index: Vec<(String, Vec<u32>)>,
-}
-
-pub struct CallGraph {
-    pub chunks: Vec<ParsedChunk>,
     pub name_index: Vec<(String, u32)>,
     pub callees: Vec<Vec<u32>>,
     pub callers: Vec<Vec<u32>>,
@@ -42,6 +28,16 @@ pub struct CallGraph {
     pub fn_trait_impl: Vec<Option<u32>>,
     pub call_sites: Vec<Vec<(u32, u32)>>,
     pub field_access_index: Vec<(String, Vec<u32>)>,
+}
+
+pub struct CallGraph {
+    pub chunks: Vec<ParsedChunk>,
+    pub edges: Edges,
+}
+
+impl std::ops::Deref for CallGraph {
+    type Target = Edges;
+    fn deref(&self) -> &Edges { &self.edges }
 }
 
 impl CallGraph {
@@ -79,11 +75,12 @@ impl CallGraph {
 
         Self {
             chunks,
-            name_index,
-            callees: adj.callees, callers: adj.callers,
-            is_test, trait_impls, impl_of_trait, fn_trait_impl,
-            call_sites: adj.call_sites,
-            field_access_index,
+            edges: Edges {
+                version: GRAPH_SOURCE_HASH.to_owned(),
+                name_index, callees: adj.callees, callers: adj.callers,
+                is_test, trait_impls, impl_of_trait, fn_trait_impl,
+                call_sites: adj.call_sites, field_access_index,
+            },
         }
     }
 
@@ -162,67 +159,27 @@ impl CallGraph {
         Self::assemble(chunks, &index, adj)
     }
 
-    fn to_edge_cache(&self) -> EdgeCache {
-        EdgeCache {
-            version: GRAPH_SOURCE_HASH.to_owned(),
-            name_index: self.name_index.clone(),
-            callees: self.callees.clone(),
-            callers: self.callers.clone(),
-            is_test: self.is_test.clone(),
-            trait_impls: self.trait_impls.clone(),
-            impl_of_trait: self.impl_of_trait.clone(),
-            fn_trait_impl: self.fn_trait_impl.clone(),
-            call_sites: self.call_sites.clone(),
-            field_access_index: self.field_access_index.clone(),
-        }
-    }
-
-    fn from_edge_cache(chunks: Vec<ParsedChunk>, ec: EdgeCache) -> Self {
-        Self {
-            chunks,
-            name_index: ec.name_index,
-            callees: ec.callees,
-            callers: ec.callers,
-            is_test: ec.is_test,
-            trait_impls: ec.trait_impls,
-            impl_of_trait: ec.impl_of_trait,
-            fn_trait_impl: ec.fn_trait_impl,
-            call_sites: ec.call_sites,
-            field_access_index: ec.field_access_index,
-        }
-    }
 
     pub fn save_background(self, db: &Path) {
         let db = db.to_path_buf();
         std::thread::spawn(move || {
-            let ec = self.to_edge_cache();
-            match bincode::encode_to_vec(&ec, bincode::config::standard()) {
-                Ok(bytes) => {
-                    if let Ok(engine) = rude_db::StorageEngine::open(&db) {
-                        if let Err(e) = engine.set_cache("graph", &bytes) {
-                            eprintln!("[graph] background save failed: {e}");
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("[graph] encode failed, skipping save: {e}");
+            if let Ok(bytes) = bincode::encode_to_vec(&self.edges, bincode::config::standard()) {
+                if let Ok(engine) = rude_db::StorageEngine::open(&db) {
+                    let _ = engine.set_cache("graph", &bytes);
                 }
             }
         });
     }
 
     pub fn save(&self, db: &Path) -> Result<()> {
-        let engine = rude_db::StorageEngine::open(db)
-            .context("failed to open db for graph cache")?;
+        let engine = rude_db::StorageEngine::open(db)?;
         self.save_with_engine(&engine)
     }
 
     pub fn save_with_engine(&self, engine: &rude_db::StorageEngine) -> Result<()> {
-        let ec = self.to_edge_cache();
-        let bytes = bincode::encode_to_vec(&ec, bincode::config::standard())
-            .context("failed to encode edge cache")?;
+        let bytes = bincode::encode_to_vec(&self.edges, bincode::config::standard())
+            .context("failed to encode edges")?;
         engine.set_cache("graph", &bytes)
-            .context("failed to write graph cache")
     }
 
     pub fn load(db: &Path) -> Option<Self> {
@@ -232,11 +189,11 @@ impl CallGraph {
 
     pub fn load_with_engine(engine: &rude_db::StorageEngine) -> Option<Self> {
         let bytes = engine.get_cache("graph").ok()??;
-        let (ec, _): (EdgeCache, _) = bincode::decode_from_slice(&bytes, bincode::config::standard()).ok()?;
-        if ec.version != GRAPH_SOURCE_HASH { return None; }
+        let (edges, _): (Edges, _) = bincode::decode_from_slice(&bytes, bincode::config::standard()).ok()?;
+        if edges.version != GRAPH_SOURCE_HASH { return None; }
         let chunks = crate::analysis::loader::load_chunks_from_cache_with_engine(engine)?;
-        if chunks.len() != ec.callees.len() { return None; }
-        Some(Self::from_edge_cache(chunks, ec))
+        if chunks.len() != edges.callees.len() { return None; }
+        Some(Self { chunks, edges })
     }
 
     pub fn len(&self) -> usize { self.chunks.len() }
