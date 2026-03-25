@@ -145,11 +145,8 @@ fn process_changes(changed: &[PathBuf], db_path: &Path, input_path: &Path) {
         return;
     }
 
-    // 5. Build reverse index for called_by resolution
-    let reverse_index = super::add::build_callers(&entries);
-
-    // 6. Write to DB
-    if let Err(e) = update_db(db_path, &entries, &reverse_index, &file_metadata_map) {
+    // 5. Write to DB
+    if let Err(e) = update_db(db_path, &entries, &file_metadata_map) {
         eprintln!("[watch] DB update failed: {e}");
         return;
     }
@@ -170,41 +167,14 @@ fn process_changes(changed: &[PathBuf], db_path: &Path, input_path: &Path) {
 fn update_db(
     db_path: &Path,
     entries: &[super::add::CodeChunkEntry],
-    reverse_index: &HashMap<String, Vec<String>>,
     file_metadata_map: &HashMap<String, (u64, u64, Vec<u64>)>,
 ) -> Result<()> {
     let mut engine = rude_db::StorageEngine::open_exclusive(db_path)
         .context("failed to open DB for writing")?;
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    // Build per-file chunk count for accurate chunk_total.
-    let chunk_total_map: HashMap<&str, usize> = {
-        let mut m: HashMap<&str, usize> = HashMap::new();
-        for entry in entries {
-            *m.entry(entry.source.as_str()).or_default() += 1;
-        }
-        m
-    };
-
-    for entry in entries {
-        let chunk_total = chunk_total_map.get(entry.source.as_str()).copied().unwrap_or(1);
-        let (id, payload, embed_text) =
-            super::add::build_payload(entry, now, chunk_total, reverse_index, true);
-
-        engine.insert(id, &payload, &embed_text)?;
-    }
-
-    engine.checkpoint()?;
-
-    // Update file index
     let mut file_idx = file_index::load_file_index(db_path)?;
-    for (path, (mtime, size, chunk_ids)) in file_metadata_map {
-        file_idx.update_file(path.clone(), *mtime, *size, chunk_ids.clone(), None);
-    }
+    super::add::write_chunks(entries, &mut engine, file_metadata_map, &mut file_idx, false)?;
+    engine.checkpoint()?;
     file_index::save_file_index(db_path, &file_idx)?;
 
     Ok(())

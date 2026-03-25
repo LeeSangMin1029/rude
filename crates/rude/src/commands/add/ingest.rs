@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use rude_db::file_index::FileIndex;
 use rude_intel::parse::ParsedChunk;
 
 pub(crate) struct CodeChunkEntry {
@@ -362,4 +363,61 @@ pub(crate) fn ingest_mir(
     }
 
     Ok(())
+}
+
+/// Removes stale chunks, inserts new chunks in batch, and updates `file_idx` in memory.
+/// The caller is responsible for calling `file_index::save_file_index` afterwards.
+pub(crate) fn write_chunks(
+    entries: &[CodeChunkEntry],
+    engine: &mut rude_db::StorageEngine,
+    file_metadata_map: &HashMap<String, (u64, u64, Vec<u64>)>,
+    file_idx: &mut FileIndex,
+    include_content_hash: bool,
+) -> Result<u64> {
+    use rude_db::Payload;
+
+    // Remove stale chunks for files that are being re-indexed.
+    for (path, (_, _, new_ids)) in file_metadata_map {
+        if let Some(existing) = file_idx.get_file(path) {
+            let new_id_set: std::collections::HashSet<u64> = new_ids.iter().copied().collect();
+            for &old_id in &existing.chunk_ids {
+                if !new_id_set.contains(&old_id) {
+                    let _ = engine.remove(old_id);
+                }
+            }
+        }
+    }
+
+    // Build callers and per-file chunk counts.
+    let reverse_index = build_callers(entries);
+    let mut chunk_total_map: HashMap<&str, usize> = HashMap::new();
+    for entry in entries {
+        *chunk_total_map.entry(entry.source.as_str()).or_default() += 1;
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    use rayon::prelude::*;
+    let encoded: Vec<(u64, Payload, String)> = entries.par_iter().map(|entry| {
+        let chunk_total = chunk_total_map.get(entry.source.as_str()).copied().unwrap_or(1);
+        build_payload(entry, now, chunk_total, &reverse_index, false)
+    }).collect();
+    let batch: Vec<(u64, Payload, &str)> = encoded.iter()
+        .map(|(id, payload, text)| (*id, payload.clone(), text.as_str())).collect();
+    engine.insert_batch(&batch).context("Failed to bulk load")?;
+
+    // Update in-memory file index.
+    for (path, (mtime, size, chunk_ids)) in file_metadata_map {
+        let hash = if include_content_hash {
+            Some(rude_db::file_utils::content_hash(std::path::Path::new(path)).unwrap_or(0))
+        } else {
+            None
+        };
+        file_idx.update_file(path.to_string(), *mtime, *size, chunk_ids.clone(), hash);
+    }
+
+    Ok(entries.len() as u64)
 }

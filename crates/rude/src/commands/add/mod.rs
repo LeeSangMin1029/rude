@@ -1,5 +1,6 @@
 pub(crate) mod ingest;
 mod run;
 
-pub(crate) use ingest::{build_callers, build_payload, ingest_mir, CodeChunkEntry};
+#[allow(unused_imports)]
+pub(crate) use ingest::{build_callers, build_payload, ingest_mir, write_chunks, CodeChunkEntry};
 pub use run::run;

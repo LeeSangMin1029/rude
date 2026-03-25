@@ -9,7 +9,7 @@ use rude_db::DbConfig;
 use rude_db::is_interrupted;
 use rude_db::StorageEngine;
 
-use super::{build_callers, build_payload, ingest_mir, CodeChunkEntry};
+use super::{ingest_mir, write_chunks, CodeChunkEntry};
 
 const TEXT_ONLY_DIM: usize = 1;
 const TEXT_ONLY_MODEL: &str = "text-only";
@@ -33,7 +33,7 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     let current_sources: std::collections::HashSet<String> =
         all_files.iter().map(|f| rude_db::file_utils::normalize_source(f)).collect();
 
-    let file_idx = file_index::load_file_index(&db_path)?;
+    let mut file_idx = file_index::load_file_index(&db_path)?;
     let code_files: Vec<_> = all_files.iter().filter(|f| {
         let source = rude_db::file_utils::normalize_source(f);
         match file_idx.get_file(&source) {
@@ -102,9 +102,12 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     eprintln!("  chunk: {:.1}s ({} chunks)", t0.elapsed().as_secs_f64(), entries.len());
 
     println!("Symbols: {} (functions, structs, enums, ...)", entries.len());
-    let inserted = direct_bulk_write(&db_path, &entries, &mut engine, &file_metadata_map)?;
+    let t_write = std::time::Instant::now();
+    let inserted = write_chunks(&entries, &mut engine, &file_metadata_map, &mut file_idx, true)?;
+    println!("\nInserted {inserted} chunks in {:.2}s", t_write.elapsed().as_secs_f64());
 
-    let mut file_idx = file_index::load_file_index(&db_path)?;
+    // Record files that had no MIR chunks (0-chunk files) in the index so
+    // their mtime/hash are tracked and they are not re-parsed next run.
     for f in &code_files {
         let source = source_cache.get(*f).cloned().unwrap_or_default();
         if !file_metadata_map.contains_key(&source) {
@@ -264,58 +267,6 @@ fn prebuild_caches(
         .save_background(db_path);
 }
 
-fn direct_bulk_write(
-    db_path: &std::path::Path,
-    entries: &[CodeChunkEntry],
-    engine: &mut StorageEngine,
-    file_metadata_map: &HashMap<String, (u64, u64, Vec<u64>)>,
-) -> Result<u64> {
-    use rude_db::Payload;
-
-    let file_index_data = file_index::load_file_index(db_path)?;
-    for (path, (_, _, new_ids)) in file_metadata_map {
-        if let Some(existing) = file_index_data.get_file(path) {
-            let new_id_set: std::collections::HashSet<u64> = new_ids.iter().copied().collect();
-            for &old_id in &existing.chunk_ids {
-                if !new_id_set.contains(&old_id) {
-                    let _ = engine.remove(old_id);
-                }
-            }
-        }
-    }
-
-    let start = std::time::Instant::now();
-
-    let reverse_index = build_callers(entries);
-    let mut chunk_total_map: HashMap<&str, usize> = HashMap::new();
-    for entry in entries { *chunk_total_map.entry(&entry.source).or_default() += 1; }
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-
-    use rayon::prelude::*;
-    let encoded: Vec<(u64, Payload, String)> = entries.par_iter().map(|entry| {
-        let chunk_total = chunk_total_map.get(entry.source.as_str()).copied().unwrap_or(1);
-        build_payload(entry, now, chunk_total, &reverse_index, false)
-    }).collect();
-    let batch: Vec<(u64, Payload, &str)> = encoded.iter()
-        .map(|(id, payload, text)| (*id, payload.clone(), text.as_str())).collect();
-    engine.insert_batch(&batch).context("Failed to bulk load")?;
-
-    let mut file_idx = file_index::load_file_index(db_path)?;
-    for (path, (mtime, size, chunk_ids)) in file_metadata_map {
-        let hash = rude_db::file_utils::content_hash(std::path::Path::new(path)).unwrap_or(0);
-        file_idx.update_file(path.to_string(), *mtime, *size, chunk_ids.clone(), Some(hash));
-    }
-    file_index::save_file_index(db_path, &file_idx)?;
-
-    let inserted = entries.len() as u64;
-    println!("\nInserted {inserted} chunks in {:.2}s", start.elapsed().as_secs_f64());
-
-    Ok(inserted)
-}
 
 fn scan_files_fast(input_path: &std::path::Path, exclude: &[String]) -> Vec<PathBuf> {
     if let Ok(out) = std::process::Command::new("git")
