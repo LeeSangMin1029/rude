@@ -135,7 +135,7 @@ fn process_changes(changed: &[PathBuf], db_path: &Path, input_path: &Path) {
 
     let mut entries = Vec::new();
     let mut file_metadata_map = HashMap::new();
-    if let Err(e) = super::ingest::ingest_mir(
+    if let Err(e) = super::add::ingest_mir(
         &mir_chunks,
         db_path,
         &mut entries,
@@ -152,7 +152,7 @@ fn process_changes(changed: &[PathBuf], db_path: &Path, input_path: &Path) {
     }
 
     // 5. Build reverse index for called_by resolution
-    let reverse_index = super::ingest::build_callers(&entries);
+    let reverse_index = super::add::build_callers(&entries);
 
     // 6. Write to DB
     if let Err(e) = update_db(db_path, &entries, &reverse_index, &file_metadata_map) {
@@ -176,7 +176,7 @@ fn process_changes(changed: &[PathBuf], db_path: &Path, input_path: &Path) {
 /// Write chunk entries to DB.
 fn update_db(
     db_path: &Path,
-    entries: &[super::ingest::CodeChunkEntry],
+    entries: &[super::add::CodeChunkEntry],
     reverse_index: &HashMap<String, Vec<String>>,
     file_metadata_map: &HashMap<String, (u64, u64, Vec<u64>)>,
 ) -> Result<()> {
@@ -200,7 +200,7 @@ fn update_db(
     for entry in entries {
         let chunk_total = chunk_total_map.get(entry.source.as_str()).copied().unwrap_or(1);
         let (id, payload, embed_text) =
-            super::ingest::build_payload(entry, now, chunk_total, reverse_index, true);
+            super::add::build_payload(entry, now, chunk_total, reverse_index, true);
 
         engine.insert(id, &payload, &embed_text)?;
     }

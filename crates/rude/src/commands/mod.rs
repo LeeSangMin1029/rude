@@ -2,9 +2,6 @@
 
 pub mod add;
 pub mod edit;
-pub mod ingest;
 pub mod intel;
 pub mod dupes;
-pub mod cluster;
-pub mod split;
 pub mod watch;
