@@ -274,39 +274,32 @@ where
 }
 
 /// Replace the body of a symbol with new content.
-/// Edit operation on a symbol range.
+/// Edit operation on a symbol range. All are fundamentally splice(range, content).
 pub enum Op<'a> {
-    /// Replace symbol body with new content.
     Replace(&'a str),
-    /// Insert content before the symbol.
     Before(&'a str),
-    /// Insert content after the symbol.
     After(&'a str),
-    /// Delete the symbol (= replace with nothing).
     Delete,
 }
 
-/// Core: locate symbols → apply ops in one locked write → no line drift.
-/// All edit commands (replace, insert, delete) funnel through here.
+/// All edit commands funnel here: locate → splice → write.
+/// Every op is a splice: remove a range, insert new content at that position.
 pub fn apply_edits(db: &Path, ops: &[(&str, Op)], file: Option<&str>) -> Result<()> {
     if ops.is_empty() { return Ok(()); }
 
-    // Warn callers for any Delete ops
+    // Warn callers for Delete ops
     let deletes: Vec<&str> = ops.iter()
         .filter(|(_, op)| matches!(op, Op::Delete))
-        .map(|(s, _)| *s)
-        .collect();
-    if !deletes.is_empty() {
-        warn_callers(db, &deletes);
-    }
+        .map(|(s, _)| *s).collect();
+    if !deletes.is_empty() { warn_callers(db, &deletes); }
 
-    // Locate all symbols
-    let mut edits: Vec<(usize, usize, &str, &Op)> = Vec::new();
-    for (sym, op) in ops {
-        let loc = locate_symbol(db, sym, file)?;
-        edits.push((loc.start_line, loc.end_line, sym, op));
-    }
-    // Sort back-to-front so line numbers stay valid
+    // Locate all symbols, sort back-to-front
+    let mut edits: Vec<(usize, usize, &str, &Op)> = ops.iter()
+        .map(|(sym, op)| {
+            let loc = locate_symbol(db, sym, file).unwrap();
+            (loc.start_line, loc.end_line, *sym, op)
+        })
+        .collect();
     edits.sort_by(|a, b| b.0.cmp(&a.0));
 
     let first = locate_symbol(db, ops[0].0, file)?;
@@ -314,41 +307,38 @@ pub fn apply_edits(db: &Path, ops: &[(&str, Op)], file: Option<&str>) -> Result<
         let mut lines: Vec<&str> = content.lines().collect();
 
         for &(start, end, sym, op) in &edits {
-            match op {
-                Op::Replace(body) => {
-                    let body = body.trim_end();
-                    let body_lines: Vec<&str> = body.lines().collect();
-                    let remove_end = (end + 1).min(lines.len());
-                    lines.splice(start..remove_end, body_lines.iter().copied());
-                    eprintln!("Replaced {sym} (L{}-{}) in {}", start + 1, end + 1, first.rel_path);
+            // Compute drain range + replacement content
+            let (drain, replacement, msg) = match op {
+                Op::Replace(b) => {
+                    let b = b.trim_end();
+                    (start..(end + 1).min(lines.len()),
+                     b.lines().collect::<Vec<_>>(),
+                     format!("Replaced {sym} (L{}-{})", start + 1, end + 1))
                 }
-                Op::Before(body) => {
-                    let body = body.trim_end();
-                    let mut insert: Vec<&str> = body.lines().collect();
-                    insert.push("");
-                    for (i, line) in insert.iter().enumerate() {
-                        lines.insert(start + i, line);
-                    }
-                    eprintln!("Inserted before {sym} (before L{}) in {}", start + 1, first.rel_path);
+                Op::Before(b) => {
+                    let b = b.trim_end();
+                    let mut r: Vec<&str> = b.lines().collect();
+                    r.push("");
+                    (start..start, r,
+                     format!("Inserted before {sym} (L{})", start + 1))
                 }
-                Op::After(body) => {
-                    let body = body.trim_end();
-                    let mut insert: Vec<&str> = vec![""];
-                    insert.extend(body.lines());
+                Op::After(b) => {
+                    let b = b.trim_end();
+                    let mut r = vec![""];
+                    r.extend(b.lines());
                     let pos = (end + 1).min(lines.len());
-                    for (i, line) in insert.iter().enumerate() {
-                        lines.insert(pos + i, line);
-                    }
-                    eprintln!("Inserted after {sym} (after L{}) in {}", end + 1, first.rel_path);
+                    (pos..pos, r,
+                     format!("Inserted after {sym} (L{})", end + 1))
                 }
                 Op::Delete => {
-                    let remove_end = (end + 1).min(lines.len());
-                    let mut after = remove_end;
+                    let mut after = (end + 1).min(lines.len());
                     while after < lines.len() && lines[after].trim().is_empty() { after += 1; }
-                    lines.drain(start..after);
-                    eprintln!("Deleted {sym} (L{}-{}) from {}", start + 1, end + 1, first.rel_path);
+                    (start..after, vec![],
+                     format!("Deleted {sym} (L{}-{})", start + 1, end + 1))
                 }
-            }
+            };
+            lines.splice(drain, replacement);
+            eprintln!("  {msg} in {}", first.rel_path);
         }
         Ok(join_lines(&lines, content.ends_with('\n')))
     })
