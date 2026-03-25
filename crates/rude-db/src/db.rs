@@ -250,25 +250,6 @@ impl StorageEngine {
         }
     }
 
-    /// Get all point IDs associated with a given source path.
-    pub fn points_by_source(&self, source: &str) -> Result<Vec<u64>> {
-        let mut stmt = self
-            .conn
-            .prepare_cached("SELECT id FROM chunks WHERE source = ?1")
-            .context("failed to prepare points_by_source")?;
-
-        let ids: Vec<u64> = stmt
-            .query_map(params![source], |row| {
-                let id: i64 = row.get(0)?;
-                Ok(id as u64)
-            })
-            .context("failed to query points by source")?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        Ok(ids)
-    }
-
     /// Iterate all chunks: returns `(id, payload, text)` tuples.
     ///
     /// Used for `load_chunks_from_db` equivalent.
@@ -327,15 +308,6 @@ impl StorageEngine {
             .collect();
 
         Ok(ids)
-    }
-
-    /// Number of stored chunks.
-    pub fn len(&self) -> Result<usize> {
-        let count: i64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM chunks", [], |row| row.get(0))
-            .context("failed to count chunks")?;
-        Ok(count as usize)
     }
 
     // ------------------------------------------------------------------

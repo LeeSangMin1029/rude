@@ -34,6 +34,21 @@ pub struct CalleeInfo {
     pub call_line: usize,
 }
 
+/// Build SQLite positional placeholders and boxed params for a crate name filter.
+///
+/// Returns `(placeholders, params)` where `placeholders` is a comma-separated
+/// `?1,?2,...` string and `params` contains hyphen-normalized crate name values.
+fn make_crate_params(crates: &[&str]) -> (String, Vec<Box<dyn rusqlite::types::ToSql>>) {
+    let placeholders = crates.iter().enumerate()
+        .map(|(i, _)| format!("?{}", i + 1))
+        .collect::<Vec<_>>()
+        .join(",");
+    let params = crates.iter()
+        .map(|c| Box::new(c.replace('-', "_")) as Box<dyn rusqlite::types::ToSql>)
+        .collect();
+    (placeholders, params)
+}
+
 impl MirEdgeMap {
     /// Load MIR edges from a JSONL file.
     /// Load all `.edges.jsonl` files from a directory.
@@ -47,25 +62,16 @@ impl MirEdgeMap {
 
         let mut combined = Self::default();
 
-        let query = if let Some(crates) = only_crates {
-            let placeholders: Vec<String> = crates.iter().enumerate()
-                .map(|(i, _)| format!("?{}", i + 1))
-                .collect();
-            format!("SELECT caller, caller_file, callee, callee_file, callee_start_line, line, is_local, crate_name FROM mir_edges WHERE crate_name IN ({})", placeholders.join(","))
+        let (query, params) = if let Some(crates) = only_crates {
+            let (placeholders, params) = make_crate_params(crates);
+            let q = format!("SELECT caller, caller_file, callee, callee_file, callee_start_line, line, is_local, crate_name FROM mir_edges WHERE crate_name IN ({})", placeholders);
+            (q, params)
         } else {
-            "SELECT caller, caller_file, callee, callee_file, callee_start_line, line, is_local, crate_name FROM mir_edges".to_owned()
+            ("SELECT caller, caller_file, callee, callee_file, callee_start_line, line, is_local, crate_name FROM mir_edges".to_owned(), vec![])
         };
 
         let mut stmt = conn.prepare(&query).context("failed to prepare edge query")?;
 
-        let params: Vec<Box<dyn rusqlite::types::ToSql>> = if let Some(crates) = only_crates {
-            crates.iter().map(|c| {
-                let normalized = c.replace('-', "_");
-                Box::new(normalized) as Box<dyn rusqlite::types::ToSql>
-            }).collect()
-        } else {
-            vec![]
-        };
         let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
 
         let rows = stmt.query_map(param_refs.as_slice(), |row| {
@@ -126,21 +132,15 @@ impl MirEdgeMap {
         let conn = rusqlite::Connection::open(db_path)
             .with_context(|| format!("failed to open MIR sqlite: {}", db_path.display()))?;
 
-        let query = if let Some(crates) = only_crates {
-            let placeholders: Vec<String> = crates.iter().enumerate()
-                .map(|(i, _)| format!("?{}", i + 1))
-                .collect();
-            format!("SELECT name, file, kind, start_line, end_line, signature, visibility, is_test, body, calls, type_refs FROM mir_chunks WHERE crate_name IN ({})", placeholders.join(","))
+        let (query, params) = if let Some(crates) = only_crates {
+            let (placeholders, params) = make_crate_params(crates);
+            let q = format!("SELECT name, file, kind, start_line, end_line, signature, visibility, is_test, body, calls, type_refs FROM mir_chunks WHERE crate_name IN ({})", placeholders);
+            (q, params)
         } else {
-            "SELECT name, file, kind, start_line, end_line, signature, visibility, is_test, body, calls, type_refs FROM mir_chunks".to_owned()
+            ("SELECT name, file, kind, start_line, end_line, signature, visibility, is_test, body, calls, type_refs FROM mir_chunks".to_owned(), vec![])
         };
 
         let mut stmt = conn.prepare(&query).context("failed to prepare chunk query")?;
-        let params: Vec<Box<dyn rusqlite::types::ToSql>> = if let Some(crates) = only_crates {
-            crates.iter().map(|c| Box::new(c.replace('-', "_")) as Box<dyn rusqlite::types::ToSql>).collect()
-        } else {
-            vec![]
-        };
         let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
 
         let rows = stmt.query_map(param_refs.as_slice(), |row| {
@@ -424,12 +424,7 @@ pub fn run_mir_callgraph_for(
         }
     }
 
-    // Prefer sqlite if available, fallback to JSONL
-    if mir_db.exists() {
-        MirEdgeMap::from_sqlite(&mir_db, None)
-    } else {
-        MirEdgeMap::from_sqlite(&mir_db_path(project_root), None)
-    }
+    MirEdgeMap::from_sqlite(&mir_db, None)
 }
 
 /// Kill any background test processes from a previous `run_mir_direct` call.
@@ -562,21 +557,13 @@ pub fn run_mir_direct(
     // If cargo just ran (Phase 1) and we still have no args, there's nothing
     // more we can do — the crate might not be a local crate.
     if lib_files.is_empty() && test_files.is_empty() {
-        return if mir_db.exists() {
-            MirEdgeMap::from_sqlite(&mir_db, None)
-        } else {
-            MirEdgeMap::from_sqlite(&mir_db_path(project_root), None)
-        };
+        return MirEdgeMap::from_sqlite(&mir_db, None);
     }
 
     // If deps were just rebuilt via cargo (Phase 1), the edge files are already
     // generated by RUSTC_WRAPPER. Skip redundant direct extraction.
     if needs_deps_rebuild {
-        return if mir_db.exists() {
-            MirEdgeMap::from_sqlite(&mir_db, Some(crates))
-        } else {
-            MirEdgeMap::from_sqlite(&mir_db_path(project_root), None)
-        };
+        return MirEdgeMap::from_sqlite(&mir_db, Some(crates));
     }
 
     // ── Phase 3: Direct mode — lib sync, test fire-and-forget ──────
@@ -624,11 +611,7 @@ pub fn run_mir_direct(
     if had_error {
         eprintln!("  [mir] some lib builds failed, refreshing via cargo...");
         run_mir_callgraph_for(project_root, mir_callgraph_bin, crates, _rust_only)?;
-        return if mir_db.exists() {
-            MirEdgeMap::from_sqlite(&mir_db, Some(crates))
-        } else {
-            MirEdgeMap::from_sqlite(&mir_db_path(project_root), None)
-        };
+        return MirEdgeMap::from_sqlite(&mir_db, Some(crates));
     }
 
     // ── Phase 3b: Fire-and-forget test builds ──────────────────────
@@ -667,13 +650,7 @@ pub fn run_mir_direct(
         }
     }
 
-    // Prefer sqlite if available, fallback to JSONL.
-    let result = if mir_db.exists() {
-        MirEdgeMap::from_sqlite(&mir_db, Some(crates))
-    } else {
-        MirEdgeMap::from_sqlite(&mir_db_path(project_root), Some(crates))
-    };
-    result
+    MirEdgeMap::from_sqlite(&mir_db, Some(crates))
 }
 
 /// Check if all requested crates have valid --extern artifact paths.
@@ -879,6 +856,28 @@ pub struct MirChunk {
     pub type_refs: String,
 }
 
+/// Parse `"callee@line, callee@line, ..."` format into `(calls, call_lines)`.
+///
+/// Each token is `callee_name@line_number`. If the `@line` suffix is absent,
+/// line defaults to `0`.
+pub fn parse_calls_field(calls_str: &str) -> (Vec<String>, Vec<u32>) {
+    if calls_str.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    calls_str
+        .split(", ")
+        .map(|token| {
+            if let Some(at) = token.rfind('@') {
+                let name = token[..at].to_owned();
+                let line: u32 = token[at + 1..].parse().unwrap_or(0);
+                (name, line)
+            } else {
+                (token.to_owned(), 0u32)
+            }
+        })
+        .unzip()
+}
+
 /// Convert MirChunks directly to ParsedChunks, skipping text format intermediary.
 pub fn mir_chunks_to_parsed(mir_chunks: &[MirChunk]) -> Vec<crate::parse::ParsedChunk> {
     mir_chunks
@@ -889,21 +888,7 @@ pub fn mir_chunks_to_parsed(mir_chunks: &[MirChunk]) -> Vec<crate::parse::Parsed
                 other => other.to_string(),
             };
 
-            let mut calls = Vec::new();
-            let mut call_lines = Vec::new();
-            if !mc.calls.is_empty() {
-                for entry in mc.calls.split(", ") {
-                    if let Some(at_pos) = entry.rfind('@') {
-                        let callee = entry[..at_pos].to_string();
-                        let line: u32 = entry[at_pos + 1..].parse().unwrap_or(0);
-                        calls.push(callee);
-                        call_lines.push(line);
-                    } else {
-                        calls.push(entry.to_string());
-                        call_lines.push(0);
-                    }
-                }
-            }
+            let (calls, call_lines) = parse_calls_field(&mc.calls);
 
             let types: Vec<String> = if mc.type_refs.is_empty() {
                 Vec::new()

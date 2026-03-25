@@ -186,27 +186,10 @@ pub fn run_context(
                 return Ok(());
             }
             let all_entries = impact::bfs_reverse(&graph, &field_chunks, effective_depth);
-            let (mut prod_count, mut test_count) = (0usize, 0usize);
-            for e in &all_entries {
-                if e.depth == 0 { continue; }
-                if e.is_test { test_count += 1; } else { prod_count += 1; }
-            }
+            let (prod_count, test_count) = count_prod_test(&all_entries);
             let mut entries = filter_scope_entries(all_entries, &graph, &scope);
             entries = filter_test_entries(entries, include_tests);
-            let mut tagged: Vec<TaggedEntry> = Vec::new();
-            for e in &entries {
-                let tag = if field_chunks.contains(&e.idx) {
-                    "field"
-                } else {
-                    match e.depth {
-                        0 => "target",
-                        1 => "d1",
-                        2 => "d2",
-                        _ => "d3+",
-                    }
-                };
-                tagged.push(TaggedEntry { idx: e.idx, tag, sig: false, call_line: 0 });
-            }
+            let tagged = build_blast_tagged(&entries, Some(&field_chunks));
             let scope_label = scope.as_ref().map_or(String::new(), |s| format!(" (scope: {s})"));
             println!("=== context: {symbol}{scope_label} ({} field accessors, {} affected, {} prod, {} test) ===\n",
                 field_chunks.len(), prod_count + test_count, prod_count, test_count);
@@ -217,25 +200,10 @@ pub fn run_context(
         let Some(seeds) = resolve_symbol(&graph, &symbol) else { return Ok(()) };
         let seeds = impact::expand_seeds_with_traits(&graph, &seeds);
         let all_entries = impact::bfs_reverse(&graph, &seeds, effective_depth);
-        let (mut prod_count, mut test_count) = (0usize, 0usize);
-        for e in &all_entries {
-            if e.depth == 0 { continue; }
-            if e.is_test { test_count += 1; } else { prod_count += 1; }
-        }
+        let (prod_count, test_count) = count_prod_test(&all_entries);
         let mut entries = filter_scope_entries(all_entries, &graph, &scope);
         entries = filter_test_entries(entries, include_tests);
-
-        let mut tagged: Vec<TaggedEntry> = Vec::new();
-        for e in &entries {
-            let tag = match e.depth {
-                0 => "target",
-                1 => "d1",
-                2 => "d2",
-                _ => "d3+",
-            };
-            tagged.push(TaggedEntry { idx: e.idx, tag, sig: false, call_line: 0 });
-        }
-
+        let tagged = build_blast_tagged(&entries, None);
         let scope_label = scope.as_ref().map_or(String::new(), |s| format!(" (scope: {s})"));
         println!("=== context: {symbol}{scope_label} ({} affected, {} prod, {} test) ===\n",
             prod_count + test_count, prod_count, test_count);
@@ -349,6 +317,40 @@ fn run_context_tree(symbol: &str, depth: u32, include_tests: bool) -> Result<()>
     Ok(())
 }
 
+
+/// Count prod/test callers in `all_entries`, skipping depth-0 seeds.
+fn count_prod_test(all_entries: &[impact::BfsEntry]) -> (usize, usize) {
+    let mut prod = 0usize;
+    let mut test = 0usize;
+    for e in all_entries {
+        if e.depth == 0 { continue; }
+        if e.is_test { test += 1; } else { prod += 1; }
+    }
+    (prod, test)
+}
+
+/// Build `TaggedEntry` list for blast output.
+/// When `field_chunks` is `Some`, entries whose `idx` is in the set get tag `"field"`.
+fn build_blast_tagged(entries: &[impact::BfsEntry], field_chunks: Option<&[u32]>) -> Vec<TaggedEntry> {
+    entries.iter().map(|e| {
+        let tag = if let Some(fc) = field_chunks {
+            if fc.contains(&e.idx) { "field" } else { depth_tag(e.depth) }
+        } else {
+            depth_tag(e.depth)
+        };
+        TaggedEntry { idx: e.idx, tag, sig: false, call_line: 0 }
+    }).collect()
+}
+
+#[inline]
+fn depth_tag(depth: u32) -> &'static str {
+    match depth {
+        0 => "target",
+        1 => "d1",
+        2 => "d2",
+        _ => "d3+",
+    }
+}
 
 /// Resolve a symbol name to graph indices, printing a message if not found.
 /// Returns `None` (and prints) when resolution yields no results.

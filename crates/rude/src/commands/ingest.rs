@@ -87,6 +87,62 @@ pub fn find_callers<'a>(
 }
 
 
+/// Build `(id, Payload, embed_text)` for a single `CodeChunkEntry`.
+///
+/// `now` is a pre-computed Unix timestamp (seconds).
+/// `chunk_total` is the total number of chunks in the same source file.
+/// `reverse` is the reverse caller index built by [`build_callers`].
+/// `include_role_tag` — when `true`, appends `role:test` or `role:prod`.
+pub fn build_payload(
+    entry: &CodeChunkEntry,
+    now: u64,
+    chunk_total: usize,
+    reverse: &HashMap<String, Vec<String>>,
+    include_role_tag: bool,
+) -> (u64, rude_db::Payload, String) {
+    use rude_db::file_utils::generate_id;
+    use rude_db::PayloadValue;
+
+    let chunk = &entry.chunk;
+    let id = generate_id(&entry.source, chunk.chunk_index);
+
+    let called_by_refs = find_callers(reverse, &chunk.name);
+    let called_by_strings: Vec<String> = called_by_refs.iter().map(|s| (*s).to_owned()).collect();
+
+    let is_test = rude_intel::graph::is_test_path(&entry.source) || chunk.name.starts_with("test_");
+
+    let mut tags = Vec::with_capacity(5 + called_by_refs.len());
+    tags.push(format!("kind:{}", chunk.kind.as_str()));
+    tags.push(format!("lang:{}", entry.lang));
+    if include_role_tag {
+        tags.push(format!("role:{}", if is_test { "test" } else { "prod" }));
+    }
+    if !chunk.visibility.is_empty() {
+        tags.push(format!("vis:{}", chunk.visibility));
+    }
+    for caller in &called_by_refs {
+        tags.push(format!("caller:{caller}"));
+    }
+
+    let mut custom = chunk.to_custom_fields(&called_by_strings);
+    custom.insert("title".into(), PayloadValue::String(chunk.name.clone()));
+
+    let payload = rude_db::Payload {
+        source: entry.source.clone(),
+        tags,
+        created_at: now,
+        source_modified_at: entry.mtime,
+        chunk_index: chunk.chunk_index as u32,
+        chunk_total: chunk_total as u32,
+        custom,
+    };
+
+    let embed_text = chunk.to_embed_text(&entry.file_path_str, &called_by_strings);
+
+    (id, payload, embed_text)
+}
+
+
 /// Direct MirChunk → CodeChunkEntry conversion. No file I/O.
 /// Uses body/calls/type_refs from MIR extraction (sqlite or JSONL with body).
 pub fn ingest_mir(
@@ -174,19 +230,7 @@ pub fn ingest_mir(
             };
 
             // Parse calls from "callee@line, callee@line, ..." format
-            let (calls, call_lines): (Vec<String>, Vec<u32>) = if mc.calls.is_empty() {
-                (Vec::new(), Vec::new())
-            } else {
-                mc.calls.split(", ").map(|token| {
-                    if let Some(at) = token.rfind('@') {
-                        let name = token[..at].to_owned();
-                        let line = token[at+1..].parse().unwrap_or(0);
-                        (name, line)
-                    } else {
-                        (token.to_owned(), 0u32)
-                    }
-                }).unzip()
-            };
+            let (calls, call_lines) = rude_intel::mir_edges::parse_calls_field(&mc.calls);
 
             let kind = match mc.kind.as_str() {
                 "fn" | "method" => chunk_code::CodeNodeKind::Function,

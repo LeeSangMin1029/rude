@@ -362,8 +362,7 @@ fn direct_bulk_write(
     engine: &mut StorageEngine,
     file_metadata_map: &HashMap<String, (u64, u64, Vec<u64>)>,
 ) -> Result<u64> {
-    use rude_db::file_utils::generate_id;
-    use rude_db::{Payload, PayloadValue};
+    use rude_db::Payload;
 
     // Remove stale chunks for files being re-added.
     let file_index_data = file_index::load_file_index(db_path)?;
@@ -390,8 +389,6 @@ fn direct_bulk_write(
         m
     };
 
-    // Encode payloads + texts directly into contiguous buffers (zero-copy path).
-    // No IngestRecord or intermediate Payload allocation per record.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -402,41 +399,8 @@ fn direct_bulk_write(
     let encoded: Vec<(u64, Payload, String)> = entries
         .par_iter()
         .map(|entry| {
-            let chunk = &entry.chunk;
-            let id = generate_id(&entry.source, chunk.chunk_index);
             let chunk_total = chunk_total_map.get(entry.source.as_str()).copied().unwrap_or(1);
-            let called_by_refs = super::ingest::find_callers(&reverse_index, &chunk.name);
-
-
-            let mut tags = Vec::with_capacity(4 + called_by_refs.len());
-            tags.push(format!("kind:{}", chunk.kind.as_str()));
-            tags.push(format!("lang:{}", entry.lang));
-            if !chunk.visibility.is_empty() {
-                tags.push(format!("vis:{}", chunk.visibility));
-            }
-            for caller in &called_by_refs {
-                tags.push(format!("caller:{caller}"));
-            }
-
-            let called_by_strings: Vec<String> = called_by_refs.iter().map(|s| (*s).to_owned()).collect();
-            let custom = chunk.to_custom_fields(&called_by_strings);
-
-            let mut custom_with_title = custom;
-            custom_with_title.insert("title".into(), PayloadValue::String(chunk.name.clone()));
-
-            let payload = Payload {
-                source: entry.source.clone(),
-                tags,
-                created_at: now,
-                source_modified_at: entry.mtime,
-                chunk_index: chunk.chunk_index as u32,
-                chunk_total: chunk_total as u32,
-                custom: custom_with_title,
-            };
-
-            let embed_text = chunk.to_embed_text(&entry.file_path_str, &called_by_strings);
-
-            (id, payload, embed_text)
+            super::ingest::build_payload(entry, now, chunk_total, &reverse_index, false)
         })
         .collect();
 

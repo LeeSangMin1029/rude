@@ -10,8 +10,7 @@ use anyhow::{Context, Result};
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 
 use rude_db::file_index;
-use rude_db::file_utils::{generate_id, normalize_source};
-use rude_db::{Payload, PayloadValue};
+use rude_db::file_utils::normalize_source;
 
 /// Directories to skip.
 const IGNORED_DIRS: &[&str] = &[".git", "target", "node_modules", "__pycache__"];
@@ -120,24 +119,14 @@ fn process_changes(changed: &[PathBuf], db_path: &Path, input_path: &Path) {
             }
         };
 
-    // 3. Load MIR chunks — prefer sqlite, fallback to JSONL
+    // 3. Load MIR chunks from sqlite
     let mir_out_dir = input_path.join("target").join("mir-edges");
     let mir_db = rude_intel::mir_edges::mir_db_path(input_path);
-    let mir_chunks = if mir_db.exists() {
-        match rude_intel::mir_edges::MirEdgeMap::load_chunks_from_sqlite(&mir_db, None) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("[watch] failed to load MIR chunks from sqlite: {e}");
-                return;
-            }
-        }
-    } else {
-        match rude_intel::mir_edges::MirEdgeMap::load_chunks_from_sqlite(&mir_db, None) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("[watch] failed to load MIR chunks: {e}");
-                return;
-            }
+    let mir_chunks = match rude_intel::mir_edges::MirEdgeMap::load_chunks_from_sqlite(&mir_db, None) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[watch] failed to load MIR chunks from sqlite: {e}");
+            return;
         }
     };
 
@@ -209,48 +198,9 @@ fn update_db(
     };
 
     for entry in entries {
-        let chunk = &entry.chunk;
-        let id = generate_id(&entry.source, chunk.chunk_index);
-
-        let called_by_refs = super::ingest::find_callers(reverse_index, &chunk.name);
-        let called_by_strings: Vec<String> =
-            called_by_refs.iter().map(|s| (*s).to_owned()).collect();
-
-        let is_test = rude_intel::graph::is_test_path(&entry.source)
-            || chunk.name.starts_with("test_");
-
-        // Build tags
-        let mut tags = Vec::with_capacity(4 + called_by_refs.len());
-        tags.push(format!("kind:{}", chunk.kind.as_str()));
-        tags.push(format!("lang:{}", entry.lang));
-        tags.push(format!(
-            "role:{}",
-            if is_test { "test" } else { "prod" }
-        ));
-        if !chunk.visibility.is_empty() {
-            tags.push(format!("vis:{}", chunk.visibility));
-        }
-        for caller in &called_by_refs {
-            tags.push(format!("caller:{caller}"));
-        }
-
-        let mut custom = chunk.to_custom_fields(&called_by_strings);
-        custom.insert(
-            "title".into(),
-            PayloadValue::String(chunk.name.clone()),
-        );
-
-        let payload = Payload {
-            source: entry.source.clone(),
-            tags,
-            created_at: now,
-            source_modified_at: entry.mtime,
-            chunk_index: chunk.chunk_index as u32,
-            chunk_total: chunk_total_map.get(entry.source.as_str()).copied().unwrap_or(1) as u32,
-            custom,
-        };
-
-        let embed_text = chunk.to_embed_text(&entry.file_path_str, &called_by_strings);
+        let chunk_total = chunk_total_map.get(entry.source.as_str()).copied().unwrap_or(1);
+        let (id, payload, embed_text) =
+            super::ingest::build_payload(entry, now, chunk_total, reverse_index, true);
 
         engine.insert(id, &payload, &embed_text)?;
     }

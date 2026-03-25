@@ -10,6 +10,7 @@ use clap::{Parser, Subcommand};
 #[command(author, version, about = "Code intelligence: structural analysis, clone detection, and reasoning")]
 pub struct Cli {
     /// Path to the database directory (auto-detected if omitted).
+    #[arg(long, global = true)]
     pub db: Option<PathBuf>,
     #[command(subcommand)]
     pub command: Commands,
