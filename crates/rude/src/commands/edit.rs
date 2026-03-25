@@ -200,6 +200,28 @@ pub(crate) fn locate_symbol(db: &Path, symbol: &str, file_hint: Option<&str>) ->
         }
     }
 
+    // Extend end downward to include closing brace if the symbol's end line
+    // doesn't already contain one (e.g. MIR span covers only the signature).
+    let mut end_line = end_line;
+    let has_open_brace = (start_line..=end_line).any(|i| lines[i].contains('{'));
+    if has_open_brace {
+        let has_close_brace = (start_line..=end_line).any(|i| lines[i].contains('}'));
+        if !has_close_brace {
+            // Find the matching closing brace by counting braces
+            let mut depth: i32 = 0;
+            for i in start_line..lines.len() {
+                for ch in lines[i].chars() {
+                    if ch == '{' { depth += 1; }
+                    if ch == '}' { depth -= 1; }
+                }
+                if i > end_line && depth <= 0 {
+                    end_line = i;
+                    break;
+                }
+            }
+        }
+    }
+
     Ok(SymbolLocation {
         abs_path,
         rel_path: rel_display,
