@@ -4,17 +4,74 @@ extern crate rustc_driver;
 extern crate rustc_hir;
 extern crate rustc_interface;
 extern crate rustc_middle;
-extern crate rustc_query_system;
 extern crate rustc_session;
 extern crate rustc_span;
+
+// Inline compat module — mir-callgraph is embedded as single file via include_str!
+mod compat {
+    pub use rustc_hir::def::DefKind;
+    pub use rustc_hir::ItemKind;
+    pub use rustc_middle::mir::TerminatorKind;
+    pub use rustc_middle::ty::TyCtxt;
+    pub use rustc_span::def_id::{DefId, LOCAL_CRATE};
+
+    pub fn canonical_name(tcx: TyCtxt<'_>, def_id: DefId) -> String {
+        tcx.def_path_str(def_id)
+    }
+
+    pub fn extract_filename(
+        source_map: &rustc_span::source_map::SourceMap,
+        span: rustc_span::Span,
+    ) -> String {
+        match source_map.span_to_filename(span) {
+            rustc_span::FileName::Real(ref name) => {
+                let path_str = format!("{name:?}");
+                if let Some(start) = path_str.find("name: \"") {
+                    let rest = &path_str[start + 7..];
+                    if let Some(end) = rest.find('"') {
+                        return rest[..end].replace("\\\\", "/").to_string();
+                    }
+                }
+                path_str
+            }
+            other => format!("{other:?}"),
+        }
+    }
+
+    pub fn extract_visibility(tcx: TyCtxt<'_>, def_id: DefId) -> String {
+        let vis = tcx.visibility(def_id);
+        if vis.is_public() {
+            "pub".to_string()
+        } else {
+            let vis_str = format!("{vis:?}");
+            if vis_str.contains("Restricted") {
+                if let rustc_middle::ty::Visibility::Restricted(restricted_id) = vis {
+                    if restricted_id == tcx.parent_module_from_def_id(def_id.expect_local()).to_def_id() {
+                        String::new()
+                    } else if restricted_id == LOCAL_CRATE.as_def_id() {
+                        "pub(crate)".to_string()
+                    } else {
+                        format!("pub(in {})", tcx.def_path_str(restricted_id))
+                    }
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            }
+        }
+    }
+}
 
 use std::env;
 use std::process::Command;
 
-use rustc_middle::mir::TerminatorKind;
-use rustc_middle::ty::TyCtxt;
-use rustc_span::def_id::{DefId, LOCAL_CRATE};
 use serde::{Deserialize, Serialize};
+
+use crate::compat::{
+    canonical_name, extract_filename, extract_visibility, DefId, DefKind, ItemKind,
+    TerminatorKind, TyCtxt, LOCAL_CRATE,
+};
 
 // ── Output types ────────────────────────────────────────────────────
 
@@ -69,6 +126,8 @@ struct MirCallbacks {
     json: bool,
     /// True if compiling with --test flag (all functions are test-related).
     is_test_target: bool,
+    /// Optional sqlite DB path for delta detection and direct output.
+    db_path: Option<String>,
 }
 
 impl rustc_driver::Callbacks for MirCallbacks {
@@ -77,70 +136,14 @@ impl rustc_driver::Callbacks for MirCallbacks {
         _compiler: &rustc_interface::interface::Compiler,
         tcx: TyCtxt<'_>,
     ) -> rustc_driver::Compilation {
-        extract_all(tcx, self.json, self.is_test_target);
+        extract_all(tcx, self.json, self.is_test_target, &self.db_path);
         rustc_driver::Compilation::Continue
     }
 }
 
-// ── Naming ─────────────────────────────────────────────────────────
-
-/// Consistent name for a DefId.
-///
-/// Uses `def_path_str` (the standard rustc display name). For local items
-/// this gives the raw definition path; for external items it may use
-/// re-export visible paths, which edge_resolve handles via crate prefix
-/// stripping and suffix matching.
-fn canonical_name(tcx: TyCtxt<'_>, def_id: DefId) -> String {
-    tcx.def_path_str(def_id)
-}
-
 // ── Extraction ──────────────────────────────────────────────────────
 
-fn extract_filename(source_map: &rustc_span::source_map::SourceMap, span: rustc_span::Span) -> String {
-    match source_map.span_to_filename(span) {
-        rustc_span::FileName::Real(ref name) => {
-            let path_str = format!("{name:?}");
-            if let Some(start) = path_str.find("name: \"") {
-                let rest = &path_str[start + 7..];
-                if let Some(end) = rest.find('"') {
-                    return rest[..end].replace("\\\\", "/").to_string();
-                }
-            }
-            path_str
-        }
-        other => format!("{other:?}"),
-    }
-}
-
-/// Extract visibility string from `tcx.visibility(def_id)`.
-fn extract_visibility(tcx: TyCtxt<'_>, def_id: rustc_span::def_id::DefId) -> String {
-    let vis = tcx.visibility(def_id);
-    if vis.is_public() {
-        "pub".to_string()
-    } else {
-        // Restricted visibility: pub(crate), pub(super), pub(in path), or private
-        let vis_str = format!("{vis:?}");
-        if vis_str.contains("Restricted") {
-            // For pub(crate), the restricted DefId points to the crate root
-            if let rustc_middle::ty::Visibility::Restricted(restricted_id) = vis {
-                if restricted_id == tcx.parent_module_from_def_id(def_id.expect_local()).to_def_id() {
-                    // private (restricted to own module) — empty string
-                    String::new()
-                } else if restricted_id == LOCAL_CRATE.as_def_id() {
-                    "pub(crate)".to_string()
-                } else {
-                    format!("pub(in {})", tcx.def_path_str(restricted_id))
-                }
-            } else {
-                String::new()
-            }
-        } else {
-            String::new()
-        }
-    }
-}
-
-fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool) {
+fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool, db_path: &Option<String>) {
     let crate_name = tcx.crate_name(LOCAL_CRATE).to_string();
     let source_map = tcx.sess.source_map();
 
@@ -151,10 +154,10 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool) {
     for item_id in tcx.hir_free_items() {
         let item = tcx.hir_item(item_id);
         let kind_str = match &item.kind {
-            rustc_hir::ItemKind::Struct(..) => "struct",
-            rustc_hir::ItemKind::Enum(..) => "enum",
-            rustc_hir::ItemKind::Trait(..) => "trait",
-            rustc_hir::ItemKind::Impl(..) => "impl",
+            ItemKind::Struct(..) => "struct",
+            ItemKind::Enum(..) => "enum",
+            ItemKind::Trait(..) => "trait",
+            ItemKind::Impl(..) => "impl",
             _ => continue,
         };
 
@@ -193,22 +196,25 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool) {
 
     // ── Phase 2: MIR keys — functions, closures (call edges + fn chunks) ──
     // Load previous MIR hashes from sqlite for delta detection.
-    let prev_hashes: std::collections::HashMap<String, u64> = if let Some(ref db) = db_path {
+    let prev_hashes: std::collections::HashMap<String, u64> = if let Some(db) = db_path {
         load_prev_hashes(db, &crate_name)
     } else {
         std::collections::HashMap::new()
     };
     let mut new_hashes: Vec<(String, u64)> = Vec::new();
+    // Track names of changed items for targeted delta DELETE before INSERT.
+    // HIR items (struct/enum/trait/impl) are always included since they lack MIR hashes.
+    let mut changed_names: Vec<String> = chunks.iter().map(|c| c.name.clone()).collect();
     let incremental = !prev_hashes.is_empty();
 
     for &def_id in tcx.mir_keys(()) {
         let def_kind = tcx.def_kind(def_id);
 
         let is_fn = matches!(def_kind,
-            rustc_hir::def::DefKind::Fn
-            | rustc_hir::def::DefKind::AssocFn
+            DefKind::Fn
+            | DefKind::AssocFn
         );
-        let is_closure = matches!(def_kind, rustc_hir::def::DefKind::Closure);
+        let is_closure = matches!(def_kind, DefKind::Closure);
 
         if !is_fn && !is_closure {
             continue;
@@ -238,13 +244,15 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool) {
                     continue; // MIR unchanged — skip edge extraction + chunk emission
                 }
             }
+            // Track changed function names for targeted DELETE before INSERT
+            changed_names.push(caller_name.clone());
         }
 
         let caller_file = extract_filename(source_map, body.span);
         let caller_kind = match def_kind {
-            rustc_hir::def::DefKind::Fn => "fn",
-            rustc_hir::def::DefKind::AssocFn => "method",
-            rustc_hir::def::DefKind::Closure => "closure",
+            DefKind::Fn => "fn",
+            DefKind::AssocFn => "method",
+            DefKind::Closure => "closure",
             _ => "other",
         };
 
@@ -287,7 +295,7 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool) {
         }
 
         // Extract call edges + function reference edges
-        let mut seen_refs: std::collections::HashSet<rustc_hir::def_id::DefId> = std::collections::HashSet::new();
+        let mut seen_refs: std::collections::HashSet<DefId> = std::collections::HashSet::new();
         for block in body.basic_blocks.iter() {
             let terminator = block.terminator();
 
@@ -359,7 +367,7 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool) {
     }
 
     // Save MIR hashes for next run's delta detection.
-    if let Some(ref db) = env::var("MIR_CALLGRAPH_DB").ok() {
+    if let Some(db) = db_path {
         save_hashes(db, &crate_name, &new_hashes);
     }
 
@@ -368,7 +376,6 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool) {
 
     // ── Output ──────────────────────────────────────────────────────
     let out_dir = env::var("MIR_CALLGRAPH_OUT").ok();
-    let db_path = env::var("MIR_CALLGRAPH_DB").ok();
 
     // Prefer sqlite direct write; fall back to JSONL for compatibility.
     if let Some(db) = &db_path {
@@ -388,6 +395,23 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool) {
             ");
 
             if let Ok(tx) = conn.unchecked_transaction() {
+                // Delta DELETE: only remove rows for changed functions (or all if not incremental)
+                if incremental && !changed_names.is_empty() {
+                    let mut del_edge = tx.prepare_cached(
+                        "DELETE FROM mir_edges WHERE caller = ?1 AND crate_name = ?2"
+                    ).unwrap();
+                    let mut del_chunk = tx.prepare_cached(
+                        "DELETE FROM mir_chunks WHERE name = ?1 AND crate_name = ?2"
+                    ).unwrap();
+                    for name in &changed_names {
+                        let _ = del_edge.execute(rusqlite::params![name, crate_name]);
+                        let _ = del_chunk.execute(rusqlite::params![name, crate_name]);
+                    }
+                } else if !incremental {
+                    // First run: clear all rows for this crate
+                    let _ = tx.execute("DELETE FROM mir_edges WHERE crate_name = ?1", [&crate_name]);
+                    let _ = tx.execute("DELETE FROM mir_chunks WHERE crate_name = ?1", [&crate_name]);
+                }
                 {
                     let mut edge_stmt = tx.prepare_cached(
                         "INSERT INTO mir_edges VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)"
@@ -409,7 +433,7 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool) {
                             c.name, c.file, c.kind,
                             c.start_line, c.end_line,
                             c.signature, c.visibility, c.is_test as i32,
-                            c.body, c.calls, c.type_refs, crate_name,
+                            "", c.calls, c.type_refs, crate_name,
                         ]);
                     }
                 }
@@ -418,7 +442,7 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool) {
         }
         eprintln!(
             "[mir-callgraph] {crate_name}: {} edges, {} chunks (sqlite, {changed_fns}/{total_fns} changed)",
-            edges.len(), chunks.len(), changed_fns, total_fns
+            edges.len(), chunks.len()
         );
     } else if let Some(dir) = &out_dir {
         use std::io::Write;
@@ -444,8 +468,8 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool) {
         }
 
         eprintln!(
-            "[mir-callgraph] {crate_name}: {} edges, {} chunks",
-            edges.len(), chunks.len(), changed_fns, total_fns
+            "[mir-callgraph] {crate_name}: {} edges, {} chunks ({changed_fns}/{total_fns} changed)",
+            edges.len(), chunks.len()
         );
     } else if json {
         use std::io::Write;
@@ -554,7 +578,8 @@ fn main() {
 
             let json = env::var("MIR_CALLGRAPH_JSON").is_ok();
             let is_test_target = rustc_args.iter().any(|a| a == "--test");
-            let mut callbacks = MirCallbacks { json, is_test_target };
+            let db_path = env::var("MIR_CALLGRAPH_DB").ok();
+            let mut callbacks = MirCallbacks { json, is_test_target, db_path };
             rustc_driver::run_compiler(&full_args, &mut callbacks);
         } else {
             let status = Command::new(&args[1])
@@ -610,7 +635,8 @@ fn main() {
             }
 
             let is_test_target = cached.args.iter().any(|a| a == "--test");
-            let mut callbacks = MirCallbacks { json, is_test_target };
+            let db_path = env::var("MIR_CALLGRAPH_DB").ok();
+            let mut callbacks = MirCallbacks { json, is_test_target, db_path };
             rustc_driver::run_compiler(&cached.args, &mut callbacks);
         }
 

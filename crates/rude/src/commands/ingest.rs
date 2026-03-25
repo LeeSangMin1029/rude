@@ -140,12 +140,38 @@ pub fn chunks_from_mir_direct(
         let ext = std::path::Path::new(file_key).extension().and_then(|e| e.to_str()).unwrap_or("");
         let lang = rude_db::lang_for_ext(ext);
 
+        // Read file lines once for body recovery when body is empty (sqlite without body text)
+        let file_lines: Option<Vec<String>> = if indices.iter().any(|&i| deduped[i].body.is_empty()) {
+            std::fs::read_to_string(&file_path).ok().map(|content| {
+                content.lines().map(|l| l.to_owned()).collect()
+            })
+        } else {
+            None
+        };
+
         let mut chunk_ids = Vec::with_capacity(indices.len());
 
         for &idx in indices {
             let mc = deduped[idx];
             let id = generate_id(&source, idx);
             chunk_ids.push(id);
+
+            // Recover body from source file when sqlite stores empty body
+            let body_text = if mc.body.is_empty() {
+                if let Some(ref lines) = file_lines {
+                    let start = mc.start_line.saturating_sub(1);
+                    let end = mc.end_line.min(lines.len());
+                    if start < end {
+                        lines[start..end].join("\n")
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                }
+            } else {
+                mc.body.clone()
+            };
 
             // Parse calls from "callee@line, callee@line, ..." format
             let (calls, call_lines): (Vec<String>, Vec<u32>) = if mc.calls.is_empty() {
@@ -178,7 +204,7 @@ pub fn chunks_from_mir_direct(
             };
 
             let code_chunk = chunk_code::CodeChunk {
-                text: mc.body.clone(),
+                text: body_text.clone(),
                 kind,
                 name: mc.name.clone(),
                 signature: mc.signature.clone(),
@@ -188,7 +214,7 @@ pub fn chunks_from_mir_direct(
                 start_line: mc.start_line.saturating_sub(1),
                 end_line: mc.end_line.saturating_sub(1),
                 start_byte: 0,
-                end_byte: mc.body.len(),
+                end_byte: body_text.len(),
                 chunk_index: idx,
                 imports: Vec::new(),
                 visibility: mc.visibility.clone().unwrap_or_default(),
@@ -322,8 +348,32 @@ pub fn chunk_from_mir(
         let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let lang = rude_db::lang_for_ext(ext);
 
+        // Read file lines once for body recovery when body is empty (sqlite without body text)
+        let file_lines: Option<Vec<String>> = if chunks.iter().any(|c| c.body.is_empty()) {
+            std::fs::read_to_string(&file_path).ok().map(|content| {
+                content.lines().map(|l| l.to_owned()).collect()
+            })
+        } else {
+            None
+        };
+
         // Imports extracted from first chunk's body (use statements at file top).
-        let first_body = chunks.first().map(|c| c.body.as_str()).unwrap_or("");
+        let first_body_text = if let Some(first_mc) = chunks.first() {
+            if first_mc.body.is_empty() {
+                if let Some(ref lines) = file_lines {
+                    let start = first_mc.start_line.saturating_sub(1);
+                    let end = first_mc.end_line.min(lines.len());
+                    if start < end { lines[start..end].join("\n") } else { String::new() }
+                } else {
+                    String::new()
+                }
+            } else {
+                first_mc.body.clone()
+            }
+        } else {
+            String::new()
+        };
+        let first_body = first_body_text.as_str();
         let imports: Vec<String> = first_body.lines()
             .take_while(|line| {
                 let trimmed = line.trim();
@@ -346,8 +396,20 @@ pub fn chunk_from_mir(
         let mut chunk_ids = Vec::with_capacity(chunks.len());
 
         for (idx, mc) in chunks.iter().enumerate() {
-            let chunk_lines: Vec<&str> = mc.body.lines().collect();
-            let text = mc.body.clone();
+            // Recover body from source file when sqlite stores empty body
+            let body_text = if mc.body.is_empty() {
+                if let Some(ref lines) = file_lines {
+                    let start = mc.start_line.saturating_sub(1);
+                    let end = mc.end_line.min(lines.len());
+                    if start < end { lines[start..end].join("\n") } else { String::new() }
+                } else {
+                    String::new()
+                }
+            } else {
+                mc.body.clone()
+            };
+            let text = body_text;
+            let chunk_lines: Vec<&str> = text.lines().collect();
 
             // Parse kind
             let kind = match mc.kind.as_str() {
@@ -478,6 +540,15 @@ pub fn chunk_from_mir(
             let start_byte: usize = 0;
             let end_byte: usize = text.len();
 
+            // Compute is_test before dropping chunk_lines borrow
+            let is_test = mc.is_test
+                || mc.file.contains("/tests/") || mc.file.contains("\\tests\\")
+                || mc.name.contains("::test_") || mc.name.starts_with("test_")
+                || chunk_lines
+                    .first()
+                    .is_some_and(|l| l.contains("#[test]") || l.contains("#[cfg(test)]"));
+            drop(chunk_lines);
+
             let id = generate_id(&source, idx);
             chunk_ids.push(id);
 
@@ -509,12 +580,7 @@ pub fn chunk_from_mir(
                 let_call_bindings: Vec::new(),
                 field_accesses: Vec::new(),
                 enum_variants,
-                is_test: mc.is_test
-                    || mc.file.contains("/tests/") || mc.file.contains("\\tests\\")
-                    || mc.name.contains("::test_") || mc.name.starts_with("test_")
-                    || chunk_lines
-                        .first()
-                        .is_some_and(|l| l.contains("#[test]") || l.contains("#[cfg(test)]")),
+                is_test,
             };
 
             entries.push(CodeChunkEntry {

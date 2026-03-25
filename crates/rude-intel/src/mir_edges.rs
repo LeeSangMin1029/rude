@@ -622,17 +622,9 @@ fn kill_process_by_pid(pid: u32) {
 /// Pre-truncate MIR data for crates about to be rebuilt.
 ///
 /// Deletes rows from sqlite (if available) and truncates JSONL files as fallback.
-fn pre_truncate_crates(crates: &[&str], out_dir: &Path, mir_db: &Path) {
-    // SQLite: DELETE rows for these crates
-    if mir_db.exists() {
-        if let Ok(conn) = rusqlite::Connection::open(mir_db) {
-            for krate in crates {
-                let cn = krate.replace('-', "_");
-                let _ = conn.execute("DELETE FROM mir_edges WHERE crate_name = ?1", [&cn]);
-                let _ = conn.execute("DELETE FROM mir_chunks WHERE crate_name = ?1", [&cn]);
-            }
-        }
-    }
+fn pre_truncate_crates(crates: &[&str], out_dir: &Path, _mir_db: &Path) {
+    // SQLite: mir-callgraph now handles delta DELETE internally
+    // (changed functions only, not whole crate), so no pre-truncate needed.
 
     // JSONL fallback: truncate files
     for krate in crates {
