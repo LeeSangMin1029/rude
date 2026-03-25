@@ -42,63 +42,80 @@ fn run() -> anyhow::Result<()> {
     use commands::intel;
 
     let cli = Cli::parse();
+    rude_cli::set_db(resolve_db(cli.db)?);
 
     match cli.command {
-        Commands::Aliases { db } => intel::run_aliases(db),
-        Commands::Symbols { db, name, kind, include_tests, limit, compact } => {
-            intel::run_symbols(db, name, kind, include_tests, limit, compact || env_compact())
+        Commands::Aliases => intel::run_aliases(),
+        Commands::Symbols { name, kind, include_tests, limit, compact } => {
+            intel::run_symbols(name, kind, include_tests, limit, compact || env_compact())
         }
-        Commands::Context { db, symbol, depth, source, include_tests, scope, tree, blast } => {
-            intel::run_context(db, symbol, depth, source, include_tests, scope, tree, blast)
+        Commands::Context { symbol, depth, source, include_tests, scope, tree, blast } => {
+            intel::run_context(symbol, depth, source, include_tests, scope, tree, blast)
         }
-        Commands::Trace { db, from, to } => {
-            intel::run_trace(db, from, to)
-        }
-        Commands::Dupes { db, threshold, exclude_tests, k, json, ast, all, min_lines, min_sub_lines, analyze } => {
+        Commands::Trace { from, to } => intel::run_trace(from, to),
+        Commands::Dupes { threshold, exclude_tests, k, json, ast, all, min_lines, min_sub_lines, analyze } => {
             commands::dupes::run(commands::dupes::DupesConfig {
-                db, threshold, exclude_tests, k, json, ast_mode: ast, all_mode: all, min_lines, min_sub_lines, analyze,
+                threshold, exclude_tests, k, json, ast_mode: ast, all_mode: all, min_lines, min_sub_lines, analyze,
             })
         }
-        Commands::Dead { db, include_pub, file } => intel::run_dead(db, include_pub, file),
-        Commands::Stats { db } => intel::run_stats(db),
-        Commands::Coverage { db, file, refresh, .. } => intel::run_coverage(db, file, refresh),
-        Commands::Add { db, input, exclude } => commands::add::run(db, input, &exclude),
-        Commands::Replace { db, symbol, file, body, body_file } => {
+        Commands::Dead { include_pub, file } => intel::run_dead(include_pub, file),
+        Commands::Stats => intel::run_stats(),
+        Commands::Coverage { file, refresh, .. } => intel::run_coverage(file, refresh),
+        Commands::Add { input, exclude } => commands::add::run(input, &exclude),
+        Commands::Replace { symbol, file, body, body_file } => {
             let body = read_body(body, body_file)?;
-            apply_edits(&db, &[(&symbol, Op::Replace(&body))], file.as_deref())
+            apply_edits(&[(&symbol, Op::Replace(&body))], file.as_deref())
         }
-        Commands::InsertAfter { db, symbol, file, body, body_file } => {
+        Commands::InsertAfter { symbol, file, body, body_file } => {
             let body = read_body(body, body_file)?;
-            apply_edits(&db, &[(&symbol, Op::After(&body))], file.as_deref())
+            apply_edits(&[(&symbol, Op::After(&body))], file.as_deref())
         }
-        Commands::InsertBefore { db, symbol, file, body, body_file } => {
+        Commands::InsertBefore { symbol, file, body, body_file } => {
             let body = read_body(body, body_file)?;
-            apply_edits(&db, &[(&symbol, Op::Before(&body))], file.as_deref())
+            apply_edits(&[(&symbol, Op::Before(&body))], file.as_deref())
         }
-        Commands::DeleteSymbol { db, symbol, file } => {
-            apply_edits(&db, &[(&symbol, Op::Delete)], file.as_deref())
+        Commands::DeleteSymbol { symbol, file } => {
+            apply_edits(&[(&symbol, Op::Delete)], file.as_deref())
         }
-        Commands::InsertAt { db, file, line, body, body_file } => {
+        Commands::InsertAt { file, line, body, body_file } => {
             let body = read_body(body, body_file)?;
-            commands::edit::insert_at(db, file, line, body)
+            commands::edit::insert_at(file, line, body)
         }
-        Commands::DeleteLines { db, file, start, end } => {
-            commands::edit::delete_lines(db, file, start, end)
+        Commands::DeleteLines { file, start, end } => {
+            commands::edit::delete_lines(file, start, end)
         }
-        Commands::ReplaceLines { db, file, start, end, body, body_file } => {
+        Commands::ReplaceLines { file, start, end, body, body_file } => {
             let body = read_body(body, body_file)?;
-            commands::edit::replace_lines(db, file, start, end, body)
+            commands::edit::replace_lines(file, start, end, body)
         }
-        Commands::Cluster { db, file, min_lines } => commands::cluster::run(db, file, min_lines),
-        Commands::Watch { db, input } => commands::watch::run(db, input),
-        Commands::CreateFile { db, file, body, body_file } => {
+        Commands::Cluster { file, min_lines } => commands::cluster::run(file, min_lines),
+        Commands::Watch { input } => commands::watch::run(input),
+        Commands::CreateFile { file, body, body_file } => {
             let body = read_body(body, body_file)?;
-            commands::edit::create_file(db, file, body)
+            commands::edit::create_file(file, body)
         }
-        Commands::Split { db, symbols, to, dry_run } => {
-            commands::split::run(db, symbols, to, dry_run)
+        Commands::Split { symbols, to, dry_run } => {
+            commands::split::run(symbols, to, dry_run)
         }
     }
+}
+
+const DB_NAME: &str = ".code.db";
+
+/// Resolve DB path: use explicit path, or search upward from cwd for `.code.db`.
+fn resolve_db(explicit: Option<std::path::PathBuf>) -> anyhow::Result<std::path::PathBuf> {
+    if let Some(p) = explicit {
+        return Ok(p);
+    }
+    let mut dir = std::env::current_dir()?;
+    loop {
+        let candidate = dir.join(DB_NAME);
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+        if !dir.pop() { break; }
+    }
+    anyhow::bail!("No {DB_NAME} found (searched from cwd upward). Pass db path explicitly.")
 }
 
 /// Read body from `--body`, `--body-file`, or stdin (in that priority).

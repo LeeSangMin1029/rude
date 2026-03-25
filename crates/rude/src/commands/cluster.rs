@@ -1,14 +1,12 @@
 //! `rude cluster` — find independent function clusters within a file.
 
-use std::path::PathBuf;
-
 use anyhow::Result;
 
 use super::intel::load_or_build_graph;
 
 /// Run the cluster analysis command.
-pub fn run(db: PathBuf, file: String, min_lines: usize) -> Result<()> {
-    let graph = load_or_build_graph(&db)?;
+pub fn run(file: String, min_lines: usize) -> Result<()> {
+    let graph = load_or_build_graph()?;
     let n = graph.names.len();
 
     // 1. Collect function indices belonging to the target file.

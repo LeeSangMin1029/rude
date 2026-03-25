@@ -21,13 +21,14 @@ pub enum Op<'a> { Replace(&'a str), Before(&'a str), After(&'a str), Delete }
 // ── Core: symbol-based editing ──────────────────────────────────────
 
 /// All symbol edits: locate → splice → write. One locked pass, no line drift.
-pub fn apply_edits(db: &Path, ops: &[(&str, Op)], file: Option<&str>) -> Result<()> {
+pub fn apply_edits(ops: &[(&str, Op)], file: Option<&str>) -> Result<()> {
+    let db = crate::db();
     if ops.is_empty() { return Ok(()); }
 
     let deletes: Vec<&str> = ops.iter()
         .filter(|(_, op)| matches!(op, Op::Delete))
         .map(|(s, _)| *s).collect();
-    if !deletes.is_empty() { warn_callers(db, &deletes); }
+    if !deletes.is_empty() { warn_callers(&deletes); }
 
     let mut edits: Vec<(usize, usize, &str, &Op)> = ops.iter()
         .map(|(sym, op)| {
@@ -50,9 +51,9 @@ pub fn apply_edits(db: &Path, ops: &[(&str, Op)], file: Option<&str>) -> Result<
 // ── Core: line-based editing ────────────────────────────────────────
 
 /// Insert content at a line number (1-based).
-pub fn insert_at(db: PathBuf, file: String, line: usize, body: String) -> Result<()> {
+pub fn insert_at(file: String, line: usize, body: String) -> Result<()> {
     check_line(line)?;
-    let (abs, rel) = resolve_path(&db, &file)?;
+    let (abs, rel) = resolve_path(crate::db(), &file)?;
     splice_file(&abs, |lines| {
         let idx = (line - 1).min(lines.len());
         let bl: Vec<String> = body.trim_end().lines().map(String::from).collect();
@@ -63,9 +64,9 @@ pub fn insert_at(db: PathBuf, file: String, line: usize, body: String) -> Result
 }
 
 /// Delete a line range (1-based inclusive).
-pub fn delete_lines(db: PathBuf, file: String, start: usize, end: usize) -> Result<()> {
+pub fn delete_lines(file: String, start: usize, end: usize) -> Result<()> {
     check_range(start, end)?;
-    let (abs, rel) = resolve_path(&db, &file)?;
+    let (abs, rel) = resolve_path(crate::db(), &file)?;
     splice_file(&abs, |lines| {
         let mut after = end.min(lines.len());
         while after < lines.len() && lines[after].trim().is_empty() { after += 1; }
@@ -75,9 +76,9 @@ pub fn delete_lines(db: PathBuf, file: String, start: usize, end: usize) -> Resu
 }
 
 /// Replace a line range (1-based inclusive) with new content.
-pub fn replace_lines(db: PathBuf, file: String, start: usize, end: usize, body: String) -> Result<()> {
+pub fn replace_lines(file: String, start: usize, end: usize, body: String) -> Result<()> {
     check_range(start, end)?;
-    let (abs, rel) = resolve_path(&db, &file)?;
+    let (abs, rel) = resolve_path(crate::db(), &file)?;
     splice_file(&abs, |lines| {
         let bl: Vec<String> = body.trim_end().lines().map(String::from).collect();
         lines.splice((start - 1)..end.min(lines.len()), bl);
@@ -86,8 +87,8 @@ pub fn replace_lines(db: PathBuf, file: String, start: usize, end: usize, body: 
 }
 
 /// Create a new file at a project-relative path.
-pub fn create_file(db: PathBuf, file: String, body: String) -> Result<()> {
-    let root = rude_intel::helpers::find_project_root(&db)
+pub fn create_file(file: String, body: String) -> Result<()> {
+    let root = rude_intel::helpers::find_project_root(crate::db())
         .context("Cannot determine project root")?;
     let path = root.join(&file);
     if path.exists() { bail!("File already exists: {}", path.display()); }
@@ -231,8 +232,8 @@ pub(crate) fn join_lines(lines: &[&str], trailing_nl: bool) -> String {
     if trailing_nl { lines.join("\n") + "\n" } else { lines.join("\n") }
 }
 
-fn warn_callers(db: &Path, symbols: &[&str]) {
-    let Ok((graph, _)) = crate::commands::intel::load_or_build_graph_with_chunks(db) else { return };
+fn warn_callers(symbols: &[&str]) {
+    let Ok((graph, _)) = crate::commands::intel::load_or_build_graph_with_chunks() else { return };
     for &sym in symbols {
         let idxs: Vec<usize> = graph.names.iter().enumerate()
             .filter(|(_, n)| *n == sym || n.ends_with(&format!("::{sym}")))

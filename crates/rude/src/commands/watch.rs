@@ -17,7 +17,8 @@ use rude_db::{Payload, PayloadValue};
 const IGNORED_DIRS: &[&str] = &[".git", "target", "node_modules", "__pycache__"];
 
 /// Run watch mode — blocks indefinitely, updating DB on file changes.
-pub fn run(db_path: PathBuf, input_path: PathBuf) -> Result<()> {
+pub fn run(input_path: PathBuf) -> Result<()> {
+    let db_path = crate::db().to_path_buf();
     // Set project root for path normalization (absolute → relative).
     rude_intel::parse::set_project_root(&input_path);
 
@@ -28,7 +29,7 @@ pub fn run(db_path: PathBuf, input_path: PathBuf) -> Result<()> {
     // Initial full build if DB doesn't exist
     if !db_path.exists() {
         eprintln!("[watch] No DB found, running initial add...");
-        super::add::run(db_path.clone(), input_path.clone(), &[])?;
+        super::add::run(input_path.clone(), &[])?;
         eprintln!("[watch] Initial build complete\n");
     }
 

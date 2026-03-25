@@ -9,6 +9,8 @@ use clap::{Parser, Subcommand};
 #[command(name = "rude")]
 #[command(author, version, about = "Code intelligence: structural analysis, clone detection, and reasoning")]
 pub struct Cli {
+    /// Path to the database directory (auto-detected if omitted).
+    pub db: Option<PathBuf>,
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -17,14 +19,9 @@ pub struct Cli {
 #[expect(clippy::large_enum_variant, reason = "clap derive enums are parsed once, size is irrelevant")]
 pub enum Commands {
     /// Print global path alias mapping (stable across all commands).
-    Aliases {
-        /// Path to the database directory.
-        db: PathBuf,
-    },
+    Aliases,
     /// List symbols in the database (functions, structs, enums, impls).
     Symbols {
-        /// Path to the database directory.
-        db: PathBuf,
         /// Filter by symbol name (substring match).
         #[arg(short, long)]
         name: Option<String>,
@@ -44,8 +41,6 @@ pub enum Commands {
     /// Unified context: definition + callers + callees + types + tests.
     #[command(visible_alias = "ctx")]
     Context {
-        /// Path to the database directory.
-        db: PathBuf,
         /// Symbol name to look up.
         symbol: String,
         /// Max BFS depth (default: 1).
@@ -70,8 +65,6 @@ pub enum Commands {
     /// Find shortest call path between two symbols.
     #[command(visible_alias = "tr")]
     Trace {
-        /// Path to the database directory.
-        db: PathBuf,
         /// Source symbol name.
         from: String,
         /// Target symbol name.
@@ -80,8 +73,6 @@ pub enum Commands {
     /// Find duplicate code (token Jaccard default, --ast structural).
     #[command(visible_alias = "dup")]
     Dupes {
-        /// Path to the database directory.
-        db: PathBuf,
         /// Similarity threshold (Jaccard, 0.0-1.0).
         #[arg(long, default_value = "0.5")]
         threshold: f32,
@@ -111,15 +102,10 @@ pub enum Commands {
         analyze: bool,
     },
     /// Show per-crate code statistics (functions, structs, enums).
-    Stats {
-        /// Path to the database directory.
-        db: PathBuf,
-    },
+    Stats,
     /// Per-crate test coverage with per-function test counts.
     #[command(visible_alias = "cov")]
     Coverage {
-        /// Path to the database directory.
-        db: PathBuf,
         /// BFS depth from test functions (0 = unlimited).
         #[arg(long, default_value = "0")]
         depth: u32,
@@ -132,8 +118,6 @@ pub enum Commands {
     },
     /// Find dead code: functions with no callers (unreachable).
     Dead {
-        /// Path to the database directory.
-        db: PathBuf,
         /// Include pub functions (excluded by default — may be API entry points).
         #[arg(long)]
         include_pub: bool,
@@ -143,8 +127,6 @@ pub enum Commands {
     },
     /// Add/update code files in the database (auto-incremental).
     Add {
-        /// Path to the database directory.
-        db: PathBuf,
         /// Path to code folder or single file.
         input: PathBuf,
         /// Glob patterns to exclude from scanning.
@@ -154,8 +136,6 @@ pub enum Commands {
     /// Replace a symbol's body with new content.
     #[command(visible_alias = "rep")]
     Replace {
-        /// Path to the database directory.
-        db: PathBuf,
         /// Symbol name to replace.
         symbol: String,
         /// Restrict to file (suffix match).
@@ -170,8 +150,6 @@ pub enum Commands {
     },
     /// Insert content after a symbol.
     InsertAfter {
-        /// Path to the database directory.
-        db: PathBuf,
         /// Symbol name to insert after.
         symbol: String,
         /// Restrict to file (suffix match).
@@ -186,8 +164,6 @@ pub enum Commands {
     },
     /// Insert content before a symbol.
     InsertBefore {
-        /// Path to the database directory.
-        db: PathBuf,
         /// Symbol name to insert before.
         symbol: String,
         /// Restrict to file (suffix match).
@@ -203,8 +179,6 @@ pub enum Commands {
     /// Delete a symbol from its source file.
     #[command(visible_alias = "del")]
     DeleteSymbol {
-        /// Path to the database directory.
-        db: PathBuf,
         /// Symbol name to delete.
         symbol: String,
         /// Restrict to file (suffix match).
@@ -214,8 +188,6 @@ pub enum Commands {
     /// Insert content at a specific line number (before that line).
     #[command(visible_alias = "ia")]
     InsertAt {
-        /// Path to the database directory.
-        db: PathBuf,
         /// File path relative to project root.
         file: String,
         /// 1-based line number to insert before.
@@ -231,8 +203,6 @@ pub enum Commands {
     /// Delete a range of lines from a file.
     #[command(visible_alias = "dl")]
     DeleteLines {
-        /// Path to the database directory.
-        db: PathBuf,
         /// File path relative to project root.
         file: String,
         /// 1-based start line (inclusive).
@@ -245,8 +215,6 @@ pub enum Commands {
     /// Replace a range of lines with new content.
     #[command(visible_alias = "rl")]
     ReplaceLines {
-        /// Path to the database directory.
-        db: PathBuf,
         /// File path relative to project root.
         file: String,
         /// 1-based start line (inclusive).
@@ -264,8 +232,6 @@ pub enum Commands {
     },
     /// Analyze independent function clusters in a file
     Cluster {
-        /// Path to the database directory.
-        db: PathBuf,
         /// File path suffix to filter (e.g. "src/dag_runner.rs").
         #[arg(long)]
         file: String,
@@ -275,16 +241,12 @@ pub enum Commands {
     },
     /// Watch for file changes and auto-update the code database
     Watch {
-        /// Code database path
-        db: PathBuf,
         /// Input directory to watch
         input: PathBuf,
     },
     /// Create a new file at a project-relative path.
     #[command(visible_alias = "cf")]
     CreateFile {
-        /// Path to the database directory.
-        db: PathBuf,
         /// File path relative to project root.
         file: String,
         /// File content (reads from stdin if omitted).
@@ -296,8 +258,6 @@ pub enum Commands {
     },
     /// Split symbols into a new module file.
     Split {
-        /// Path to the database directory.
-        db: PathBuf,
         /// Comma-separated symbol names to extract.
         #[arg(long)]
         symbols: String,

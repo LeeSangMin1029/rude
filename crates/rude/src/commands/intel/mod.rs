@@ -25,17 +25,13 @@ pub use rude_intel::helpers::{format_lines_opt, format_lines_str_opt, relative_p
 pub use rude_intel::impact;
 pub use rude_intel::loader::load_chunks;
 /// Load or build call graph (MIR edges → name-resolve fallback).
-pub fn load_or_build_graph(
-    db: &std::path::Path,
-) -> anyhow::Result<rude_intel::graph::CallGraph> {
-    rude_intel::loader::load_or_build_graph(db)
+pub fn load_or_build_graph() -> anyhow::Result<rude_intel::graph::CallGraph> {
+    rude_intel::loader::load_or_build_graph(crate::db())
 }
 
 /// Load or build call graph, also returning chunks if they were loaded.
-pub fn load_or_build_graph_with_chunks(
-    db: &std::path::Path,
-) -> anyhow::Result<(rude_intel::graph::CallGraph, Option<Vec<rude_intel::parse::ParsedChunk>>)> {
-    rude_intel::loader::load_or_build_graph_with_chunks(db)
+pub fn load_or_build_graph_with_chunks() -> anyhow::Result<(rude_intel::graph::CallGraph, Option<Vec<rude_intel::parse::ParsedChunk>>)> {
+    rude_intel::loader::load_or_build_graph_with_chunks(crate::db())
 }
 
 pub use rude_intel::parse::ParsedChunk;

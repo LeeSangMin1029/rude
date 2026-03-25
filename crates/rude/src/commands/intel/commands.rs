@@ -3,8 +3,6 @@
 //! Each `run_*` function corresponds to a CLI subcommand (stats, symbols,
 //! context, blast, trace, etc.). Pure analysis logic lives in `rude-intel`.
 
-use std::path::{Path, PathBuf};
-
 use anyhow::Result;
 
 use super::print_grouped;
@@ -17,8 +15,8 @@ use super::{
 // ── Commands ─────────────────────────────────────────────────────────────
 
 /// `rude aliases` — print global path alias mapping.
-pub fn run_aliases(db: PathBuf) -> Result<()> {
-    let graph = load_or_build_graph(&db)?;
+pub fn run_aliases() -> Result<()> {
+    let graph = load_or_build_graph()?;
     let (_alias_map, legend) = graph.global_aliases();
     for (alias, dir) in &legend {
         println!("{alias} = {dir}");
@@ -27,8 +25,8 @@ pub fn run_aliases(db: PathBuf) -> Result<()> {
 }
 
 /// `rude stats` — per-crate summary of code symbols.
-pub fn run_stats(db: PathBuf) -> Result<()> {
-    let chunks = load_chunks(&db)?;
+pub fn run_stats() -> Result<()> {
+    let chunks = load_chunks(crate::db())?;
     let stats = build_stats(&chunks);
     println!("=== stats: {} crates ===\n", stats.len());
     println!(
@@ -56,7 +54,6 @@ pub fn run_stats(db: PathBuf) -> Result<()> {
 
 /// `rude symbols` — list symbols matching filters.
 pub fn run_symbols(
-    db: PathBuf,
     name: Option<String>,
     kind: Option<String>,
     include_tests: bool,
@@ -65,7 +62,7 @@ pub fn run_symbols(
 ) -> Result<()> {
     let is_file_query = name.as_deref().is_some_and(looks_like_file_path);
 
-    run_chunk_query(&db,
+    run_chunk_query(
         |c| {
             if let Some(ref n) = name {
                 if is_file_query {
@@ -97,7 +94,7 @@ pub fn run_symbols(
 
     // Show trait implementations if any trait was in the results (name mode only).
     if !is_file_query {
-        print_trait_impls_if_relevant(&db, name.as_deref())?;
+        print_trait_impls_if_relevant(name.as_deref())?;
     }
     Ok(())
 }
@@ -115,13 +112,13 @@ fn looks_like_file_path(s: &str) -> bool {
 }
 
 /// If the symbol search matched any trait, print its implementations.
-fn print_trait_impls_if_relevant(db: &std::path::Path, name: Option<&str>) -> Result<()> {
+fn print_trait_impls_if_relevant(name: Option<&str>) -> Result<()> {
     let name = match name {
         Some(n) => n,
         None => return Ok(()),
     };
     // Use cached graph only — don't trigger a full build just for trait impls.
-    let graph = match graph::CallGraph::load(db) {
+    let graph = match graph::CallGraph::load(crate::db()) {
         Some(g) => g,
         None => return Ok(()),
     };
@@ -147,9 +144,8 @@ fn print_trait_impls_if_relevant(db: &std::path::Path, name: Option<&str>) -> Re
     Ok(())
 }
 
-/// `rude context <db> <symbol> --depth N`
+/// `rude context <symbol> --depth N`
 pub fn run_context(
-    db: PathBuf,
     symbol: String,
     depth: u32,
     source: bool,
@@ -159,13 +155,13 @@ pub fn run_context(
     blast: bool,
 ) -> Result<()> {
     if tree {
-        return run_context_tree(&db, &symbol, depth, include_tests);
+        return run_context_tree(&symbol, depth, include_tests);
     }
 
     if blast {
         let effective_depth = if depth == 1 { 2 } else { depth };
 
-        let graph = load_or_build_graph(&db)?;
+        let graph = load_or_build_graph()?;
         let (alias_map, _) = graph.global_aliases();
 
         // Field-level blast: "Type.field" notation
@@ -238,8 +234,8 @@ pub fn run_context(
 
     use rude_intel::context_cmd;
 
-    let chunks = load_chunks(&db)?;
-    let graph = load_or_build_graph(&db)?;
+    let chunks = load_chunks(crate::db())?;
+    let graph = load_or_build_graph()?;
     let result = context_cmd::build_context(&graph, &chunks, &symbol, depth);
 
     if result.seeds.is_empty() {
@@ -327,10 +323,10 @@ pub fn run_context(
 
 
 /// Shared tree-mode implementation used by both `context --tree` and `jump`.
-fn run_context_tree(db: &Path, symbol: &str, depth: u32, include_tests: bool) -> Result<()> {
+fn run_context_tree(symbol: &str, depth: u32, include_tests: bool) -> Result<()> {
     use rude_intel::jump;
 
-    let graph = load_or_build_graph(db)?;
+    let graph = load_or_build_graph()?;
     let Some(seeds) = resolve_symbol(&graph, symbol) else { return Ok(()) };
     let (alias_map, _legend) = graph.global_aliases();
 
@@ -381,13 +377,12 @@ fn filter_scope_entries(
     }
 }
 
-/// `rude trace <db> <from> <to>`
+/// `rude trace <from> <to>`
 pub fn run_trace(
-    db: PathBuf,
     from: String,
     to: String,
 ) -> Result<()> {
-    let graph = load_or_build_graph(&db)?;
+    let graph = load_or_build_graph()?;
     let (alias_map, _) = graph.global_aliases();
     let Some(sources) = resolve_symbol(&graph, &from) else { return Ok(()) };
     let Some(targets) = resolve_symbol(&graph, &to) else { return Ok(()) };
@@ -409,14 +404,13 @@ pub fn run_trace(
 
 /// Shared runner for chunk-filter commands (symbols).
 fn run_chunk_query(
-    db: &std::path::Path,
     filter: impl Fn(&ParsedChunk) -> bool,
     empty_msg: &str,
     header: impl FnOnce(usize) -> String,
     limit: Option<usize>,
     compact: bool,
 ) -> Result<()> {
-    let chunks = load_chunks(db)?;
+    let chunks = load_chunks(crate::db())?;
     // Compute aliases from ALL chunks (not just filtered) for global consistency.
     let all_files: Vec<&str> = chunks.iter().map(|c| rude_intel::helpers::relative_path(&c.file)).collect();
     let (alias_map, _legend) = rude_intel::helpers::build_path_aliases(&all_files);
@@ -450,18 +444,6 @@ struct TaggedEntry {
 }
 
 /// Print entries grouped by file, with multi-base path aliases.
-///
-/// Output format:
-/// ```text
-/// @ [A]scorer.rs
-///   [def] :128-171 fn accumulate_and_rank
-///   [callee] :107-118 fn ScoringCtx<'_>::score
-/// @ [B]index.rs
-///   [caller] :276-303 fn Bm25Index<T>::search
-///
-/// [A] = crates/rude-search/src/bm25/
-/// [B] = crates/rude-search/src/bm25/
-/// ```
 fn print_file_grouped(
     graph: &graph::CallGraph,
     entries: &[TaggedEntry],
@@ -476,7 +458,6 @@ fn print_file_grouped(
     }
 
     // Deduplicate: if same idx appears in multiple roles, keep highest priority.
-    // Priority: def > caller > callee > type > test
     let role_priority = |tag: &str| -> u8 {
         match tag {
             "def" => 0, "target" | "field" => 0,
@@ -489,7 +470,6 @@ fn print_file_grouped(
     };
     let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
     let mut deduped: Vec<&TaggedEntry> = Vec::new();
-    // Sort by priority first, then deduplicate
     let mut all_entries: Vec<&TaggedEntry> = entries.iter().collect();
     all_entries.sort_by_key(|e| role_priority(e.tag));
     for e in &all_entries {
@@ -498,7 +478,6 @@ fn print_file_grouped(
         }
     }
 
-    // Re-collect files and re-group after dedup
     let files: Vec<&str> = deduped
         .iter()
         .map(|e| super::relative_path(&graph.files[e.idx as usize]))
@@ -508,7 +487,6 @@ fn print_file_grouped(
         groups.entry(file).or_default().push(entry);
     }
 
-    // Print each file group
     for (file, items) in &groups {
         let short = apply_alias(file, alias_map);
         println!("@ {short}");
@@ -544,7 +522,7 @@ fn print_source_lines(file_path: &str, start: usize, end: usize) {
         return;
     };
     let lines: Vec<&str> = content.lines().collect();
-    let start = start.saturating_sub(1); // 1-based → 0-based
+    let start = start.saturating_sub(1);
     let end = end.min(lines.len());
     if start >= end {
         return;
@@ -581,37 +559,32 @@ fn print_trace_path(
 
 /// `rude dead` — find functions with no callers (dead code candidates).
 pub fn run_dead(
-    db: PathBuf,
     include_pub: bool,
     file_filter: Option<String>,
 ) -> Result<()> {
     use rude_intel::helpers::extract_crate_name;
 
-    let graph = load_or_build_graph(&db)?;
+    let graph = load_or_build_graph()?;
     let n = graph.names.len();
     let (alias_map, _) = graph.global_aliases();
 
     let mut dead: Vec<usize> = Vec::new();
 
     for i in 0..n {
-        // Skip tests, non-functions, derives
         if graph.is_test[i] || graph.kinds[i] != "function" {
             continue;
         }
         if is_derive_generated(&graph.names[i]) {
             continue;
         }
-        // File filter
         if let Some(ref filter) = file_filter {
             if !graph.files[i].contains(filter.as_str()) {
                 continue;
             }
         }
-        // Has callers → not dead
         if !graph.callers[i].is_empty() {
             continue;
         }
-        // Skip pub functions unless --include-pub
         if !include_pub {
             let is_pub = graph.signatures[i]
                 .as_deref()
@@ -620,23 +593,17 @@ pub fn run_dead(
                 continue;
             }
         }
-        // Skip trait impls: "<T as Trait>::method" pattern.
-        // These may be called via dynamic dispatch or MIR-inlined (e.g. PartialEq::eq
-        // becomes discriminant comparison), so MIR edges may not exist even if used.
         if graph.names[i].starts_with('<') && graph.names[i].contains(" as ") {
             continue;
         }
-        // Skip main/entry points
         let name = &graph.names[i];
         if name == "main" || name.ends_with("::main") || name.ends_with("::run") {
             continue;
         }
-        // Skip non-Rust files (Python/TS extractors etc.)
         let file = &graph.files[i];
         if !file.ends_with(".rs") {
             continue;
         }
-        // Skip macro-generated check functions (assert_impl_all!, thread_local!, etc.)
         if name.contains("::check::assert_impl")
             || name.contains("::{closure#0}::check")
             || name.ends_with("::new") && graph.callees[i].is_empty()
@@ -647,7 +614,6 @@ pub fn run_dead(
         dead.push(i);
     }
 
-    // Group by crate
     let mut by_crate: std::collections::BTreeMap<String, Vec<usize>> = std::collections::BTreeMap::new();
     for &i in &dead {
         let crate_name = extract_crate_name(&graph.files[i]);
@@ -672,25 +638,21 @@ pub fn run_dead(
 
 /// `rude coverage` — test coverage via `cargo llvm-cov` with call-graph supplement.
 pub fn run_coverage(
-    db: PathBuf,
     _file_filter: Option<String>,
     refresh: bool,
 ) -> Result<()> {
     use std::collections::BTreeMap;
     use rude_intel::helpers::extract_crate_name;
 
-    // Try llvm-cov (actual execution-based coverage)
-    let llvm_cov_result = run_llvm_cov(&db, refresh);
+    let llvm_cov_result = run_llvm_cov(refresh);
 
     let Some(cov) = llvm_cov_result else {
         println!("cargo llvm-cov not available. Install with: cargo install cargo-llvm-cov");
         return Ok(());
     };
 
-    // ── llvm-cov succeeded: show per-crate summary + totals ──
     println!("=== test coverage (cargo llvm-cov) ===\n");
 
-    // Aggregate file-level data into per-crate buckets
     let mut crate_cov: BTreeMap<String, (usize, usize, usize, usize)> = BTreeMap::new();
     for fc in &cov.files {
         let crate_name = extract_crate_name(&fc.filename);
@@ -749,7 +711,6 @@ struct LlvmCovResult {
     line_total: usize,
     line_covered: usize,
     line_percent: f64,
-    /// Per-file coverage data extracted from llvm-cov JSON.
     files: Vec<LlvmFileCov>,
 }
 
@@ -761,10 +722,8 @@ struct LlvmFileCov {
     line_covered: usize,
 }
 
-/// Run `cargo llvm-cov --json --ignore-run-fail` and parse totals.
-/// Results are cached to `<db>/cache/llvm_cov.json`; use `refresh` to force re-run.
-/// Returns `None` if the tool is not installed or the command fails.
-fn run_llvm_cov(db: &Path, refresh: bool) -> Option<LlvmCovResult> {
+fn run_llvm_cov(refresh: bool) -> Option<LlvmCovResult> {
+    let db = crate::db();
     let cache_path = db.join("cache").join("llvm_cov.json");
 
     let raw_json: serde_json::Value = if !refresh && cache_path.exists() {
@@ -789,7 +748,6 @@ fn run_llvm_cov(db: &Path, refresh: bool) -> Option<LlvmCovResult> {
 
         let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
 
-        // Cache the raw JSON
         if let Some(parent) = cache_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -802,7 +760,6 @@ fn run_llvm_cov(db: &Path, refresh: bool) -> Option<LlvmCovResult> {
     parse_llvm_cov_json(&raw_json)
 }
 
-/// Parse the llvm-cov JSON into our result type (totals + per-file).
 fn parse_llvm_cov_json(json: &serde_json::Value) -> Option<LlvmCovResult> {
     let data = json.get("data")?.get(0)?;
     let totals = data.get("totals")?;
@@ -838,14 +795,10 @@ fn parse_llvm_cov_json(json: &serde_json::Value) -> Option<LlvmCovResult> {
     })
 }
 
-/// Returns `true` if the function name looks like it was generated by a derive macro.
 fn is_derive_generated(name: &str) -> bool {
-    // serde Deserialize/Serialize internals
     name.contains("::_serde::") || name.contains("::_::_serde::")
-    // bincode Encode/Decode
     || name.contains("as bincode::Encode>::encode")
     || name.contains("as bincode::Decode<")
     || name.contains("as bincode::BorrowDecode<")
-    // clap derives
     || name.contains("as clap::")
 }

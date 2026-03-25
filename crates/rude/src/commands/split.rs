@@ -35,7 +35,8 @@ fn extract_use_lines(content: &str) -> Vec<String> {
 }
 
 /// Run the split command.
-pub fn run(db: PathBuf, symbols: String, to: String, dry_run: bool) -> Result<()> {
+pub fn run(symbols: String, to: String, dry_run: bool) -> Result<()> {
+    let db = crate::db();
     let symbol_names: Vec<&str> = symbols.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
     if symbol_names.is_empty() {
         bail!("--symbols must contain at least one symbol name");
@@ -183,7 +184,7 @@ pub fn run(db: PathBuf, symbols: String, to: String, dry_run: bool) -> Result<()
 
     // Delete symbols from source using shared delete_symbols logic.
     let ops: Vec<(&str, super::edit::Op)> = symbol_names.iter().map(|&s| (s, super::edit::Op::Delete)).collect();
-    super::edit::apply_edits(&db, &ops, None)?;
+    super::edit::apply_edits(&ops, None)?;
 
     // ── Insert `pub use` re-export into the source file ─────────────
     locked_edit(source_path, |content| {

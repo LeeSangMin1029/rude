@@ -24,7 +24,8 @@ const TEXT_ONLY_MODEL: &str = "text-only";
 // ── Public entry points ──────────────────────────────────────────────────
 
 /// Run the rude add command (auto-incremental: only re-processes changed files).
-pub fn run(db_path: PathBuf, input_path: PathBuf, exclude: &[String]) -> Result<()> {
+pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
+    let db_path = crate::db().to_path_buf();
     use rude_db::file_utils::get_file_mtime;
 
     // Set project root for path normalization (absolute → relative).

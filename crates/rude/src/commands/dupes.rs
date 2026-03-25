@@ -13,7 +13,6 @@
 #![expect(clippy::expect_used)]
 
 use std::collections::HashMap;
-use std::path::Path;
 
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -81,7 +80,6 @@ struct SubBlocksOutput {
 
 /// Configuration for the dupes command.
 pub struct DupesConfig {
-    pub db: std::path::PathBuf,
     pub threshold: f32,
     pub exclude_tests: bool,
     pub k: usize,
@@ -96,10 +94,11 @@ pub struct DupesConfig {
 /// Run the dupes command.
 pub fn run(cfg: DupesConfig) -> Result<()> {
     let DupesConfig {
-        db, threshold, exclude_tests, k, json,
+        threshold, exclude_tests, k, json,
         ast_mode, all_mode, min_lines, min_sub_lines, analyze,
     } = cfg;
-    let engine = StorageEngine::open(&db)
+    let db = crate::db();
+    let engine = StorageEngine::open(db)
         .with_context(|| format!("failed to open database at {}", db.display()))?;
     let pstore = engine.payload_store();
     let candidate_ids = clones::collect_filtered_ids(&engine, pstore, exclude_tests, min_lines);
@@ -118,7 +117,7 @@ pub fn run(cfg: DupesConfig) -> Result<()> {
         if json {
             print_groups_json(&groups, pstore);
         } else {
-            print_groups_text(&groups, pstore, &db);
+            print_groups_text(&groups, pstore);
         }
         // AST mode produces groups, not pairs — skip analyze.
         return Ok(());
@@ -140,7 +139,7 @@ pub fn run(cfg: DupesConfig) -> Result<()> {
         if json {
             print_pairs_json(&pairs, pstore);
         } else {
-            print_pairs_text(&pairs, pstore, &db);
+            print_pairs_text(&pairs, pstore);
         }
 
         if analyze {
@@ -162,7 +161,7 @@ pub fn run(cfg: DupesConfig) -> Result<()> {
         } else if json {
             print_unified_json(&unified_pairs, pstore);
         } else {
-            print_pairs_text(&unified_pairs, pstore, &db);
+            print_pairs_text(&unified_pairs, pstore);
         }
 
         if !sub_clones.is_empty() {
@@ -185,7 +184,7 @@ pub fn run(cfg: DupesConfig) -> Result<()> {
 
     // --analyze: call graph analysis for each duplicate pair.
     if analyze && !pair_names.is_empty() {
-        run_analyze(&db, &pair_names)?;
+        run_analyze(&pair_names)?;
     }
 
     Ok(())
@@ -341,7 +340,6 @@ fn group_by_file(
 fn print_pairs_text(
     pairs: &[impl DupePairLike],
     pstore: &(impl PayloadStore + ?Sized),
-    db: &Path,
 ) {
     if pairs.is_empty() {
         println!("No duplicates found above threshold.");
@@ -371,8 +369,7 @@ fn print_pairs_text(
         println!();
     }
 
-    let db_name = db.file_name().and_then(|n| n.to_str()).unwrap_or("db");
-    eprintln!("Tip: rude context {db_name} <symbol>  to inspect.");
+    eprintln!("Tip: rude context <symbol>  to inspect.");
 }
 
 fn print_pairs_json(pairs: &[DupePair], pstore: &(impl PayloadStore + ?Sized)) {
@@ -402,7 +399,7 @@ fn print_unified_json(pairs: &[UnifiedDupePair], pstore: &(impl PayloadStore + ?
 
 // ── Group output (AST hash mode) ─────────────────────────────────────────
 
-fn print_groups_text(groups: &[(u64, Vec<u64>)], pstore: &(impl PayloadStore + ?Sized), db: &Path) {
+fn print_groups_text(groups: &[(u64, Vec<u64>)], pstore: &(impl PayloadStore + ?Sized)) {
     if groups.is_empty() {
         println!("No clones found.");
         return;
@@ -454,8 +451,7 @@ fn print_groups_text(groups: &[(u64, Vec<u64>)], pstore: &(impl PayloadStore + ?
         println!();
     }
 
-    let db_name = db.file_name().and_then(|n| n.to_str()).unwrap_or("db");
-    eprintln!("Tip: rude context {db_name} <symbol>  to inspect.");
+    eprintln!("Tip: rude context <symbol>  to inspect.");
 }
 
 fn print_groups_json(groups: &[(u64, Vec<u64>)], pstore: &(impl PayloadStore + ?Sized)) {
@@ -513,11 +509,11 @@ fn print_sub_block_json(clones: &[SubBlockClone], pstore: &(impl PayloadStore + 
 
 // ── Analyze output ───────────────────────────────────────────────────────
 
-fn run_analyze(db: &Path, pair_names: &[(String, String)]) -> Result<()> {
+fn run_analyze(pair_names: &[(String, String)]) -> Result<()> {
     use rude_intel::dupe_analyze;
     use super::intel::load_or_build_graph;
 
-    let graph = load_or_build_graph(db)?;
+    let graph = load_or_build_graph()?;
 
     // Resolve each name pair to graph indices.
     let mut resolved_pairs: Vec<(u32, u32, &str, &str)> = Vec::new();
