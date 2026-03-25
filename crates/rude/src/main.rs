@@ -64,18 +64,18 @@ fn run() -> anyhow::Result<()> {
         Commands::Add { db, input, exclude } => commands::add::run(db, input, &exclude),
         Commands::Replace { db, symbol, file, body, body_file } => {
             let body = read_body(body, body_file)?;
-            commands::edit::replace(db, symbol, file, body)
+            commands::edit::apply_edits(&db, &[(&symbol, commands::edit::Op::Replace(&body))], file.as_deref())
         }
         Commands::InsertAfter { db, symbol, file, body, body_file } => {
             let body = read_body(body, body_file)?;
-            commands::edit::insert_after(db, symbol, file, body)
+            commands::edit::apply_edits(&db, &[(&symbol, commands::edit::Op::After(&body))], file.as_deref())
         }
         Commands::InsertBefore { db, symbol, file, body, body_file } => {
             let body = read_body(body, body_file)?;
-            commands::edit::insert_before(db, symbol, file, body)
+            commands::edit::apply_edits(&db, &[(&symbol, commands::edit::Op::Before(&body))], file.as_deref())
         }
         Commands::DeleteSymbol { db, symbol, file } => {
-            commands::edit::delete_symbol(db, symbol, file)
+            commands::edit::apply_edits(&db, &[(&symbol, commands::edit::Op::Delete)], file.as_deref())
         }
         Commands::InsertAt { db, file, line, body, body_file } => {
             let body = read_body(body, body_file)?;

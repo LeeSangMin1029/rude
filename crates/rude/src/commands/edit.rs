@@ -275,7 +275,7 @@ where
 
 /// Replace the body of a symbol with new content.
 /// Edit operation on a symbol range.
-enum Op<'a> {
+pub enum Op<'a> {
     /// Replace symbol body with new content.
     Replace(&'a str),
     /// Insert content before the symbol.
@@ -288,7 +288,7 @@ enum Op<'a> {
 
 /// Core: locate symbols → apply ops in one locked write → no line drift.
 /// All edit commands (replace, insert, delete) funnel through here.
-fn apply_edits(db: &Path, ops: &[(&str, Op)], file: Option<&str>) -> Result<()> {
+pub fn apply_edits(db: &Path, ops: &[(&str, Op)], file: Option<&str>) -> Result<()> {
     if ops.is_empty() { return Ok(()); }
 
     // Warn callers for any Delete ops
@@ -374,28 +374,6 @@ fn warn_callers(db: &Path, symbols: &[&str]) {
     }
 }
 
-// ── Public API: thin wrappers around apply_edits ────────────────────
-
-pub fn replace(db: PathBuf, symbol: String, file: Option<String>, body: String) -> Result<()> {
-    apply_edits(&db, &[(&symbol, Op::Replace(&body))], file.as_deref())
-}
-
-pub fn insert_after(db: PathBuf, symbol: String, file: Option<String>, body: String) -> Result<()> {
-    apply_edits(&db, &[(&symbol, Op::After(&body))], file.as_deref())
-}
-
-pub fn insert_before(db: PathBuf, symbol: String, file: Option<String>, body: String) -> Result<()> {
-    apply_edits(&db, &[(&symbol, Op::Before(&body))], file.as_deref())
-}
-
-pub fn delete_symbol(db: PathBuf, symbol: String, file: Option<String>) -> Result<()> {
-    apply_edits(&db, &[(&symbol, Op::Delete)], file.as_deref())
-}
-
-pub fn delete_symbols(db: PathBuf, symbols: &[&str], file: Option<&str>) -> Result<()> {
-    let ops: Vec<(&str, Op)> = symbols.iter().map(|&s| (s, Op::Delete)).collect();
-    apply_edits(&db, &ops, file)
-}
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 

@@ -182,7 +182,8 @@ pub fn run(db: PathBuf, symbols: String, to: String, dry_run: bool) -> Result<()
     eprintln!("Created {} ({} line(s))", to, new_file_content.lines().count());
 
     // Delete symbols from source using shared delete_symbols logic.
-    super::edit::delete_symbols(db.clone(), &symbol_names, None)?;
+    let ops: Vec<(&str, super::edit::Op)> = symbol_names.iter().map(|&s| (s, super::edit::Op::Delete)).collect();
+    super::edit::apply_edits(&db, &ops, None)?;
 
     // ── Insert `pub use` re-export into the source file ─────────────
     locked_edit(source_path, |content| {
