@@ -164,6 +164,14 @@ pub fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -
         let filename = span_file(&body.span);
         let (start_line, end_line) = span_lines(&body.span);
 
+        // Extract signature from MIR dump (first line = clean signature)
+        let signature = {
+            let mut buf = Vec::new();
+            item.emit_mir(&mut buf).ok()
+                .and_then(|_| String::from_utf8(buf).ok())
+                .and_then(|s| s.lines().next().map(|l| l.trim().to_string()))
+        };
+
         // Extract call edges
         let mut extractor = CallExtractor {
             caller_name: name.clone(),
@@ -174,10 +182,9 @@ pub fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -
         };
         extractor.visit_body(&body);
 
-        let kind = "fn";
         chunks.push(MirChunk {
-            name, file: filename.clone(), kind: kind.to_string(),
-            start_line, end_line, signature: None, visibility: String::new(),
+            name, file: filename.clone(), kind: "fn".to_string(),
+            start_line, end_line, signature, visibility: String::new(),
             is_test: is_test_fn(&filename, &chunks.last().map(|c| c.name.as_str()).unwrap_or(""), is_test_target),
             body: String::new(), calls: String::new(), type_refs: String::new(),
         });
