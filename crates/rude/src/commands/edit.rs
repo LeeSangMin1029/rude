@@ -4,8 +4,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use fs2::FileExt;
 
-use rude_intel::loader::load_chunks;
-use rude_intel::parse::ParsedChunk;
 
 pub(crate) struct SymbolLocation {
     pub(crate) abs_path: PathBuf,
@@ -129,39 +127,21 @@ fn op_label(op: &Op, start: usize, end: usize) -> String {
 }
 
 pub(crate) fn locate_symbol(db: &Path, symbol: &str, file_hint: Option<&str>) -> Result<SymbolLocation> {
-    let chunks = load_chunks(db)?;
-
-    let mut idx: std::collections::HashMap<&str, Vec<usize>> = std::collections::HashMap::new();
-    for (i, c) in chunks.iter().enumerate() {
-        idx.entry(&c.name).or_default().push(i);
-        if let Some(s) = c.name.rsplit("::").next() {
-            if s != c.name { idx.entry(s).or_default().push(i); }
-        }
-    }
-
-    let mut candidates: Vec<usize> = idx.get(symbol).cloned().unwrap_or_default();
-    if candidates.is_empty() && symbol.contains("::") {
-        for (i, c) in chunks.iter().enumerate() {
-            if c.name.ends_with(&format!("::{symbol}")) { candidates.push(i); }
-        }
-    }
-    let candidates: Vec<&ParsedChunk> = candidates.into_iter()
-        .map(|i| &chunks[i])
-        .filter(|c| {
-            let nm = c.name == symbol || c.name.ends_with(&format!("::{symbol}"));
-            let fm = file_hint.is_none_or(|f| c.file.ends_with(f));
-            nm && fm
-        }).collect();
+    let graph = crate::commands::intel::load_or_build_graph()?;
+    let indices = graph.resolve(symbol);
+    let candidates: Vec<u32> = indices.into_iter()
+        .filter(|&i| file_hint.is_none_or(|f| graph.chunks[i as usize].file.ends_with(f)))
+        .collect();
 
     if candidates.is_empty() { bail!("Symbol '{symbol}' not found"); }
     if candidates.len() > 1 {
         let locs: Vec<String> = candidates.iter()
-            .map(|c| format!("  {} [{}] {}:{}", c.name, c.kind,
-                c.file, c.lines.map_or("?".into(), |(s, e)| format!("{s}-{e}")))).collect();
+            .map(|&i| { let c = &graph.chunks[i as usize]; format!("  {} [{}] {}:{}", c.name, c.kind,
+                c.file, c.lines.map_or("?".into(), |(s, e)| format!("{s}-{e}"))) }).collect();
         bail!("Ambiguous '{symbol}' — {} matches:\n{}", candidates.len(), locs.join("\n"));
     }
 
-    let chunk = candidates[0];
+    let chunk = &graph.chunks[candidates[0] as usize];
     let (start_1, end_1) = chunk.lines.context("No line range")?;
 
     let abs_path = resolve_abs_path(db, &chunk.file)?;

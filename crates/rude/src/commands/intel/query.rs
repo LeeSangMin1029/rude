@@ -5,7 +5,6 @@ use anyhow::Result;
 use rude_intel::graph;
 use rude_intel::helpers::{apply_alias, build_path_aliases, format_lines_opt, relative_path};
 use rude_intel::impact;
-use rude_intel::loader::load_chunks;
 use rude_intel::parse::ParsedChunk;
 use rude_intel::stats::build_stats;
 use rude_intel::trace;
@@ -21,7 +20,8 @@ pub fn run_aliases() -> Result<()> {
 }
 
 pub fn run_stats() -> Result<()> {
-    let chunks = load_chunks(crate::db())?;
+    let graph = load_or_build_graph()?;
+    let chunks = &graph.chunks;
     let stats = build_stats(&chunks);
     println!("=== stats: {} crates ===\n", stats.len());
     println!("{:<24} {:>8} {:>8} {:>8} {:>8}", "crate", "prod_fn", "test_fn", "struct", "enum");
@@ -266,7 +266,8 @@ fn run_chunk_query(
     limit: Option<usize>,
     compact: bool,
 ) -> Result<()> {
-    let chunks = load_chunks(crate::db())?;
+    let graph = load_or_build_graph()?;
+    let chunks = &graph.chunks;
     let all_files: Vec<&str> = chunks.iter().map(|c| relative_path(&c.file)).collect();
     let (alias_map, _) = build_path_aliases(&all_files);
 
