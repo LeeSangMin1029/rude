@@ -329,45 +329,34 @@ fn chunk_contains(
 /// Remove entries from parent chunks when a more specific child chunk exists.
 ///
 /// For each hash group, if two entries are in the same file and one chunk's
-/// line range fully contains the other, keep only the smaller (more specific) one.
+/// line range fully contains the other (or is larger and starts earlier),
+/// keep only the smaller (more specific) one.
 fn deduplicate_contained_entries(
     entries: &mut Vec<(u64, usize, usize)>,
     ranges: &HashMap<u64, (String, i64, i64)>,
 ) {
-    if entries.len() < 2 {
-        return;
-    }
+    if entries.len() < 2 { return; }
     let mut to_remove = Vec::new();
     for i in 0..entries.len() {
         for j in (i + 1)..entries.len() {
             let (id_a, _, _) = entries[i];
             let (id_b, _, _) = entries[j];
-            if id_a == id_b {
-                continue;
-            }
-            if let (Some(a), Some(b)) = (ranges.get(&id_a), ranges.get(&id_b))
-                && a.0 == b.0
-            {
-                // Same file: remove the larger (parent) chunk entry
-                let a_size = a.2 - a.1;
-                let b_size = b.2 - b.1;
-                if a.1 <= b.1 && a.2 >= b.2 {
-                    to_remove.push(i); // A contains B, remove A
-                } else if b.1 <= a.1 && b.2 >= a.2 {
-                    to_remove.push(j); // B contains A, remove B
-                } else if a_size > b_size && a.1 <= b.1 {
-                    to_remove.push(i);
-                } else if b_size > a_size && b.1 <= a.1 {
-                    to_remove.push(j);
-                }
+            if id_a == id_b { continue; }
+            let (Some(a), Some(b)) = (ranges.get(&id_a), ranges.get(&id_b)) else { continue };
+            if a.0 != b.0 { continue; }
+            // Same file: remove whichever chunk is the larger parent
+            let a_size = a.2 - a.1;
+            let b_size = b.2 - b.1;
+            if (a.1 <= b.1 && a.2 >= b.2) || (a_size > b_size && a.1 <= b.1) {
+                to_remove.push(i); // A is parent/larger, remove A
+            } else if (b.1 <= a.1 && b.2 >= a.2) || (b_size > a_size && b.1 <= a.1) {
+                to_remove.push(j); // B is parent/larger, remove B
             }
         }
     }
     to_remove.sort_unstable();
     to_remove.dedup();
-    for &idx in to_remove.iter().rev() {
-        entries.swap_remove(idx);
-    }
+    for &idx in to_remove.iter().rev() { entries.swap_remove(idx); }
 }
 
 // ── Shared helpers ───────────────────────────────────────────────────────
@@ -454,17 +443,11 @@ fn collect_minhash_entries(
     pstore: &(impl PayloadStore + ?Sized),
     candidate_ids: &[u64],
 ) -> Vec<(u64, Vec<u64>)> {
-    let mut entries: Vec<(u64, Vec<u64>)> = Vec::new();
-    let mut no_minhash = 0u32;
-    for &id in candidate_ids {
-        match get_minhash(pstore, id) {
-            Some(sig) => entries.push((id, sig)),
-            None => no_minhash += 1,
-        }
-    }
-    if no_minhash > 0 {
-        eprintln!("  MinHash: {no_minhash} chunks without minhash");
-    }
+    let entries: Vec<_> = candidate_ids.iter()
+        .filter_map(|&id| get_minhash(pstore, id).map(|sig| (id, sig)))
+        .collect();
+    let missing = candidate_ids.len() - entries.len();
+    if missing > 0 { eprintln!("  MinHash: {missing} chunks without minhash"); }
     entries
 }
 

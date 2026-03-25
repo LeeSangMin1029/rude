@@ -140,24 +140,19 @@ fn compute_chunks_hash(chunks: &[ParsedChunk]) -> u64 {
     hasher.finish()
 }
 
-/// Path to the single edge cache bundle file.
 fn edge_bundle_path(db_path: &Path) -> std::path::PathBuf {
     db_path.join("cache").join("edge-cache.bin")
 }
 
-/// Save the entire edge cache bundle (single file I/O).
 fn save_edge_bundle(db_path: &Path, bundle: &EdgeCacheBundle) -> Result<()> {
     let path = edge_bundle_path(db_path);
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
+    if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
     let bytes = bincode::encode_to_vec(bundle, bincode::config::standard())
         .context("failed to encode edge cache bundle")?;
     std::fs::write(&path, bytes)
         .with_context(|| format!("failed to write edge cache: {}", path.display()))
 }
 
-/// Load the edge cache bundle (single file read).
 fn load_edge_bundle(db_path: &Path) -> Option<EdgeCacheBundle> {
     let bytes = std::fs::read(edge_bundle_path(db_path)).ok()?;
     let (bundle, _): (EdgeCacheBundle, _) =
@@ -167,7 +162,6 @@ fn load_edge_bundle(db_path: &Path) -> Option<EdgeCacheBundle> {
 
 /// Check if a crate's edges are stale (JSONL or mir.db newer than the bundle).
 fn is_crate_cache_stale(
-    _db_path: &Path,
     mir_edge_dir: &Path,
     crate_name: &str,
     bundle_mtime: Option<std::time::SystemTime>,
@@ -176,10 +170,7 @@ fn is_crate_cache_stale(
     let mtime = |p: std::path::PathBuf| std::fs::metadata(p).and_then(|m| m.modified()).ok();
     let jsonl = mtime(mir_edge_dir.join(format!("{crate_name}.edges.jsonl")));
     let sqlite = mtime(mir_edge_dir.join("mir.db"));
-    let source = match (jsonl, sqlite) {
-        (Some(j), Some(s)) => Some(j.max(s)),
-        (j, s) => j.or(s),
-    };
+    let source = match (jsonl, sqlite) { (Some(j), Some(s)) => Some(j.max(s)), (j, s) => j.or(s) };
     // No source at all → not stale; otherwise stale if source is newer.
     source.is_some_and(|t| t > cache_mtime)
 }
@@ -218,6 +209,21 @@ fn build_mir_indexes<'a>(
     (loc_to_idx, name_to_idx, suffix_to_idx, file_suffix_to_normalized)
 }
 
+/// Resolve a single callee to a chunk index: location first, then name fallback.
+fn resolve_callee(
+    callee: &crate::mir_edges::CalleeInfo,
+    loc_to_idx: &HashMap<(&str, usize), u32>,
+    name_to_idx: &HashMap<String, u32>,
+    file_suffix_to_normalized: &HashMap<String, Vec<String>>,
+) -> Option<u32> {
+    if !callee.file.is_empty() && callee.start_line > 0 {
+        resolve_by_location(&callee.file, callee.start_line, loc_to_idx, file_suffix_to_normalized)
+            .or_else(|| resolve_mir_name(&callee.name.to_lowercase(), name_to_idx))
+    } else {
+        resolve_mir_name(&callee.name.to_lowercase(), name_to_idx)
+    }
+}
+
 /// Resolve edges for a single crate's callers and return the edge triples.
 fn resolve_crate_edges(
     crate_name: &str,
@@ -227,24 +233,13 @@ fn resolve_crate_edges(
     suffix_to_idx: &HashMap<String, u32>,
     file_suffix_to_normalized: &HashMap<String, Vec<String>>,
 ) -> Vec<(u32, u32, u32)> {
-    let mut edges = Vec::new();
     let callers = mir_edges.callers_for_crate(crate_name);
-
+    let mut edges = Vec::new();
     for caller_name in &callers {
         let src = resolve_by_loc_or_name(caller_name, name_to_idx, suffix_to_idx);
         let Some(callees) = mir_edges.by_caller.get(*caller_name) else { continue };
-
         for callee in callees {
-            let tgt = if !callee.file.is_empty() && callee.start_line > 0 {
-                resolve_by_location(&callee.file, callee.start_line, loc_to_idx, file_suffix_to_normalized)
-            } else {
-                None
-            }.or_else(|| {
-                let lower = callee.name.to_lowercase();
-                resolve_mir_name(&lower, name_to_idx)
-            });
-
-            if let (Some(s), Some(t)) = (src, tgt) {
+            if let (Some(s), Some(t)) = (src, resolve_callee(callee, loc_to_idx, name_to_idx, file_suffix_to_normalized)) {
                 edges.push((s, t, callee.call_line as u32));
             }
         }
@@ -300,7 +295,7 @@ pub(crate) fn resolve_incremental(
     for crate_name in &all_crate_names {
         let needs_resolve = changed_set.contains(crate_name)
             || !hash_matches
-            || is_crate_cache_stale(db_path, mir_edge_dir, crate_name, bundle_mtime);
+            || is_crate_cache_stale(mir_edge_dir, crate_name, bundle_mtime);
 
         if !needs_resolve {
             if let Some(cache) = cached.get(crate_name) {
@@ -323,23 +318,20 @@ pub(crate) fn resolve_incremental(
         new_crates.insert(crate_name.to_string(), CrateEdgeCache { idx_edges });
     }
 
-    // Merge and save (single write)
+    // Merge cached + newly resolved, prune stale crates, save.
     let mut final_crates: Vec<(String, CrateEdgeCache)> = if hash_matches {
         bundle.map(|b| b.crates).unwrap_or_default()
             .into_iter()
-            .filter(|(name, _)| !new_crates.contains_key(name))
+            .filter(|(name, _)| !new_crates.contains_key(name) && all_crate_names.contains(name.as_str()))
             .collect()
     } else {
         Vec::new()
     };
     final_crates.extend(new_crates);
-    // Prune stale crates (deleted/renamed) to prevent unbounded cache growth.
-    let pre_prune = final_crates.len();
-    final_crates.retain(|(name, _)| all_crate_names.contains(&name.as_str()));
-    let pruned = pre_prune - final_crates.len();
-    if pruned > 0 {
-        eprintln!("      [edge-resolve] pruned {pruned} stale crate(s) from edge cache");
-    }
+    let pre = final_crates.len();
+    final_crates.retain(|(name, _)| all_crate_names.contains(name.as_str()));
+    let pruned = pre - final_crates.len();
+    if pruned > 0 { eprintln!("      [edge-resolve] pruned {pruned} stale crate(s) from edge cache"); }
     let new_bundle = EdgeCacheBundle { chunks_hash, crates: final_crates };
     let _ = save_edge_bundle(db_path, &new_bundle);
 
@@ -395,18 +387,8 @@ pub(crate) fn resolve_with_mir(
 
     for (caller_name, callees) in &mir_edges.by_caller {
         let src = resolve_by_loc_or_name(caller_name, &name_to_idx, &suffix_to_idx);
-
         for callee in callees {
-            let tgt = if !callee.file.is_empty() && callee.start_line > 0 {
-                resolve_by_location(&callee.file, callee.start_line, &loc_to_idx, &file_suffix_to_normalized)
-            } else {
-                None
-            }.or_else(|| {
-                let lower = callee.name.to_lowercase();
-                resolve_mir_name(&lower, &name_to_idx)
-            });
-
-            if let (Some(s), Some(t)) = (src, tgt) {
+            if let (Some(s), Some(t)) = (src, resolve_callee(callee, &loc_to_idx, &name_to_idx, &file_suffix_to_normalized)) {
                 adj.add_edge(s as usize, t, callee.call_line as u32);
             }
         }

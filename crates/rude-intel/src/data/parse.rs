@@ -92,37 +92,31 @@ impl ParsedChunk {
     }
 }
 
-/// Parse `"name: type, name: type, ..."` into `Vec<(name, type)>`.
-fn parse_colon_pairs(s: &str) -> Vec<(String, String)> {
-    s.split(", ")
-        .filter_map(|tok| {
-            let tok = tok.trim();
-            let c = tok.find(": ")?;
-            Some((tok[..c].to_owned(), tok[c + 2..].to_owned()))
-        })
-        .collect()
+/// Split comma-separated tokens and split each token at the first occurrence of `sep`.
+/// Returns `Vec<(before_sep, after_sep)>`, skipping tokens without `sep`.
+fn parse_pairs(s: &str, sep: &str) -> Vec<(String, String)> {
+    s.split(", ").filter_map(|tok| {
+        let tok = tok.trim();
+        let pos = tok.find(sep)?;
+        Some((tok[..pos].to_owned(), tok[pos + sep.len()..].to_owned()))
+    }).collect()
 }
 
-/// Parse `"var=callee, ..."` into `Vec<(var, callee)>`.
-fn parse_eq_pairs(s: &str) -> Vec<(String, String)> {
-    s.split(", ")
-        .filter_map(|tok| {
-            let tok = tok.trim();
-            let eq = tok.find('=')?;
-            Some((tok[..eq].to_owned(), tok[eq + 1..].to_owned()))
-        })
-        .collect()
-}
+fn parse_colon_pairs(s: &str) -> Vec<(String, String)> { parse_pairs(s, ": ") }
+fn parse_eq_pairs(s: &str)    -> Vec<(String, String)> { parse_pairs(s, "=") }
+fn parse_dot_pairs(s: &str)   -> Vec<(String, String)> { parse_pairs(s, ".") }
 
-/// Parse `"recv.field, ..."` into `Vec<(recv, field)>`.
-fn parse_dot_pairs(s: &str) -> Vec<(String, String)> {
-    s.split(", ")
-        .filter_map(|tok| {
-            let tok = tok.trim();
-            let dot = tok.find('.')?;
-            Some((tok[..dot].to_owned(), tok[dot + 1..].to_owned()))
-        })
-        .collect()
+/// Parse `"Callee("value"), ..."` into `Vec<(callee, value, 0, 0)>`.
+fn parse_call_string_args(s: &str) -> Vec<(String, String, u32, u8)> {
+    s.split(", ").filter_map(|tok| {
+        let tok = tok.trim();
+        let paren = tok.find('(')?;
+        let end = tok.rfind(')')?;
+        if paren >= end { return None; }
+        let callee = tok[..paren].to_owned();
+        let value = tok[paren + 1..end].trim_matches('"').to_owned();
+        Some((callee, value, 0, 0))
+    }).collect()
 }
 
 /// Parse the text field of a code chunk into a [`ParsedChunk`].
@@ -202,42 +196,23 @@ pub fn parse_chunk(text: &str) -> Option<ParsedChunk> {
             }
         } else if let Some(c) = line.strip_prefix("Calls: ") {
             // Parse "name@line" annotations: split off @N suffix
-            for token in c.split(", ") {
-                let token = token.trim();
-                if let Some(at) = token.rfind('@')
-                    && let Ok(line_num) = token[at + 1..].parse::<u32>() {
-                        calls.push(token[..at].to_owned());
-                        call_lines.push(line_num);
-                        continue;
-                    }
-                calls.push(token.to_owned());
-                call_lines.push(0);
+            for token in c.split(", ").map(str::trim) {
+                let (name, line_num) = token.rfind('@')
+                    .and_then(|at| token[at + 1..].parse::<u32>().ok().map(|n| (&token[..at], n)))
+                    .unwrap_or((token, 0));
+                calls.push(name.to_owned());
+                call_lines.push(line_num);
             }
         } else if let Some(t) = line.strip_prefix("Types: ") {
             types = t.split(", ").map(|s| s.trim().to_owned()).collect();
         } else if let Some(f) = line.strip_prefix("Flows: ") {
-            for token in f.split(", ") {
-                // Format: "param→callee"
-                if let Some(arrow) = token.find('\u{2192}') {
-                    let param = token[..arrow].to_owned();
-                    let callee = token[arrow + '\u{2192}'.len_utf8()..].to_owned();
-                    param_flows.push((param, 0, callee, 0, 0));
-                }
+            // Format: "param→callee" (→ = U+2192, 3-byte UTF-8)
+            for (param, callee) in parse_pairs(f, "\u{2192}") {
+                param_flows.push((param, 0, callee, 0, 0));
             }
         } else if let Some(s) = line.strip_prefix("Strings: ") {
             // Format: Command::new("claude"), env::var("API_KEY")
-            for token in s.split(", ") {
-                let token = token.trim();
-                if let Some(paren) = token.find('(')
-                    && let Some(end) = token.rfind(')')
-                    && paren < end
-                {
-                    let callee = token[..paren].to_owned();
-                    let inner = &token[paren + 1..end];
-                    let value = inner.trim_matches('"').to_owned();
-                    string_args.push((callee, value, 0, 0));
-                }
-            }
+            string_args = parse_call_string_args(s);
         } else if let Some(p) = line.strip_prefix("Params: ") {
             param_types = parse_colon_pairs(p);
         } else if let Some(ft) = line.strip_prefix("Fields: ") {
