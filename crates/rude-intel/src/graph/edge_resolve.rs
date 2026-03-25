@@ -15,8 +15,6 @@ use crate::graph::index_tables::strip_generics_from_key;
 use crate::mir_edges::MirEdgeMap;
 use crate::data::parse::ParsedChunk;
 
-// ── ChunkIndex — name-to-index lookup tables ────────────────────────
-
 /// Bidirectional name index for resolving call names to chunk indices.
 pub(crate) struct ChunkIndex {
     pub exact: HashMap<String, u32>,
@@ -61,15 +59,10 @@ impl ChunkIndex {
 
     fn resolve_name(&self, call: &str) -> Option<u32> {
         let lower = call.to_lowercase();
-        self.exact.get(&lower).copied()
-            .or_else(|| {
-                let short = lower.rsplit("::").next().unwrap_or(&lower);
-                self.short.get(short).copied()
-            })
+        let short = lower.rsplit("::").next().unwrap_or(&lower);
+        self.exact.get(&lower).copied().or_else(|| self.short.get(short).copied())
     }
 }
-
-// ── Resolved edges output ───────────────────────────────────────────
 
 /// Accumulated adjacency state from edge resolution.
 pub(crate) struct ResolvedEdges {
@@ -80,55 +73,40 @@ pub(crate) struct ResolvedEdges {
 
 impl ResolvedEdges {
     fn new(len: usize) -> Self {
-        Self {
-            callees: vec![Vec::new(); len],
-            callers: vec![Vec::new(); len],
-            call_sites: vec![Vec::new(); len],
-        }
+        Self { callees: vec![vec![]; len], callers: vec![vec![]; len], call_sites: vec![vec![]; len] }
     }
 
     fn add_edge(&mut self, src: usize, tgt: u32, call_line: u32) {
-        let tgt_usize = tgt as usize;
-        if tgt_usize != src && src < self.callees.len() && tgt_usize < self.callers.len() {
+        let t = tgt as usize;
+        if t != src && src < self.callees.len() && t < self.callers.len() {
             self.callees[src].push(tgt);
-            self.callers[tgt_usize].push(src as u32);
+            self.callers[t].push(src as u32);
             self.call_sites[src].push((tgt, call_line));
         }
     }
 
     pub(crate) fn dedup(&mut self) {
-        for list in &mut self.callees { list.sort_unstable(); list.dedup(); }
-        for list in &mut self.callers { list.sort_unstable(); list.dedup(); }
-        for sites in &mut self.call_sites { sites.sort_by_key(|&(tgt, _)| tgt); sites.dedup_by_key(|e| e.0); }
+        for v in &mut self.callees { v.sort_unstable(); v.dedup(); }
+        for v in &mut self.callers { v.sort_unstable(); v.dedup(); }
+        for v in &mut self.call_sites { v.sort_by_key(|&(t, _)| t); v.dedup_by_key(|e| e.0); }
     }
 }
 
-// ── Per-crate resolved edge cache ───────────────────────────────────
 
-/// Cached resolved edges for a single crate.
-///
-/// Per-crate edge cache: index-based only, validated by chunks_hash.
+/// Per-crate edge cache: index-based (src_idx, tgt_idx, call_line), validated by chunks_hash.
 #[derive(bincode::Encode, bincode::Decode)]
 pub(crate) struct CrateEdgeCache {
-    /// Index-based edges: (src_idx, tgt_idx, call_line).
     pub idx_edges: Vec<(u32, u32, u32)>,
 }
 
-/// All per-crate caches in a single file.
-/// When `chunks_hash` doesn't match current chunks, entire cache is
-/// invalidated and re-resolved (chunk order changed = rare event).
+/// Bundle of all per-crate caches. Invalidated when `chunks_hash` doesn't match.
 #[derive(bincode::Encode, bincode::Decode)]
 pub(crate) struct EdgeCacheBundle {
-    /// Hash of chunk ordering at save time.
     pub chunks_hash: u64,
-    /// Crate name → cache mapping.
     pub crates: Vec<(String, CrateEdgeCache)>,
 }
 
-/// Compute a fingerprint of chunk identity (file + name).
-///
-/// Excludes `lines` so that body-only edits (which shift line numbers)
-/// don't invalidate the cache. Only function add/remove/rename changes the hash.
+/// Fingerprint of chunk identity (file + name). Excludes `lines` to survive body-only edits.
 fn compute_chunks_hash(chunks: &[ParsedChunk]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -146,14 +124,11 @@ fn edge_bundle_path(db_path: &Path) -> std::path::PathBuf {
 
 fn save_edge_bundle(db_path: &Path, bundle: &EdgeCacheBundle) -> Result<()> {
     let path = edge_bundle_path(db_path);
-    if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
-    let bytes = bincode::encode_to_vec(bundle, bincode::config::standard())
-        .context("failed to encode edge cache bundle")?;
-    std::fs::write(&path, bytes)
-        .with_context(|| format!("failed to write edge cache: {}", path.display()))
+    if let Some(p) = path.parent() { let _ = std::fs::create_dir_all(p); }
+    let bytes = bincode::encode_to_vec(bundle, bincode::config::standard()).context("encode edge cache")?;
+    std::fs::write(&path, bytes).with_context(|| format!("write edge cache: {}", path.display()))
 }
 
-/// Merge old cached crate entries with newly resolved ones, prune stale crates.
 fn merge_crate_caches(
     bundle: Option<EdgeCacheBundle>,
     hash_matches: bool,
@@ -178,12 +153,9 @@ fn merge_crate_caches(
 
 fn load_edge_bundle(db_path: &Path) -> Option<EdgeCacheBundle> {
     let bytes = std::fs::read(edge_bundle_path(db_path)).ok()?;
-    let (bundle, _): (EdgeCacheBundle, _) =
-        bincode::decode_from_slice(&bytes, bincode::config::standard()).ok()?;
-    Some(bundle)
+    bincode::decode_from_slice::<EdgeCacheBundle, _>(&bytes, bincode::config::standard()).ok().map(|(b, _)| b)
 }
 
-/// Check if a crate's edges are stale (JSONL or mir.db newer than the bundle).
 fn is_crate_cache_stale(
     mir_edge_dir: &Path,
     crate_name: &str,
@@ -205,7 +177,6 @@ type MirIndexes<'a> = (
     HashMap<String, Vec<String>>,
 );
 
-/// Build the four lookup tables shared by `resolve_with_mir` and `resolve_incremental`.
 fn build_mir_indexes(chunks: &[ParsedChunk]) -> MirIndexes<'_> {
     let mut loc_to_idx: HashMap<(&str, usize), u32> = HashMap::new();
     let mut name_to_idx: HashMap<String, u32> = HashMap::new();
@@ -227,22 +198,21 @@ fn build_mir_indexes(chunks: &[ParsedChunk]) -> MirIndexes<'_> {
     (loc_to_idx, name_to_idx, suffix_to_idx, file_suffix_to_normalized)
 }
 
-/// Resolve a single callee to a chunk index: location first, then name fallback.
 fn resolve_callee(
     callee: &crate::mir_edges::CalleeInfo,
     loc_to_idx: &HashMap<(&str, usize), u32>,
     name_to_idx: &HashMap<String, u32>,
     file_suffix_to_normalized: &HashMap<String, Vec<String>>,
 ) -> Option<u32> {
+    let by_name = || resolve_mir_name(&callee.name.to_lowercase(), name_to_idx);
     if !callee.file.is_empty() && callee.start_line > 0 {
         resolve_by_location(&callee.file, callee.start_line, loc_to_idx, file_suffix_to_normalized)
-            .or_else(|| resolve_mir_name(&callee.name.to_lowercase(), name_to_idx))
+            .or_else(by_name)
     } else {
-        resolve_mir_name(&callee.name.to_lowercase(), name_to_idx)
+        by_name()
     }
 }
 
-/// Resolve edges for a single crate's callers and return the edge triples.
 fn resolve_crate_edges(
     crate_name: &str,
     mir_edges: &MirEdgeMap,
@@ -265,11 +235,7 @@ fn resolve_crate_edges(
     edges
 }
 
-/// Incremental MIR edge resolve with per-crate caching.
-///
-/// Only re-resolves edges for `changed_crates` (or stale crates).
-/// Caches store edges as `(src_key, tgt_key, call_line)` using stable
-/// identity keys (file:line), so they survive chunk reordering/add/remove.
+/// Incremental MIR edge resolve with per-crate caching. Re-resolves stale/changed crates only.
 pub(crate) fn resolve_incremental(
     chunks: &[ParsedChunk],
     index: &ChunkIndex,
@@ -287,27 +253,15 @@ pub(crate) fn resolve_incremental(
         build_mir_indexes(chunks);
 
     let chunks_hash = compute_chunks_hash(chunks);
-
-    // Load entire bundle in one I/O operation
     let bundle = load_edge_bundle(db_path);
-    let bundle_mtime = std::fs::metadata(edge_bundle_path(db_path))
-        .and_then(|m| m.modified()).ok();
+    let bundle_mtime = std::fs::metadata(edge_bundle_path(db_path)).and_then(|m| m.modified()).ok();
     let hash_matches = bundle.as_ref().is_some_and(|b| b.chunks_hash == chunks_hash);
-
-    // If hash doesn't match (chunk order changed), discard entire cache.
-    // This is rare (only on file add/remove) and ensures correctness.
     let cached: HashMap<&str, &CrateEdgeCache> = if hash_matches {
-        bundle.as_ref()
-            .map(|b| b.crates.iter().map(|(name, cache)| (name.as_str(), cache)).collect())
-            .unwrap_or_default()
-    } else {
-        HashMap::new()
-    };
+        bundle.as_ref().map(|b| b.crates.iter().map(|(n, c)| (n.as_str(), c)).collect()).unwrap_or_default()
+    } else { HashMap::new() };
 
     let all_crate_names = mir_edges.crate_names();
-    let changed_set: std::collections::HashSet<&str> =
-        changed_crates.iter().map(String::as_str).collect();
-
+    let changed_set: std::collections::HashSet<&str> = changed_crates.iter().map(String::as_str).collect();
     let mut new_crates: HashMap<String, CrateEdgeCache> = HashMap::new();
 
     for crate_name in &all_crate_names {
@@ -318,65 +272,42 @@ pub(crate) fn resolve_incremental(
         if !needs_resolve {
             if let Some(cache) = cached.get(crate_name) {
                 cache_loaded += cache.idx_edges.len();
-                for &(s, t, line) in &cache.idx_edges {
-                    adj.add_edge(s as usize, t, line);
-                }
+                for &(s, t, line) in &cache.idx_edges { adj.add_edge(s as usize, t, line); }
                 continue;
             }
         }
-        // Re-resolve: either forced by change/staleness or no cache available.
         let mut idx_edges = resolve_crate_edges(crate_name, mir_edges, &loc_to_idx, &name_to_idx, &suffix_to_idx, &file_suffix_to_normalized);
-        idx_edges.sort_unstable();
-        idx_edges.dedup();
+        idx_edges.sort_unstable(); idx_edges.dedup();
         re_resolved_crates += 1;
         mir_resolved += idx_edges.len();
-        for &(s, t, line) in &idx_edges {
-            adj.add_edge(s as usize, t, line);
-        }
+        for &(s, t, line) in &idx_edges { adj.add_edge(s as usize, t, line); }
         new_crates.insert(crate_name.to_string(), CrateEdgeCache { idx_edges });
     }
 
-    // Merge cached + newly resolved, prune stale crates, save.
     let final_crates = merge_crate_caches(bundle, hash_matches, new_crates, &all_crate_names);
-    let new_bundle = EdgeCacheBundle { chunks_hash, crates: final_crates };
-    let _ = save_edge_bundle(db_path, &new_bundle);
-
-    // Type ref edges from chunks (always re-resolved, cheap)
-    for (src, chunk) in chunks.iter().enumerate() {
-        resolve_type_refs(src, chunk, index, &mut adj);
-    }
-
+    let _ = save_edge_bundle(db_path, &EdgeCacheBundle { chunks_hash, crates: final_crates });
+    for (src, chunk) in chunks.iter().enumerate() { resolve_type_refs(src, chunk, index, &mut adj); }
     adj.dedup();
     eprintln!("      [edge-resolve] incremental: resolved={mir_resolved} cached={cache_loaded} re-resolved_crates={re_resolved_crates}/{}", all_crate_names.len());
     adj
 }
 
-// ── Name-based resolver (legacy) ────────────────────────────────────
-
-/// Resolve call edges by name matching only.
+/// Resolve call edges by name matching only (legacy).
 pub(crate) fn resolve_by_name(chunks: &[ParsedChunk], index: &ChunkIndex) -> ResolvedEdges {
     let mut adj = ResolvedEdges::new(chunks.len());
-
     for (src, chunk) in chunks.iter().enumerate() {
         for (call_idx, call) in chunk.calls.iter().enumerate() {
             if let Some(tgt) = index.resolve_name(call) {
-                let line = chunk.call_lines.get(call_idx).copied().unwrap_or(0);
-                adj.add_edge(src, tgt, line);
+                adj.add_edge(src, tgt, chunk.call_lines.get(call_idx).copied().unwrap_or(0));
             }
         }
         resolve_type_refs(src, chunk, index, &mut adj);
     }
-
     adj.dedup();
     adj
 }
 
-// ── MIR-based resolver ──────────────────────────────────────────────
-
-/// Resolve call edges directly from MIR edge map.
-///
-/// Iterates MIR caller→callee pairs and maps them to chunk indices.
-/// Does not depend on chunk.calls (which may be empty in MIR mode).
+/// Resolve call edges from MIR edge map. Does not depend on chunk.calls.
 pub(crate) fn resolve_with_mir(
     chunks: &[ParsedChunk],
     index: &ChunkIndex,
@@ -396,16 +327,11 @@ pub(crate) fn resolve_with_mir(
         }
     }
 
-    // Type ref edges from chunks
-    for (src, chunk) in chunks.iter().enumerate() {
-        resolve_type_refs(src, chunk, index, &mut adj);
-    }
-
+    for (src, chunk) in chunks.iter().enumerate() { resolve_type_refs(src, chunk, index, &mut adj); }
     adj.dedup();
     adj
 }
 
-/// Resolve by (file, start_line) with ±1 line tolerance.
 fn resolve_by_location(
     file: &str,
     start_line: usize,
@@ -430,27 +356,16 @@ fn resolve_by_location(
     None
 }
 
-/// Resolve a caller by name, with closure-suffix stripping and suffix fallback.
-fn resolve_by_loc_or_name(
-    caller_name: &str,
-    name_to_idx: &HashMap<String, u32>,
-    suffix_to_idx: &HashMap<String, u32>,
-) -> Option<u32> {
+fn resolve_by_loc_or_name(caller_name: &str, name_to_idx: &HashMap<String, u32>, suffix_to_idx: &HashMap<String, u32>) -> Option<u32> {
     let lower = caller_name.to_lowercase();
-    resolve_mir_name(&lower, name_to_idx)
-        .or_else(|| suffix_to_idx.get(strip_closure_suffix(&lower)).copied())
+    resolve_mir_name(&lower, name_to_idx).or_else(|| suffix_to_idx.get(strip_closure_suffix(&lower)).copied())
 }
 
-/// Name-based fallback: exact match, then strip crate prefix.
 fn resolve_mir_name(name: &str, name_to_idx: &HashMap<String, u32>) -> Option<u32> {
     let name = strip_closure_suffix(name);
-    name_to_idx.get(name).copied().or_else(|| {
-        let (_, rest) = name.split_once("::")?;
-        name_to_idx.get(rest).copied()
-    })
+    name_to_idx.get(name).copied().or_else(|| name.split_once("::").and_then(|(_, r)| name_to_idx.get(r).copied()))
 }
 
-/// Strip `pub(...)` / `pub` visibility prefix from chunk names.
 fn strip_visibility_prefix(name: &str) -> &str {
     if let Some(rest) = name.strip_prefix("pub(") {
         if let Some(close) = rest.find(") ") { return &rest[close + 2..]; }
@@ -458,7 +373,6 @@ fn strip_visibility_prefix(name: &str) -> &str {
     name.strip_prefix("pub ").unwrap_or(name)
 }
 
-/// Strip `{closure#N}` suffixes: `daemon::run::{closure#0}` → `daemon::run`.
 fn strip_closure_suffix(name: &str) -> &str {
     name.find("::{closure").map_or(name, |pos| &name[..pos])
 }

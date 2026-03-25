@@ -1,7 +1,4 @@
-//! Code-specific add/update command.
-//!
-//! Chunks code files via MIR, stores text + payload only.
-//! No embedding or index building.
+//! Code add/update: chunks files via MIR, stores text + payload (no embedding).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -17,13 +14,9 @@ use rude_db::StorageEngine;
 pub(crate) mod ingest;
 pub(crate) use ingest::{build_callers, build_payload, ingest_mir, CodeChunkEntry};
 
-/// Placeholder dimension for text-only storage (no real vectors).
 const TEXT_ONLY_DIM: usize = 1;
-/// Model name stored in config for later embed to detect.
 const TEXT_ONLY_MODEL: &str = "text-only";
 
-
-// ── Public entry points ──────────────────────────────────────────────────
 
 /// Run the rude add command (auto-incremental: only re-processes changed files).
 pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
@@ -47,85 +40,50 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
         );
     }
 
-    // current_sources: must use normalize_source (canonicalize) to match file_index keys.
-    let current_sources: std::collections::HashSet<String> = all_files
-        .iter()
-        .map(|f| rude_db::file_utils::normalize_source(f))
-        .collect();
+    let current_sources: std::collections::HashSet<String> =
+        all_files.iter().map(|f| rude_db::file_utils::normalize_source(f)).collect();
 
-    // Filter to changed files only (mtime check).
-    // Use normalize_source for file_idx lookup (keys are absolute paths).
     let file_idx = file_index::load_file_index(&db_path)?;
-    let code_files: Vec<_> = all_files
-        .iter()
-        .filter(|f| {
-            let source = rude_db::file_utils::normalize_source(f);
-            match file_idx.get_file(&source) {
-                Some(entry) => {
-                    let mtime_changed = get_file_mtime(*f).is_none_or(|m| m != entry.mtime);
-                    if !mtime_changed { return false; }
-                    // mtime changed — check content hash to skip touch-only changes
-                    if let Some(prev_hash) = entry.content_hash {
-                        if let Ok(cur_hash) = rude_db::file_utils::content_hash(f) {
-                            return cur_hash != prev_hash;
-                        }
-                    }
-                    true
-                }
-                None => true,
+    let code_files: Vec<_> = all_files.iter().filter(|f| {
+        let source = rude_db::file_utils::normalize_source(f);
+        match file_idx.get_file(&source) {
+            Some(entry) => {
+                if get_file_mtime(*f).is_none_or(|m| m == entry.mtime) { return false; }
+                // mtime changed — verify content hash to skip touch-only changes
+                entry.content_hash.is_none_or(|prev| {
+                    rude_db::file_utils::content_hash(f).is_ok_and(|cur| cur != prev)
+                })
             }
-        })
-        .collect();
-
-    // source_cache: full canonicalize only for code_files (changed files, typically 1-5).
-    let source_cache: HashMap<std::path::PathBuf, String> = code_files
-        .iter()
-        .map(|f| ((*f).clone(), rude_db::file_utils::normalize_source(f)))
-        .collect();
+            None => true,
+        }
+    }).collect();
+    let source_cache: HashMap<std::path::PathBuf, String> = code_files.iter()
+        .map(|f| ((*f).clone(), rude_db::file_utils::normalize_source(f))).collect();
 
     if code_files.is_empty() {
         println!("No files changed. Nothing to update.");
         return Ok(());
     }
 
-    // Collect language stats
-    let mut lang_counts: HashMap<&str, usize> = HashMap::new();
-    for f in &code_files {
-        let ext = f.extension().and_then(|e| e.to_str()).unwrap_or("");
-        let lang = rude_db::lang_for_ext(ext);
-        *lang_counts.entry(lang).or_default() += 1;
-    }
-    let mut lang_summary: Vec<_> = lang_counts.iter().collect();
-    lang_summary.sort_by(|a, b| b.1.cmp(a.1));
-    let summary: Vec<String> = lang_summary.iter().map(|(l, n)| format!("{l}:{n}")).collect();
-    println!("Files: {} ({})", code_files.len(), summary.join(", "));
+    println!("Files: {} ({})", code_files.len(), lang_summary(&code_files));
 
-    // Open/create database (text-only, dim=1 placeholder)
     let mut engine = if db_path.exists() {
         StorageEngine::open_exclusive(&db_path)
             .with_context(|| format!("Failed to open database at {}", db_path.display()))?
     } else {
         println!("New database: {} (dim={TEXT_ONLY_DIM})", db_path.display());
-        // Clear stale edge/chunk JSONL + mir.db + cargo fingerprints for local crates.
-        // Keep target/mir-check/debug/deps/ (compiled deps) and incremental/ (rustc cache).
-        let mir_edges = input_path.join("target").join("mir-edges");
-        if mir_edges.exists() { let _ = std::fs::remove_dir_all(&mir_edges); }
-        // Remove cargo fingerprint dir to force RUSTC_WRAPPER re-invocation.
-        // Keeps deps/ and incremental/ intact for fast recompilation.
-        let fingerprint = input_path.join("target/mir-check/debug/.fingerprint");
-        if fingerprint.exists() { let _ = std::fs::remove_dir_all(&fingerprint); }
+        // Clear stale MIR edges and cargo fingerprints to force full re-analysis.
+        for rel in &["target/mir-edges", "target/mir-check/debug/.fingerprint"] {
+            let p = input_path.join(rel);
+            if p.exists() { let _ = std::fs::remove_dir_all(&p); }
+        }
         let engine = StorageEngine::open_exclusive(&db_path)
             .with_context(|| format!("Failed to create database at {}", db_path.display()))?;
-        DbConfig {
-            code: true,
-            embedded: false,
-            embed_model: Some(TEXT_ONLY_MODEL.to_owned()),
-            ..DbConfig::default()
-        }.save(&db_path)?;
+        DbConfig { code: true, embedded: false, embed_model: Some(TEXT_ONLY_MODEL.to_owned()), ..DbConfig::default() }
+            .save(&db_path)?;
         engine
     };
 
-    // Update config
     if let Ok(mut config) = DbConfig::load(&db_path) {
         config.code = true;
         config.embedded = false;
@@ -141,65 +99,19 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     let mut entries: Vec<CodeChunkEntry> = Vec::new();
     let mut file_metadata_map: HashMap<String, (u64, u64, Vec<u64>)> = HashMap::new();
 
-    // Run mir-callgraph — only for crates containing changed files
     let mir_out_dir = input_path.join("target").join("mir-edges");
     std::fs::create_dir_all(&mir_out_dir).ok();
-
     let mir_db = rude_intel::mir_edges::mir_db_path(&input_path);
-    let has_cached_edges = mir_db.exists()
-        || (mir_out_dir.exists()
-            && std::fs::read_dir(&mir_out_dir).is_ok_and(|mut d| d.any(|e| {
-                e.is_ok_and(|e| e.path().to_string_lossy().ends_with(".edges.jsonl"))
-            })));
 
-    let mut incremental_crates: Vec<String> = Vec::new();
-    if has_cached_edges {
-        // Incremental: re-analyze crates with changed OR new Rust files
-        let rust_changed: Vec<_> = code_files.iter()
-            .filter(|f| f.extension().and_then(|e| e.to_str()) == Some("rs"))
-            .collect();
-        let mut changed_crates = rude_intel::mir_edges::detect_changed_crates(&input_path, &rust_changed);
+    let incremental_crates = run_mir_analysis(&input_path, &mir_db, &mir_out_dir, &code_files)?;
 
-        // Integrity check: add crates whose edge files are missing
-        let missing = rude_intel::mir_edges::detect_missing_edge_crates(&input_path);
-        if !missing.is_empty() {
-            eprintln!("  [mir] missing edge files for: {}", missing.join(", "));
-            for m in missing {
-                if !changed_crates.contains(&m) {
-                    changed_crates.push(m);
-                }
-            }
-        }
-
-        if !changed_crates.is_empty() {
-            let crate_refs: Vec<&str> = changed_crates.iter().map(|s| s.as_str()).collect();
-            eprintln!("  [mir] incremental: {} crate(s) — {}", crate_refs.len(), crate_refs.join(", "));
-            // Clear mir.db tables for changed crates BEFORE cargo runs.
-            rude_intel::mir_edges::clear_mir_db(&input_path, &crate_refs).ok();
-            let rust_only = code_files.iter().all(|f| {
-                f.extension().and_then(|e| e.to_str()) == Some("rs")
-            });
-            rude_intel::mir_edges::run_mir_direct(&input_path, None, &crate_refs, rust_only)
-                .context("mir-callgraph incremental failed")?;
-            incremental_crates = changed_crates;
-        }
-    } else {
-        // Initial: analyze entire workspace.
-        rude_intel::mir_edges::clear_mir_db(&input_path, &[]).ok();
-        rude_intel::mir_edges::run_mir_callgraph(&input_path, None)
-            .context("mir-callgraph failed — ensure nightly rustc and mir-callgraph are installed")?;
-    }
-
-    // Load MIR chunks from sqlite
     let mir_chunks = rude_intel::mir_edges::MirEdgeMap::load_chunks_from_sqlite(
         &mir_db, to_crate_filter(&incremental_crates).as_deref(),
     ).context("failed to load MIR chunks")?;
 
-    let changed_sources: std::collections::HashSet<String> = code_files.iter()
-        .filter_map(|f| source_cache.get(*f).cloned())
-        .collect();
+    let changed_sources: std::collections::HashSet<String> =
+        code_files.iter().filter_map(|f| source_cache.get(*f).cloned()).collect();
     ingest_mir(&mir_chunks, &db_path, &mut entries, &mut file_metadata_map, Some(&changed_sources))?;
-
     eprintln!("  chunk: {:.1}s ({} chunks)", t0.elapsed().as_secs_f64(), entries.len());
 
     // === Build called_by + direct bulk write (zero-copy path) ===
@@ -234,53 +146,92 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
         let mut del_count = 0usize;
         for path in &deleted {
             if let Some(entry) = file_idx.files.remove(path) {
-                for id in &entry.chunk_ids {
-                    let _ = engine.remove(*id);
-                    del_count += 1;
-                }
+                for id in entry.chunk_ids { let _ = engine.remove(id); del_count += 1; }
             }
         }
         if del_count > 0 {
             engine.checkpoint().ok();
             file_index::save_file_index(&db_path, &file_idx)?;
-            eprintln!("Removed {del_count} chunks from {n} deleted file(s)", n = deleted.len());
+            eprintln!("Removed {del_count} chunks from {} deleted file(s)", deleted.len());
         }
     }
 
     if is_interrupted() {
-        println!();
-        println!("Operation interrupted. Partial data may have been inserted.");
+        println!("\nOperation interrupted. Partial data may have been inserted.");
         return Ok(());
     }
 
-    let has_changes = inserted > 0 || !deleted.is_empty();
-
-    if !has_changes {
+    if inserted == 0 && deleted.is_empty() {
         println!("No changes. Database is up to date.");
     } else {
-        println!();
-        println!("Done! Code DB ready: {}", db_path.display());
+        println!("\nDone! Code DB ready: {}", db_path.display());
         println!("Use: rude context/blast/symbols/dupes {}", db_path.display());
-
-        // Checkpoint + release exclusive lock before rebuilding caches.
         engine.checkpoint().ok();
         drop(engine);
-
-        // Load only changed crates' MIR edges — prefer sqlite, fallback to JSONL.
         let mir_edges = load_mir_edges(&mir_db, &mir_out_dir, &incremental_crates);
-
         prebuild_caches(&db_path, &entries, mir_edges.as_ref(), &mir_out_dir);
     }
 
     Ok(())
 }
 
-/// Convert a crate list to `Option<Vec<&str>>` filter (None = all crates).
 fn to_crate_filter(crates: &[String]) -> Option<Vec<&str>> {
     if crates.is_empty() { None } else { Some(crates.iter().map(String::as_str).collect()) }
 }
 
-/// Load MIR edges from sqlite, filtered to the given incremental crates.
+/// Format language counts for display, e.g. "rs:42, py:3".
+fn lang_summary(files: &[&PathBuf]) -> String {
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for f in files {
+        let ext = f.extension().and_then(|e| e.to_str()).unwrap_or("");
+        *counts.entry(rude_db::lang_for_ext(ext)).or_default() += 1;
+    }
+    let mut pairs: Vec<_> = counts.iter().collect();
+    pairs.sort_by(|a, b| b.1.cmp(a.1));
+    pairs.iter().map(|(l, n)| format!("{l}:{n}")).collect::<Vec<_>>().join(", ")
+}
+
+fn run_mir_analysis(
+    input_path: &std::path::Path,
+    mir_db: &std::path::Path,
+    mir_out_dir: &std::path::Path,
+    code_files: &[&PathBuf],
+) -> Result<Vec<String>> {
+    let has_cached_edges = mir_db.exists()
+        || (mir_out_dir.exists()
+            && std::fs::read_dir(mir_out_dir).is_ok_and(|mut d| d.any(|e| {
+                e.is_ok_and(|e| e.path().to_string_lossy().ends_with(".edges.jsonl"))
+            })));
+
+    if !has_cached_edges {
+        rude_intel::mir_edges::clear_mir_db(input_path, &[]).ok();
+        rude_intel::mir_edges::run_mir_callgraph(input_path, None)
+            .context("mir-callgraph failed — ensure nightly rustc and mir-callgraph are installed")?;
+        return Ok(Vec::new());
+    }
+
+    let rust_changed: Vec<_> = code_files.iter()
+        .filter(|f| f.extension().and_then(|e| e.to_str()) == Some("rs"))
+        .collect();
+    let mut changed_crates = rude_intel::mir_edges::detect_changed_crates(input_path, &rust_changed);
+
+    let missing = rude_intel::mir_edges::detect_missing_edge_crates(input_path);
+    if !missing.is_empty() {
+        eprintln!("  [mir] missing edge files for: {}", missing.join(", "));
+        for m in missing { if !changed_crates.contains(&m) { changed_crates.push(m); } }
+    }
+
+    if changed_crates.is_empty() { return Ok(Vec::new()); }
+
+    let crate_refs: Vec<&str> = changed_crates.iter().map(|s| s.as_str()).collect();
+    eprintln!("  [mir] incremental: {} crate(s) — {}", crate_refs.len(), crate_refs.join(", "));
+    rude_intel::mir_edges::clear_mir_db(input_path, &crate_refs).ok();
+    let rust_only = code_files.iter().all(|f| f.extension().and_then(|e| e.to_str()) == Some("rs"));
+    rude_intel::mir_edges::run_mir_direct(input_path, None, &crate_refs, rust_only)
+        .context("mir-callgraph incremental failed")?;
+    Ok(changed_crates)
+}
+
 fn load_mir_edges(
     mir_db: &std::path::Path,
     mir_out_dir: &std::path::Path,
@@ -293,7 +244,6 @@ fn load_mir_edges(
     }
 }
 
-/// Merge new parsed chunks into the existing cache (or fall back to full sqlite load).
 fn merge_chunks_cache(
     db_path: &std::path::Path,
     new_entries: &[CodeChunkEntry],
@@ -316,9 +266,6 @@ fn merge_chunks_cache(
 }
 
 /// Rebuild chunks.bin + graph.bin caches.
-///
-/// SQLite is the source of truth. Load all chunks from DB, rebuild caches.
-/// No merge logic needed — sqlite already has the correct state after insert.
 fn prebuild_caches(
     db_path: &std::path::Path,
     new_entries: &[CodeChunkEntry],
@@ -331,29 +278,20 @@ fn prebuild_caches(
     let chunks = merge_chunks_cache(db_path, new_entries);
     eprintln!("    [cache] {} chunks", chunks.len());
 
-    // Save chunks.bin
     rude_intel::loader::save_chunks_cache(&cache, &chunks);
     if let Ok(file) = std::fs::OpenOptions::new().write(true).open(&cache) {
         let _ = file.set_modified(std::time::SystemTime::now());
     }
 
-    // Build graph, then save asynchronously in background thread.
-    // Encoding happens synchronously (current thread), only file I/O is async.
-    // This shaves ~30-50ms off the critical path for large graph.bin (~11MB).
     let incremental = mir_edges.map(|_| rude_intel::graph::IncrementalArgs {
-        changed_crates: &[],  // empty → staleness-based detection
+        changed_crates: &[],
         mir_edge_dir,
     });
-    let graph = rude_intel::graph::CallGraph::build_only(
-        &chunks, mir_edges, incremental, db_path,
-    );
-    graph.save_background(db_path);
+    rude_intel::graph::CallGraph::build_only(&chunks, mir_edges, incremental, db_path)
+        .save_background(db_path);
 }
 
-/// Zero-copy ingest: CodeChunkEntry → Payload bincode → disk.
-///
-/// Skips IngestRecord and make_payload intermediates. Builds Payload inline
-/// from entry references, encodes directly to contiguous buffer, single I/O.
+/// Zero-copy ingest: build Payload inline, encode directly to contiguous buffer.
 fn direct_bulk_write(
     db_path: &std::path::Path,
     entries: &[CodeChunkEntry],
@@ -377,41 +315,24 @@ fn direct_bulk_write(
 
     let start = std::time::Instant::now();
 
-    // Build called_by reverse index (needed for embed_text + tags).
     let reverse_index = build_callers(entries);
-    let chunk_total_map: HashMap<&str, usize> = {
-        let mut m: HashMap<&str, usize> = HashMap::new();
-        for entry in entries {
-            *m.entry(&entry.source).or_default() += 1;
-        }
-        m
-    };
+    let mut chunk_total_map: HashMap<&str, usize> = HashMap::new();
+    for entry in entries { *chunk_total_map.entry(&entry.source).or_default() += 1; }
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    // Parallel encode: each entry independently produces (id, payload, text).
     use rayon::prelude::*;
-    let encoded: Vec<(u64, Payload, String)> = entries
-        .par_iter()
-        .map(|entry| {
-            let chunk_total = chunk_total_map.get(entry.source.as_str()).copied().unwrap_or(1);
-            build_payload(entry, now, chunk_total, &reverse_index, false)
-        })
-        .collect();
+    let encoded: Vec<(u64, Payload, String)> = entries.par_iter().map(|entry| {
+        let chunk_total = chunk_total_map.get(entry.source.as_str()).copied().unwrap_or(1);
+        build_payload(entry, now, chunk_total, &reverse_index, false)
+    }).collect();
+    let batch: Vec<(u64, Payload, &str)> = encoded.iter()
+        .map(|(id, payload, text)| (*id, payload.clone(), text.as_str())).collect();
+    engine.insert_batch(&batch).context("Failed to bulk load")?;
 
-    // Build batch for insert_batch: Vec<(u64, Payload, &str)>.
-    let batch: Vec<(u64, Payload, &str)> = encoded
-        .iter()
-        .map(|(id, payload, text)| (*id, payload.clone(), text.as_str()))
-        .collect();
-
-    engine.insert_batch(&batch)
-        .context("Failed to bulk load")?;
-
-    // Update file index.
     let mut file_idx = file_index::load_file_index(db_path)?;
     for (path, (mtime, size, chunk_ids)) in file_metadata_map {
         let hash = rude_db::file_utils::content_hash(std::path::Path::new(path)).unwrap_or(0);
@@ -426,33 +347,21 @@ fn direct_bulk_write(
 }
 
 
-// ── File scanning ─────────────────────────────────────────────────────────────
-
 /// Fast file scan: `git ls-files` (instant from index) with walkdir fallback.
 fn scan_files_fast(input_path: &std::path::Path, exclude: &[String]) -> Vec<PathBuf> {
-    if let Ok(output) = std::process::Command::new("git")
+    if let Ok(out) = std::process::Command::new("git")
         .args(["ls-files", "--cached", "--others", "--exclude-standard"])
-        .current_dir(input_path)
-        .output()
+        .current_dir(input_path).output()
     {
-        if output.status.success() {
-            let files: Vec<PathBuf> = String::from_utf8_lossy(&output.stdout)
-                .lines()
+        if out.status.success() {
+            let files: Vec<PathBuf> = String::from_utf8_lossy(&out.stdout).lines()
                 .filter_map(|line| {
-                    let path = input_path.join(line);
-                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                    if rude_db::is_code_ext(ext) {
-                        Some(path)
-                    } else {
-                        None
-                    }
+                    let p = input_path.join(line);
+                    rude_db::is_code_ext(p.extension().and_then(|e| e.to_str()).unwrap_or("")).then_some(p)
                 })
                 .collect();
-            if !files.is_empty() {
-                return files;
-            }
+            if !files.is_empty() { return files; }
         }
     }
-    // Fallback to walkdir.
     scan_files(input_path, exclude, rude_db::is_code_ext)
 }

@@ -1,12 +1,5 @@
-//! Clone detection algorithms — finds duplicate code chunks in a database.
-//!
-//! Two detection signals:
-//! - **AST hash**: structural clones ignoring identifier names (Type-1/2)
-//! - **MinHash Jaccard**: token-based near-duplicate detection (Type-1~3)
-//!
-//! Two execution modes:
-//! - Single-signal fast path (one signal only, user threshold)
-//! - Unified pipeline (all signals: Filter → Verify, weighted scoring)
+//! Clone detection: AST hash (structural) + MinHash Jaccard (token-based near-dup).
+//! Modes: single-signal fast path, or unified pipeline (Filter → Verify → Score).
 
 use std::collections::{HashMap, HashSet};
 
@@ -15,15 +8,11 @@ use rayon::prelude::*;
 use crate::data::minhash;
 use rude_db::{PayloadStore, PayloadValue, StorageEngine};
 
-// ── Configuration ────────────────────────────────────────────────────────
-
 /// Which detection stages to enable.
 pub struct RunStages {
     pub ast: bool,
     pub minhash: bool,
 }
-
-// ── Result types ─────────────────────────────────────────────────────────
 
 /// A pair of duplicate chunks with similarity score.
 pub struct DupePair {
@@ -42,18 +31,11 @@ pub struct UnifiedDupePair {
 }
 
 impl UnifiedDupePair {
-    /// Build a tag string like "AST", "Token", "AST+Token", etc.
     pub fn tag(&self) -> String {
-        let mut parts = Vec::new();
-        if self.ast_match {
-            parts.push("AST");
-        }
-        if self.jaccard >= 0.5 {
-            parts.push("Token");
-        }
-        if parts.is_empty() {
-            parts.push("Weak");
-        }
+        let mut parts: Vec<&str> = Vec::new();
+        if self.ast_match { parts.push("AST"); }
+        if self.jaccard >= 0.5 { parts.push("Token"); }
+        if parts.is_empty() { parts.push("Weak"); }
         parts.join("+")
     }
 }
@@ -78,8 +60,6 @@ pub struct CloneResults {
     pub hash_groups: Vec<(u64, Vec<u64>)>,
 }
 
-// ── Candidate collection ─────────────────────────────────────────────────
-
 /// Collect candidate IDs from the vector store, applying test/line filters.
 pub fn collect_filtered_ids(
     engine: &StorageEngine,
@@ -96,8 +76,6 @@ pub fn collect_filtered_ids(
     }
     ids
 }
-
-// ── Single-signal: AST hash groups ───────────────────────────────────────
 
 /// Find clone groups by AST hash, sorted by size desc, truncated to `k`.
 pub fn find_hash_groups(
@@ -131,11 +109,8 @@ pub fn find_minhash_pairs(
     pairs
 }
 
-// ── Unified multi-signal pipeline ────────────────────────────────────────
 
-/// Run the full unified pipeline: Filter (AST+MinHash) → Verify → Score.
-///
-/// Returns `(unified_pairs, sub_block_clones)`.
+/// Run the full unified pipeline (Filter → Verify → Score); returns `(unified_pairs, sub_block_clones)`.
 pub fn run_unified_pipeline(
     _engine: &StorageEngine,
     pstore: &(impl PayloadStore + ?Sized),
@@ -188,14 +163,10 @@ pub fn run_unified_pipeline(
     Ok((pairs, sub_clones))
 }
 
-// ── Pipeline stages ──────────────────────────────────────────────────────
-
-/// Normalize a pair so the smaller ID comes first (canonical form for dedup).
 fn canonical_pair(a: u64, b: u64) -> (u64, u64) {
     if a < b { (a, b) } else { (b, a) }
 }
 
-/// Stage 1a: Group by AST hash → all intra-group pairs become candidates.
 fn stage1_ast_hash(
     pstore: &(impl PayloadStore + ?Sized),
     candidate_ids: &[u64],
@@ -214,7 +185,6 @@ fn stage1_ast_hash(
     eprintln!("  AST hash: {ast_pairs} candidate pairs");
 }
 
-/// Stage 1b: MinHash Jaccard with low threshold (0.3) for broad candidate collection.
 fn stage1_minhash(
     pstore: &(impl PayloadStore + ?Sized),
     candidate_ids: &[u64],
@@ -230,9 +200,7 @@ fn stage1_minhash(
     candidates.extend(pairs.into_iter().map(|p| canonical_pair(p.id_a, p.id_b)));
 }
 
-// ── Sub-block clone detection ────────────────────────────────────────────
-
-/// Parse `sub_block_hashes` payload: `["<hex_hash>:<start>-<end>", ...]`
+/// Parse `sub_block_hashes` payload entries.
 fn parse_sub_block_entries(pstore: &(impl PayloadStore + ?Sized), id: u64) -> Vec<(u64, usize, usize)> {
     let Some(payload) = pstore.get_payload(id).ok().flatten() else { return Vec::new() };
     let Some(PayloadValue::StringList(hashes)) = payload.custom.get("sub_block_hashes") else { return Vec::new() };
@@ -243,7 +211,7 @@ fn parse_sub_block_entries(pstore: &(impl PayloadStore + ?Sized), id: u64) -> Ve
     }).collect()
 }
 
-/// Build a map of `id → (source_file, start_line, end_line)` for containment checks.
+/// Build `id → (source_file, start_line, end_line)` map.
 fn build_chunk_ranges(
     pstore: &(impl PayloadStore + ?Sized),
     ids: &[u64],
@@ -303,14 +271,7 @@ fn find_sub_block_clones(
     clones
 }
 
-/// Check containment between two ranged chunks (same file required).
-///
-/// Returns:
-/// - `Some(i)` / `Some(j)` — index of the parent (larger) chunk to remove.
-/// - `Some(usize::MAX)` — mutual containment (equal ranges).
-/// - `None` — different files or no containment.
-///
-/// Also used as a plain boolean via `containment_remove_idx(...).is_some()`.
+/// Returns the index of the parent (larger) chunk to remove, or `None` if no containment.
 fn containment_remove_idx(
     ranges: &HashMap<u64, (String, i64, i64)>,
     id_a: u64, i: usize,
@@ -330,11 +291,7 @@ fn chunk_contains(ranges: &HashMap<u64, (String, i64, i64)>, id_a: u64, id_b: u6
     containment_remove_idx(ranges, id_a, 0, id_b, 1).is_some()
 }
 
-/// Remove entries from parent chunks when a more specific child chunk exists.
-///
-/// For each hash group, if two entries are in the same file and one chunk's
-/// line range fully contains the other (or is larger and starts earlier),
-/// keep only the smaller (more specific) one.
+/// Remove parent-chunk entries, keeping only the most-specific (smallest) child per file+block.
 fn deduplicate_contained_entries(
     entries: &mut Vec<(u64, usize, usize)>,
     ranges: &HashMap<u64, (String, i64, i64)>,
@@ -356,8 +313,6 @@ fn deduplicate_contained_entries(
     for &idx in to_remove.iter().rev() { entries.swap_remove(idx); }
 }
 
-// ── Shared helpers ───────────────────────────────────────────────────────
-
 /// Payload-based test detection — uses shared `is_test_path` + first-line `[test]` marker.
 fn is_test_chunk(pstore: &(impl PayloadStore + ?Sized), id: u64) -> bool {
     let Some(payload) = pstore.get_payload(id).ok().flatten() else { return false };
@@ -367,9 +322,6 @@ fn is_test_chunk(pstore: &(impl PayloadStore + ?Sized), id: u64) -> bool {
         .is_some_and(|t| t.lines().next().unwrap_or("").contains("] test_"))
 }
 
-/// Get `(source_file, start_line, end_line)` from a chunk's payload.
-///
-/// Single fetch — shared by `chunks_overlap`, `chunk_lines`, `build_chunk_ranges`.
 fn get_chunk_source_range(pstore: &(impl PayloadStore + ?Sized), id: u64) -> Option<(String, i64, i64)> {
     let p = pstore.get_payload(id).ok()??;
     match (p.custom.get("start_line"), p.custom.get("end_line")) {
@@ -378,21 +330,18 @@ fn get_chunk_source_range(pstore: &(impl PayloadStore + ?Sized), id: u64) -> Opt
     }
 }
 
-/// Check if two chunks overlap in the same file (parent/child relationship).
 pub fn chunks_overlap(pstore: &(impl PayloadStore + ?Sized), id_a: u64, id_b: u64) -> bool {
     let (Some((fa, sa, ea)), Some((fb, sb, eb))) =
         (get_chunk_source_range(pstore, id_a), get_chunk_source_range(pstore, id_b)) else { return false };
     fa == fb && sa <= eb && sb <= ea
 }
 
-/// Get the number of lines in a chunk from its custom fields.
 pub fn chunk_lines(pstore: &(impl PayloadStore + ?Sized), id: u64) -> usize {
     let Some((_, s, e)) = get_chunk_source_range(pstore, id) else { return 0 };
     #[expect(clippy::cast_sign_loss)]
     { (e - s + 1) as usize }
 }
 
-/// Get an integer custom field from a chunk's payload, reinterpreted as u64.
 fn get_hash(pstore: &(impl PayloadStore + ?Sized), id: u64, key: &str) -> Option<u64> {
     let payload = pstore.get_payload(id).ok()??;
     match payload.custom.get(key)? {
@@ -439,7 +388,6 @@ fn collect_minhash_entries(
     entries
 }
 
-/// All-pairs MinHash Jaccard comparison (parallelized).
 fn minhash_all_pairs(entries: &[(u64, Vec<u64>)], threshold: f64) -> Vec<DupePair> {
     let n = entries.len();
     (0..n)
@@ -466,7 +414,6 @@ fn finalize_pairs(pairs: &mut Vec<DupePair>, pstore: &(impl PayloadStore + ?Size
     pairs.truncate(k);
 }
 
-/// Remove overlapping chunks within a group (keep the larger span).
 fn remove_overlapping_chunks(pstore: &(impl PayloadStore + ?Sized), ids: &mut Vec<u64>) {
     let mut i = 0;
     while i < ids.len() {
