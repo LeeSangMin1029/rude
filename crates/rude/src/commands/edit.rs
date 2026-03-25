@@ -24,15 +24,15 @@ use rude_intel::parse::ParsedChunk;
 // ── Symbol location ─────────────────────────────────────────────────────
 
 /// Resolved symbol location in the current source file.
-struct SymbolLocation {
+pub(crate) struct SymbolLocation {
     /// Absolute path to the source file.
-    abs_path: PathBuf,
+    pub(crate) abs_path: PathBuf,
     /// Relative path (from DB) for display.
-    rel_path: String,
+    pub(crate) rel_path: String,
     /// 0-based start line (inclusive).
-    start_line: usize,
+    pub(crate) start_line: usize,
     /// 0-based end line (inclusive).
-    end_line: usize,
+    pub(crate) end_line: usize,
 }
 
 /// Find a symbol in the DB and resolve its current location in the source file.
@@ -41,7 +41,7 @@ struct SymbolLocation {
 /// `file_hint` narrows the search to chunks whose file path ends with the given suffix.
 ///
 /// Uses a HashMap index for O(1) lookup instead of linear scan over all chunks.
-fn locate_symbol(db: &Path, symbol: &str, file_hint: Option<&str>) -> Result<SymbolLocation> {
+pub(crate) fn locate_symbol(db: &Path, symbol: &str, file_hint: Option<&str>) -> Result<SymbolLocation> {
     let chunks = load_chunks(db)?;
 
     // Build name → indices map for fast lookup.
@@ -215,7 +215,7 @@ fn locate_symbol(db: &Path, symbol: &str, file_hint: Option<&str>) -> Result<Sym
 /// Returns lines and metadata needed by all symbol-editing commands.
 
 /// Write lines back to a file, preserving the original trailing-newline style.
-fn join_lines(lines: &[&str], trailing_nl: bool) -> String {
+pub(crate) fn join_lines(lines: &[&str], trailing_nl: bool) -> String {
     if trailing_nl {
         lines.join("\n") + "\n"
     } else {
@@ -228,7 +228,7 @@ fn join_lines(lines: &[&str], trailing_nl: bool) -> String {
 /// Uses a `.lock` sidecar file for mutual exclusion (works on Windows where
 /// `lock_exclusive` on a file blocks other handles from opening it).
 /// The lock file is created next to the target and cleaned up afterward.
-fn locked_edit<F>(path: &Path, transform: F) -> Result<()>
+pub(crate) fn locked_edit<F>(path: &Path, transform: F) -> Result<()>
 where
     F: FnOnce(&str) -> Result<String>,
 {

@@ -262,6 +262,17 @@ pub enum Commands {
         #[arg(long)]
         body_file: Option<PathBuf>,
     },
+    /// Analyze independent function clusters in a file
+    Cluster {
+        /// Path to the database directory.
+        db: PathBuf,
+        /// File path suffix to filter (e.g. "src/dag_runner.rs").
+        #[arg(long)]
+        file: String,
+        /// Minimum total lines for a cluster to be a split candidate.
+        #[arg(long, default_value = "50")]
+        min_lines: usize,
+    },
     /// Watch for file changes and auto-update the code database
     Watch {
         /// Code database path
@@ -282,5 +293,19 @@ pub enum Commands {
         /// Read body from file (avoids bash quoting issues).
         #[arg(long)]
         body_file: Option<PathBuf>,
+    },
+    /// Split symbols into a new module file.
+    Split {
+        /// Path to the database directory.
+        db: PathBuf,
+        /// Comma-separated symbol names to extract.
+        #[arg(long)]
+        symbols: String,
+        /// Target file path (relative to project root).
+        #[arg(long)]
+        to: String,
+        /// Preview changes without modifying files.
+        #[arg(long)]
+        dry_run: bool,
     },
 }

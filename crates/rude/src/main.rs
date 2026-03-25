@@ -88,10 +88,14 @@ fn run() -> anyhow::Result<()> {
             let body = read_body(body, body_file)?;
             commands::edit::replace_lines(db, file, start, end, body)
         }
+        Commands::Cluster { db, file, min_lines } => commands::cluster::run(db, file, min_lines),
         Commands::Watch { db, input } => commands::watch::run(db, input),
         Commands::CreateFile { db, file, body, body_file } => {
             let body = read_body(body, body_file)?;
             commands::edit::create_file(db, file, body)
+        }
+        Commands::Split { db, symbols, to, dry_run } => {
+            commands::split::run(db, symbols, to, dry_run)
         }
     }
 }

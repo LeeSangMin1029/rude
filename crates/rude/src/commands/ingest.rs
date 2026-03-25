@@ -421,7 +421,7 @@ pub fn chunk_from_mir(
                 _ => chunk_code::CodeNodeKind::Function,
             };
 
-            // Extract signature: fn declaration up to `{`
+            // Use MIR signature directly; fallback to first line of body
             let signature = mc.signature.clone().or_else(|| {
                 let first = chunk_lines.first()?;
                 let sig_line = first.split('{').next()?.trim();
@@ -552,6 +552,28 @@ pub fn chunk_from_mir(
             let id = generate_id(&source, idx);
             chunk_ids.push(id);
 
+            // Parse calls from MIR "callee@line, callee@line, ..." format
+            let (calls, call_lines): (Vec<String>, Vec<u32>) = if mc.calls.is_empty() {
+                (Vec::new(), Vec::new())
+            } else {
+                mc.calls.split(", ").map(|token| {
+                    if let Some(at) = token.rfind('@') {
+                        let name = token[..at].to_owned();
+                        let line = token[at+1..].parse().unwrap_or(0);
+                        (name, line)
+                    } else {
+                        (token.to_owned(), 0u32)
+                    }
+                }).unzip()
+            };
+
+            // Parse type_refs from MIR "Type, Type, ..." format
+            let type_refs: Vec<String> = if mc.type_refs.is_empty() {
+                Vec::new()
+            } else {
+                mc.type_refs.split(", ").map(|s| s.to_owned()).collect()
+            };
+
             let code_chunk = chunk_code::CodeChunk {
                 text,
                 kind,
@@ -565,9 +587,9 @@ pub fn chunk_from_mir(
                 end_byte,
                 chunk_index: idx,
                 imports: imports.clone(),
-                calls: Vec::new(),
-                call_lines: Vec::new(),
-                type_refs: Vec::new(),
+                calls,
+                call_lines,
+                type_refs,
                 param_types,
                 field_types,
                 return_type,
