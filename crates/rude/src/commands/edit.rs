@@ -48,11 +48,12 @@ fn locate_symbol(db: &Path, symbol: &str, file_hint: Option<&str>) -> Result<Sym
     let mut name_index: std::collections::HashMap<&str, Vec<usize>> =
         std::collections::HashMap::new();
     for (i, c) in chunks.iter().enumerate() {
-        // Index by full name
         name_index.entry(&c.name).or_default().push(i);
-        // Index by last segment (after ::) for suffix matching
+        // Index by last segment only if different from full name
         if let Some(suffix) = c.name.rsplit("::").next() {
-            name_index.entry(suffix).or_default().push(i);
+            if suffix != c.name {
+                name_index.entry(suffix).or_default().push(i);
+            }
         }
     }
 

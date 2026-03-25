@@ -1267,6 +1267,13 @@ pub fn detect_missing_edge_crates(project_root: &Path) -> Vec<String> {
             continue;
         }
 
+        // Skip crates without lib args (bin-only crates like the main binary)
+        let args_dir = edge_dir.join("rustc-args");
+        let lib_args = args_dir.join(format!("{cn}.lib.rustc-args.json"));
+        if args_dir.exists() && !lib_args.exists() {
+            continue;
+        }
+
         // Fallback: check JSONL
         let edge_file = edge_dir.join(format!("{cn}.edges.jsonl"));
         if !edge_file.exists() {
