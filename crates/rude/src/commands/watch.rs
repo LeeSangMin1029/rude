@@ -145,7 +145,7 @@ fn process_changes(changed: &[PathBuf], db_path: &Path, input_path: &Path) {
 
     let mut entries = Vec::new();
     let mut file_metadata_map = HashMap::new();
-    if let Err(e) = super::ingest::chunk_from_mir(
+    if let Err(e) = super::ingest::chunks_from_mir_direct(
         &mir_chunks,
         db_path,
         &mut entries,
