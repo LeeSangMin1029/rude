@@ -244,14 +244,6 @@ impl StorageEngine {
         Ok(())
     }
 
-    pub fn dir(&self) -> &Path {
-        &self.dir
-    }
-
-    pub fn connection(&self) -> &Connection {
-        &self.conn
-    }
-
     pub fn payload_store(&self) -> &dyn PayloadStore {
         self
     }

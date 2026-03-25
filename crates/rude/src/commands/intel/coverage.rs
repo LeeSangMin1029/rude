@@ -86,40 +86,32 @@ struct LlvmFileCov {
 
 fn run_llvm_cov(refresh: bool) -> Option<LlvmCovResult> {
     let db = crate::db();
-    let cache_path = db.join("cache").join("llvm_cov.json");
 
-    let raw_json: serde_json::Value = if !refresh && cache_path.exists() {
-        eprintln!("  [coverage] using cached {}", cache_path.display());
-        let bytes = std::fs::read(&cache_path).ok()?;
-        serde_json::from_slice(&bytes).ok()?
-    } else {
-        let project_root = db.parent()?;
-        eprintln!("  [coverage] running cargo llvm-cov --json ...");
-
-        let output = std::process::Command::new("cargo")
-            .arg("llvm-cov")
-            .arg("--json")
-            .arg("--ignore-run-fail")
-            .current_dir(project_root)
-            .output()
-            .ok()?;
-
-        if !output.status.success() {
-            return None;
+    if !refresh {
+        if let Ok(engine) = rude_db::StorageEngine::open(db) {
+            if let Ok(Some(bytes)) = engine.get_cache("llvm_cov") {
+                eprintln!("  [coverage] using cached");
+                let json: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+                return parse_llvm_cov_json(&json);
+            }
         }
+    }
 
-        let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let project_root = db.parent()?;
+    eprintln!("  [coverage] running cargo llvm-cov --json ...");
+    let output = std::process::Command::new("cargo")
+        .args(["llvm-cov", "--json", "--ignore-run-fail"])
+        .current_dir(project_root)
+        .output()
+        .ok()?;
+    if !output.status.success() { return None; }
 
-        if let Some(parent) = cache_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::write(&cache_path, &output.stdout);
-        eprintln!("  [coverage] cached to {}", cache_path.display());
+    if let Ok(engine) = rude_db::StorageEngine::open(db) {
+        engine.set_cache("llvm_cov", &output.stdout);
+    }
 
-        json
-    };
-
-    parse_llvm_cov_json(&raw_json)
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    parse_llvm_cov_json(&json)
 }
 
 fn parse_llvm_cov_json(json: &serde_json::Value) -> Option<LlvmCovResult> {
