@@ -153,15 +153,21 @@ pub fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -
     // Phase 2: function chunks + call edges
     for item in rustc_public::all_local_items() {
         let kind_debug = format!("{:?}", item.kind());
-        if kind_debug != "Fn" || item.name().contains("{closure") || !item.has_body() {
+        let name_str = item.name().to_string();
+        // Skip: non-fn, closures, no body, derive/macro-generated items.
+        // Derive-generated items have a single-line span (start == end) pointing
+        // to the #[derive(...)] attribute line — real functions always span multiple lines.
+        if kind_debug != "Fn" || name_str.contains("{closure") || !item.has_body() {
             continue;
         }
-        fn_count += 1;
-
         let body = item.body().unwrap();
+        let (start_line, end_line) = span_lines(&body.span);
+        if start_line == end_line {
+            continue; // macro-generated: span is a single line (the attribute)
+        }
+        fn_count += 1;
         let name = strip_crate_prefix(&item.name());
         let filename = span_file(&body.span);
-        let (start_line, end_line) = span_lines(&body.span);
 
         // Extract call edges
         let mut extractor = CallExtractor {
@@ -203,7 +209,10 @@ fn collect_type_chunks(krate: &rustc_public::Crate, chunks: &mut Vec<MirChunk>) 
     for imp in krate.trait_impls() {
         let file = span_file(&imp.span());
         if !is_local_file(&file) { continue; }
-        chunks.push(make_chunk(strip_crate_prefix(&imp.name()), file, "impl", &imp.span()));
+        // Skip macro-generated impls: names with `::_` prefix modules (serde, etc.)
+        let imp_name = imp.name();
+        if imp_name.contains("::_") { continue; }
+        chunks.push(make_chunk(strip_crate_prefix(&imp_name), file, "impl", &imp.span()));
 
         if let Some(ty) = impl_self_ty(&imp) {
             if let TyKind::RigidTy(RigidTy::Adt(adt_def, _)) = ty.kind() {
