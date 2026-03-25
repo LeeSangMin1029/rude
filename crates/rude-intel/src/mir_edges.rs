@@ -1038,6 +1038,63 @@ pub struct MirChunk {
     pub type_refs: String,
 }
 
+/// Convert MirChunks directly to ParsedChunks, skipping text format intermediary.
+pub fn mir_chunks_to_parsed(mir_chunks: &[MirChunk]) -> Vec<crate::parse::ParsedChunk> {
+    mir_chunks
+        .iter()
+        .map(|mc| {
+            let kind = match mc.kind.as_str() {
+                "fn" | "method" => "function".to_string(),
+                other => other.to_string(),
+            };
+
+            let mut calls = Vec::new();
+            let mut call_lines = Vec::new();
+            if !mc.calls.is_empty() {
+                for entry in mc.calls.split(", ") {
+                    if let Some(at_pos) = entry.rfind('@') {
+                        let callee = entry[..at_pos].to_string();
+                        let line: u32 = entry[at_pos + 1..].parse().unwrap_or(0);
+                        calls.push(callee);
+                        call_lines.push(line);
+                    } else {
+                        calls.push(entry.to_string());
+                        call_lines.push(0);
+                    }
+                }
+            }
+
+            let types: Vec<String> = if mc.type_refs.is_empty() {
+                Vec::new()
+            } else {
+                mc.type_refs.split(", ").map(|s| s.to_string()).collect()
+            };
+
+            crate::parse::ParsedChunk {
+                kind,
+                name: mc.name.clone(),
+                file: mc.file.clone(),
+                lines: Some((mc.start_line, mc.end_line)),
+                signature: mc.signature.clone(),
+                calls,
+                call_lines,
+                types,
+                imports: Vec::new(),
+                string_args: Vec::new(),
+                param_flows: Vec::new(),
+                param_types: Vec::new(),
+                field_types: Vec::new(),
+                local_types: Vec::new(),
+                let_call_bindings: Vec::new(),
+                return_type: None,
+                field_accesses: Vec::new(),
+                enum_variants: Vec::new(),
+                is_test: mc.is_test,
+            }
+        })
+        .collect()
+}
+
 /// Load MIR chunks from a JSONL file.
 /// Load all chunks from `.chunks.jsonl` files in a directory.
 /// Load MIR chunks, optionally filtering to specific crates only.
