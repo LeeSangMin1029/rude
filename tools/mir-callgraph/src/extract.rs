@@ -133,6 +133,66 @@ fn clean_mir_signature(raw: &str) -> String {
     out
 }
 
+/// Build signature for struct/enum from AdtDef API
+fn build_adt_signature(name: &str, adt: &rustc_public::ty::AdtDef) -> String {
+    use rustc_public::CrateDef;
+    match adt.kind() {
+        AdtKind::Struct => {
+            let variants = adt.variants();
+            if let Some(v) = variants.first() {
+                let fields: Vec<String> = v.fields().iter()
+                    .map(|f| format!("{}: {}", f.name, clean_ty_name(&f.ty())))
+                    .collect();
+                if fields.is_empty() {
+                    format!("struct {name}")
+                } else {
+                    format!("struct {name} {{ {} }}", fields.join(", "))
+                }
+            } else {
+                format!("struct {name}")
+            }
+        }
+        AdtKind::Enum => {
+            let variants: Vec<String> = adt.variants_iter()
+                .map(|v| v.name())
+                .collect();
+            format!("enum {name} {{ {} }}", variants.join(", "))
+        }
+        AdtKind::Union => format!("union {name}"),
+    }
+}
+
+/// Simplify Ty debug output to readable type name
+fn clean_ty_name(ty: &rustc_public::ty::Ty) -> String {
+    let raw = format!("{ty:?}");
+    // Extract kind from `Ty { id: N, kind: ... }`
+    if let Some(start) = raw.find("kind: ") {
+        let rest = &raw[start + 6..];
+        // Quick heuristic: use the type's debug but strip Ty{} wrapper
+        if rest.contains("Adt(AdtDef(DefId") {
+            // Extract name from AdtDef
+            if let Some(name_start) = rest.find("name: \"") {
+                let after = &rest[name_start + 7..];
+                if let Some(name_end) = after.find('"') {
+                    let full_name = &after[..name_end];
+                    return full_name.rsplit("::").next().unwrap_or(full_name).to_string();
+                }
+            }
+        }
+        if rest.starts_with("RigidTy(Str)") { return "String".into(); }
+        if rest.starts_with("RigidTy(Bool)") { return "bool".into(); }
+        if rest.contains("Uint(Usize)") { return "usize".into(); }
+        if rest.contains("Uint(U64)") { return "u64".into(); }
+        if rest.contains("Uint(U32)") { return "u32".into(); }
+        if rest.contains("Uint(U8)") { return "u8".into(); }
+        if rest.contains("Int(Isize)") { return "isize".into(); }
+        if rest.contains("Int(I64)") { return "i64".into(); }
+        if rest.contains("Int(I32)") { return "i32".into(); }
+        if rest.contains("Ref(") { return "&...".into(); }
+    }
+    "...".into()
+}
+
 fn is_test_fn(filename: &str, name: &str, is_test_target: bool) -> bool {
     is_test_target
         || filename.contains("/tests/") || filename.contains("\\tests\\")
@@ -288,7 +348,16 @@ fn collect_type_chunks(krate: &rustc_public::Crate, chunks: &mut Vec<MirChunk>) 
                 let type_name = strip_crate_prefix(&adt_def.name());
                 let adt_file = span_file(&adt_def.span());
                 if is_local_file(&adt_file) && seen_types.insert(type_name.clone()) {
-                    chunks.push(make_chunk(type_name, adt_file, adt_kind_str(adt_def.kind()), &adt_def.span()));
+                    let sig = build_adt_signature(&type_name, &adt_def);
+                    let kind_str = adt_kind_str(adt_def.kind());
+                    let (s, e) = span_lines(&adt_def.span());
+                    chunks.push(MirChunk {
+                        name: type_name, file: adt_file, kind: kind_str.to_string(),
+                        start_line: s, end_line: e,
+                        signature: Some(sig), visibility: String::new(),
+                        is_test: false, body: String::new(),
+                        calls: String::new(), type_refs: String::new(),
+                    });
                 }
             }
         }
