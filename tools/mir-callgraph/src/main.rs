@@ -5,518 +5,177 @@ extern crate rustc_interface;
 extern crate rustc_middle;
 extern crate rustc_public;
 
+mod extract;
+mod output;
+mod types;
+
 use std::env;
-use std::ops::ControlFlow;
 use std::process::Command;
 
-use serde::{Deserialize, Serialize};
-
-// ── Output types ────────────────────────────────────────────────────
-
-#[derive(Serialize)]
-struct CallEdge {
-    caller: String,
-    caller_file: String,
-    caller_kind: String,
-    callee: String,
-    callee_file: String,
-    callee_start_line: usize,
-    line: usize,
-    is_local: bool,
-}
-
-#[derive(Serialize)]
-struct MirChunk {
-    name: String,
-    file: String,
-    kind: String,
-    start_line: usize,
-    end_line: usize,
-    signature: Option<String>,
-    visibility: String,
-    is_test: bool,
-    body: String,
-    #[serde(default)]
-    calls: String,
-    #[serde(default)]
-    type_refs: String,
-}
-
-// ── Cached rustc args for direct mode ───────────────────────────────
-
-#[derive(Serialize, Deserialize)]
-struct RustcArgs {
-    args: Vec<String>,
-    crate_name: String,
-    sysroot: String,
-    #[serde(default)]
-    env: Vec<(String, String)>,
-}
-
-// ── Helpers ─────────────────────────────────────────────────────────
-
-/// Strip crate prefix: "rude_intel::context_cmd::build_context" → "context_cmd::build_context"
-/// Preserves `<` for impl names: "<rude_db::db::StorageEngine as ...>" → "<db::StorageEngine as ...>"
-fn strip_crate_prefix(name: &str) -> String {
-    if let Some(inner) = name.strip_prefix('<') {
-        // "<crate::Type as crate::Trait>" → "<Type as Trait>" (strip both prefixes)
-        let stripped = if let Some(pos) = inner.find("::") {
-            &inner[pos + 2..]
-        } else { inner };
-        format!("<{stripped}")
-    } else if let Some(pos) = name.find("::") {
-        name[pos + 2..].to_string()
-    } else {
-        name.to_string()
-    }
-}
-
-fn span_file(span: &rustc_public::ty::Span) -> String {
-    let f = span.get_filename().to_string();
-    f.replace('\\', "/")
-}
-
-fn span_lines(span: &rustc_public::ty::Span) -> (usize, usize) {
-    let info = span.get_lines();
-    (info.start_line, info.end_line)
-}
-
-// ── Helpers ─────────────────────────────────────────────────────────
-
-fn is_local_file(file: &str) -> bool {
-    !file.starts_with('/') && !file.contains(":/")
-}
-
-fn make_chunk(name: String, file: String, kind: &str, span: &rustc_public::ty::Span) -> MirChunk {
-    let (start, end) = span_lines(span);
-    MirChunk {
-        name, file, kind: kind.to_string(),
-        start_line: start, end_line: end,
-        signature: None, visibility: String::new(),
-        is_test: false, body: String::new(),
-        calls: String::new(), type_refs: String::new(),
-    }
-}
-
-fn adt_kind_str(kind: rustc_public::ty::AdtKind) -> &'static str {
-    match kind {
-        rustc_public::ty::AdtKind::Enum => "enum",
-        rustc_public::ty::AdtKind::Struct | rustc_public::ty::AdtKind::Union => "struct",
-    }
-}
-
-/// Extract Self type from a trait impl.
-fn impl_self_ty(imp: &rustc_public::ty::ImplDef) -> Option<rustc_public::ty::Ty> {
-    imp.trait_impl()
-        .value
-        .args()
-        .0
-        .first()
-        .and_then(|arg| match arg {
-            rustc_public::ty::GenericArgKind::Type(ty) => Some(*ty),
-            _ => None,
-        })
-}
-
-// ── Extraction ──────────────────────────────────────────────────────
-
-fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -> ControlFlow<()> {
-    use rustc_public::CrateDef;
-    use rustc_public::mir::{MirVisitor, Terminator, TerminatorKind};
-    use rustc_public::mir::visit::Location;
-    use rustc_public::ty::{RigidTy, TyKind};
-
-    let _span = tracing::info_span!("extract_all").entered();
-    let krate = rustc_public::local_crate();
-    let crate_name = krate.name.to_string();
-
-    let mut edges: Vec<CallEdge> = Vec::new();
-    let mut chunks: Vec<MirChunk> = Vec::new();
-    let mut fn_count: usize = 0;
-    let mut name_cache: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-
-    // ── Phase 1: trait/impl/struct/enum chunks via Crate API ────────
-    {
-        let _phase = tracing::info_span!("type_chunks").entered();
-        let mut seen_types: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-        // Trait declarations (local crate only)
-        for t in krate.trait_decls() {
-            let file = span_file(&t.span());
-            if !is_local_file(&file) { continue; }
-            chunks.push(make_chunk(strip_crate_prefix(&t.name()), file, "trait", &t.span()));
-        }
-
-        // Trait impls → impl chunks + associated items + struct/enum via AdtKind
-        for imp in krate.trait_impls() {
-            let file = span_file(&imp.span());
-            if !is_local_file(&file) { continue; }
-            chunks.push(make_chunk(strip_crate_prefix(&imp.name()), file, "impl", &imp.span()));
-
-            // Extract self type → struct/enum chunk
-            if let Some(ty) = impl_self_ty(&imp) {
-                if let TyKind::RigidTy(RigidTy::Adt(adt_def, _)) = ty.kind() {
-                    let type_name = strip_crate_prefix(&adt_def.name());
-                    let adt_file = span_file(&adt_def.span());
-                    if is_local_file(&adt_file) && seen_types.insert(type_name.clone()) {
-                        chunks.push(make_chunk(type_name, adt_file, adt_kind_str(adt_def.kind()), &adt_def.span()));
-                    }
-                }
-            }
-        }
-    }
-
-    // ── Phase 2: functions → fn chunks + call edges ─────────────────
-    let items = rustc_public::all_local_items();
-
-    for item in &items {
-        let raw_name = item.name().to_string();
-        let kind = item.kind();
-        let kind_debug = format!("{kind:?}");
-        // Only process functions with MIR body
-        if kind_debug != "Fn" || raw_name.contains("{closure") || !item.has_body() { continue; }
-        fn_count += 1;
-
-        let name = strip_crate_prefix(&raw_name);
-
-        let body = item.body().unwrap();
-        let filename = span_file(&body.span);
-        let (start_line, end_line) = span_lines(&body.span);
-
-        {
-            let caller_file = filename.clone();
-            let caller_name = name.clone();
-
-        struct CallExtractor<'a> {
-            caller_name: String,
-            caller_file: String,
-            locals: &'a [rustc_public::mir::LocalDecl],
-            edges: &'a mut Vec<CallEdge>,
-            name_cache: &'a mut std::collections::HashMap<String, String>,
-        }
-
-        impl MirVisitor for CallExtractor<'_> {
-            fn visit_terminator(&mut self, term: &Terminator, _loc: Location) {
-                if let TerminatorKind::Call { ref func, .. } = term.kind {
-                    if let Ok(op_ty) = func.ty(self.locals) {
-                        if let TyKind::RigidTy(RigidTy::FnDef(def, _args)) = op_ty.kind() {
-                            use rustc_public::CrateDef as _;
-                            let raw_callee = def.name().to_string();
-                            let callee_name = self.name_cache.entry(raw_callee.clone())
-                                .or_insert_with(|| strip_crate_prefix(&raw_callee))
-                                .clone();
-
-                            let callee_span = def.span();
-                            let callee_file = span_file(&callee_span);
-                            let (callee_start, _) = span_lines(&callee_span);
-
-                            let call_span = term.span;
-                            let (call_line, _) = span_lines(&call_span);
-
-                            let is_external = callee_file.starts_with('/') || callee_file.contains(":/");
-                            let (cf, cs) = if is_external {
-                                (String::new(), 0)
-                            } else {
-                                (callee_file, callee_start)
-                            };
-
-                            self.edges.push(CallEdge {
-                                caller: self.caller_name.clone(),
-                                caller_file: self.caller_file.clone(),
-                                caller_kind: "fn".to_string(),
-                                callee: callee_name,
-                                callee_file: cf,
-                                callee_start_line: cs,
-                                line: call_line,
-                                is_local: !is_external,
-                            });
-                        }
-                    }
-                    // Also capture function references passed as arguments
-                    if let TerminatorKind::Call { ref args, .. } = term.kind {
-                        for arg in args {
-                            if let Ok(arg_ty) = arg.ty(self.locals) {
-                                if let TyKind::RigidTy(RigidTy::FnDef(ref_def, _)) = arg_ty.kind() {
-                                    use rustc_public::CrateDef as _;
-                                    let ref_name = self.name_cache.entry(ref_def.name().to_string())
-                                        .or_insert_with(|| strip_crate_prefix(&ref_def.name().to_string())).clone();
-                                    let ref_span = ref_def.span();
-                                    let ref_file = span_file(&ref_span);
-                                    let (ref_start, _) = span_lines(&ref_span);
-                                    let is_ext = ref_file.starts_with('/') || ref_file.contains(":/");
-                                    let (rf, rs) = if is_ext { (String::new(), 0) } else { (ref_file, ref_start) };
-                                    let (cl, _) = span_lines(&term.span);
-                                    self.edges.push(CallEdge {
-                                        caller: self.caller_name.clone(), caller_file: self.caller_file.clone(),
-                                        caller_kind: "fn".to_string(), callee: ref_name,
-                                        callee_file: rf, callee_start_line: rs,
-                                        line: cl, is_local: !is_ext,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-                self.super_terminator(term, _loc);
-            }
-        }
-
-        let mut extractor = CallExtractor {
-            caller_name: caller_name.clone(),
-            caller_file: caller_file.clone(),
-            locals: body.locals(),
-            edges: &mut edges,
-            name_cache: &mut name_cache,
-        };
-            extractor.visit_body(&body);
-        }
-
-        // Build chunk for all items
-        let is_test = is_test_target
-            || filename.contains("/tests/") || filename.contains("\\tests\\")
-            || name.starts_with("test_") || name.contains("::test_");
-
-        chunks.push(MirChunk {
-            name,
-            file: filename,
-            kind: "fn".to_string(),
-            start_line,
-            end_line,
-            signature: None,
-            visibility: String::new(),
-            is_test,
-            body: String::new(),
-            calls: String::new(),
-            type_refs: String::new(),
-        });
-    }
-
-    // Fill calls per function chunk
-    {
-        let mut calls_by_caller: std::collections::HashMap<&str, Vec<String>> =
-            std::collections::HashMap::new();
-        for e in &edges {
-            calls_by_caller.entry(&e.caller)
-                .or_default()
-                .push(format!("{}@{}", e.callee, e.line));
-        }
-        for c in &mut chunks {
-            if let Some(fn_calls) = calls_by_caller.remove(c.name.as_str()) {
-                c.calls = fn_calls.join(", ");
-            }
-        }
-    }
-
-    // ── Output ──────────────────────────────────────────────────────
-    let out_dir = env::var("MIR_CALLGRAPH_OUT").ok();
-
-    if let Some(db) = db_path {
-        if let Ok(conn) = rusqlite::Connection::open(db) {
-            let _ = conn.pragma_update(None, "journal_mode", "wal");
-            conn.busy_timeout(std::time::Duration::from_secs(30)).ok();
-            let _ = conn.execute_batch("
-                CREATE TABLE IF NOT EXISTS mir_edges (
-                    caller TEXT, caller_file TEXT, caller_kind TEXT,
-                    callee TEXT, callee_file TEXT, callee_start_line INTEGER,
-                    line INTEGER, is_local INTEGER, crate_name TEXT,
-                    UNIQUE(caller, callee, line, crate_name)
-                );
-                CREATE TABLE IF NOT EXISTS mir_chunks (
-                    name TEXT, file TEXT, kind TEXT,
-                    start_line INTEGER, end_line INTEGER,
-                    signature TEXT, visibility TEXT, is_test INTEGER,
-                    body TEXT, calls TEXT, type_refs TEXT, crate_name TEXT,
-                    UNIQUE(name, kind, crate_name)
-                );
-            ");
-            if let Ok(tx) = conn.unchecked_transaction() {
-                {
-                    let mut stmt = tx.prepare_cached(
-                        "INSERT OR IGNORE INTO mir_edges VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)"
-                    ).unwrap();
-                    for e in &edges {
-                        let _ = stmt.execute(rusqlite::params![
-                            e.caller, e.caller_file, e.caller_kind,
-                            e.callee, e.callee_file, e.callee_start_line,
-                            e.line, e.is_local as i32, crate_name,
-                        ]);
-                    }
-                }
-                {
-                    let mut stmt = tx.prepare_cached(
-                        "INSERT OR IGNORE INTO mir_chunks VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)"
-                    ).unwrap();
-                    for c in &chunks {
-                        let _ = stmt.execute(rusqlite::params![
-                            c.name, c.file, c.kind,
-                            c.start_line, c.end_line,
-                            c.signature, c.visibility, c.is_test as i32,
-                            "", c.calls, c.type_refs, crate_name,
-                        ]);
-                    }
-                }
-                let _ = tx.commit();
-            }
-        }
-        eprintln!("[mir-callgraph] {crate_name}: {} edges, {} chunks ({fn_count} fns)", edges.len(), chunks.len());
-    } else if let Some(dir) = &out_dir {
-        use std::io::Write;
-        let p = format!("{dir}/{crate_name}.edges.jsonl");
-        if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
-            let mut w = std::io::BufWriter::new(f);
-            for e in &edges { if let Ok(s) = serde_json::to_string(e) { let _ = writeln!(w, "{s}"); } }
-        }
-        let p = format!("{dir}/{crate_name}.chunks.jsonl");
-        if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
-            let mut w = std::io::BufWriter::new(f);
-            for c in &chunks { if let Ok(s) = serde_json::to_string(c) { let _ = writeln!(w, "{s}"); } }
-        }
-        eprintln!("[mir-callgraph] {crate_name}: {} edges, {} chunks ({fn_count} fns)", edges.len(), chunks.len());
-    } else if json {
-        use std::io::Write;
-        let mut w = std::io::BufWriter::new(std::io::stdout().lock());
-        for e in &edges { if let Ok(s) = serde_json::to_string(e) { let _ = writeln!(w, "{s}"); } }
-    } else {
-        eprintln!("[mir-callgraph] {crate_name}: {} edges, {} chunks", edges.len(), chunks.len());
-    }
-
-    // Continue to let rustc emit metadata (required by cargo in RUSTC_WRAPPER mode)
-    ControlFlow::Continue(())
-}
-
-// ── Main ────────────────────────────────────────────────────────────
+use types::RustcArgs;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
 
-    // Mode 1: RUSTC_WRAPPER mode
-    let is_wrapper = args.get(1).is_some_and(|a| a.contains("rustc") && !a.starts_with("-"));
+    if is_rustc_wrapper(&args) {
+        run_wrapper_mode(&args);
+    } else if args.iter().any(|a| a == "--direct") {
+        run_direct_mode(&args);
+    } else {
+        run_cli_mode(&args);
+    }
+}
 
-    if is_wrapper {
-        let rustc_args: Vec<String> = args[2..].to_vec();
+// ── Mode detection ──────────────────────────────────────────────────
 
-        let is_local = rustc_args.iter().any(|a| {
-            a.ends_with(".rs") && !a.contains(".cargo") && !a.contains("registry") && !a.contains("rustup")
-        });
-        let has_edition = rustc_args.iter().any(|a| a.starts_with("--edition"));
-        let is_build_script = rustc_args.iter().any(|a| a == "build_script_build" || a.contains("build.rs"));
+fn is_rustc_wrapper(args: &[String]) -> bool {
+    args.get(1).is_some_and(|a| a.contains("rustc") && !a.starts_with("-"))
+}
 
-        if has_edition && is_local && !is_build_script {
-            let mut full_args = vec![args[1].clone()];
-            full_args.extend(rustc_args.iter().cloned());
+fn env_config() -> (bool, Option<String>) {
+    (env::var("MIR_CALLGRAPH_JSON").is_ok(), env::var("MIR_CALLGRAPH_DB").ok())
+}
 
-            if !full_args.iter().any(|a| a.starts_with("--sysroot")) {
-                if let Ok(output) = Command::new(&args[1]).arg("--print").arg("sysroot").output() {
-                    let sysroot = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    if !sysroot.is_empty() {
-                        full_args.push("--sysroot".to_string());
-                        full_args.push(sysroot);
-                    }
-                }
-            }
+// ── Mode 1: RUSTC_WRAPPER ───────────────────────────────────────────
 
-            // Cache rustc args for direct mode
-            if let Ok(out_dir) = env::var("MIR_CALLGRAPH_OUT") {
-                let crate_name = rustc_args.iter()
-                    .position(|a| a == "--crate-name")
-                    .and_then(|i| rustc_args.get(i + 1))
-                    .cloned()
-                    .unwrap_or_default();
-                let sysroot = full_args.iter()
-                    .position(|a| a == "--sysroot")
-                    .and_then(|i| full_args.get(i + 1))
-                    .cloned()
-                    .unwrap_or_default();
-                if !crate_name.is_empty() {
-                    let args_dir = format!("{out_dir}/rustc-args");
-                    let _ = std::fs::create_dir_all(&args_dir);
-                    let env_snapshot: Vec<(String, String)> = env::vars()
-                        .filter(|(k, _)| {
-                            !matches!(k.as_str(), "PATH" | "PSModulePath" | "PATHEXT" | "CARGO_MAKEFLAGS")
-                            && !k.starts_with("MIR_CALLGRAPH_")
-                        })
-                        .collect();
-                    let cached = RustcArgs {
-                        args: full_args.clone(), crate_name: crate_name.clone(), sysroot, env: env_snapshot,
-                    };
-                    let is_test = rustc_args.iter().any(|a| a == "--test");
-                    let suffix = if is_test { ".test" } else { ".lib" };
-                    if let Ok(json_str) = serde_json::to_string_pretty(&cached) {
-                        let _ = std::fs::write(format!("{args_dir}/{crate_name}{suffix}.rustc-args.json"), json_str);
-                    }
-                }
-            }
+fn run_wrapper_mode(args: &[String]) {
+    let rustc_args: Vec<String> = args[2..].to_vec();
 
-            let json = env::var("MIR_CALLGRAPH_JSON").is_ok();
-            let is_test_target = rustc_args.iter().any(|a| a == "--test");
-            let db_path = env::var("MIR_CALLGRAPH_DB").ok();
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                rustc_public::run!(&full_args, || extract_all(is_test_target, json, &db_path))
-            }));
-            match result {
-                Ok(Ok(_)) | Ok(Err(rustc_public::CompilerError::Interrupted(_))) | Ok(Err(rustc_public::CompilerError::Skipped)) => {}
-                Ok(Err(e)) => eprintln!("[mir-callgraph] run! error: {e:?}"),
-                Err(panic) => eprintln!("[mir-callgraph] panic: {panic:?}"),
-            }
-        } else {
-            let status = Command::new(&args[1]).args(&args[2..]).status().expect("failed to run rustc");
-            std::process::exit(status.code().unwrap_or(1));
-        }
-        return;
+    if !should_analyze(&rustc_args) {
+        let status = Command::new(&args[1]).args(&args[2..]).status().expect("failed to run rustc");
+        std::process::exit(status.code().unwrap_or(1));
     }
 
-    // Mode 2: Direct mode
-    if args.iter().any(|a| a == "--direct") {
-        let args_files: Vec<&String> = args.iter()
-            .skip_while(|a| *a != "--args-file").skip(1)
-            .take_while(|a| !a.starts_with("--")).collect();
+    let full_args = build_full_args(&args[1], &rustc_args);
+    cache_rustc_args(&rustc_args, &full_args);
 
-        if args_files.is_empty() {
-            eprintln!("[mir-callgraph] --direct requires --args-file <path>");
-            std::process::exit(1);
-        }
+    let (json, db_path) = env_config();
+    let is_test = rustc_args.iter().any(|a| a == "--test");
 
-        let json = env::var("MIR_CALLGRAPH_JSON").is_ok();
-        let mut had_error = false;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rustc_public::run!(&full_args, || extract::extract_all(is_test, json, &db_path))
+    }));
+    if let Err(panic) = result {
+        eprintln!("[mir-callgraph] panic: {panic:?}");
+    }
+}
 
-        for args_file in &args_files {
-            let content = match std::fs::read_to_string(args_file) {
-                Ok(c) => c,
-                Err(e) => { eprintln!("[mir-callgraph] read error {args_file}: {e}"); had_error = true; continue; }
-            };
-            let cached: RustcArgs = match serde_json::from_str(&content) {
-                Ok(c) => c,
-                Err(e) => { eprintln!("[mir-callgraph] parse error {args_file}: {e}"); had_error = true; continue; }
-            };
+fn should_analyze(rustc_args: &[String]) -> bool {
+    let is_local = rustc_args.iter().any(|a| {
+        a.ends_with(".rs") && !a.contains(".cargo") && !a.contains("registry") && !a.contains("rustup")
+    });
+    let has_edition = rustc_args.iter().any(|a| a.starts_with("--edition"));
+    let is_build_script = rustc_args.iter().any(|a| a == "build_script_build" || a.contains("build.rs"));
+    has_edition && is_local && !is_build_script
+}
 
-            eprintln!("[mir-callgraph] direct: compiling crate '{}'", cached.crate_name);
-            for (key, value) in &cached.env { unsafe { env::set_var(key, value); } }
+fn build_full_args(rustc_bin: &str, rustc_args: &[String]) -> Vec<String> {
+    let mut full = vec![rustc_bin.to_string()];
+    full.extend(rustc_args.iter().cloned());
 
-            let is_test_target = cached.args.iter().any(|a| a == "--test");
-            let db_path = env::var("MIR_CALLGRAPH_DB").ok();
-
-            let _guard = if env::var("MIR_PROFILE").is_ok() {
-                use tracing_subscriber::prelude::*;
-                let (chrome_layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
-                    .file(format!("D:/rude/profile/{}.trace.json", cached.crate_name))
-                    .include_args(true).build();
-                tracing_subscriber::registry().with(chrome_layer).init();
-                Some(guard)
-            } else { None };
-
-            if let Err(e) = rustc_public::run!(&cached.args, || extract_all(is_test_target, json, &db_path)) {
-                eprintln!("[mir-callgraph] run! error: {e:?}");
+    if !full.iter().any(|a| a.starts_with("--sysroot")) {
+        if let Ok(output) = Command::new(rustc_bin).arg("--print").arg("sysroot").output() {
+            let sysroot = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !sysroot.is_empty() {
+                full.extend(["--sysroot".to_string(), sysroot]);
             }
         }
+    }
+    full
+}
 
-        if had_error { std::process::exit(1); }
-        return;
+fn cache_rustc_args(rustc_args: &[String], full_args: &[String]) {
+    let Ok(out_dir) = env::var("MIR_CALLGRAPH_OUT") else { return };
+    let crate_name = rustc_args.iter()
+        .position(|a| a == "--crate-name")
+        .and_then(|i| rustc_args.get(i + 1))
+        .cloned()
+        .unwrap_or_default();
+    if crate_name.is_empty() { return; }
+
+    let sysroot = full_args.iter()
+        .position(|a| a == "--sysroot")
+        .and_then(|i| full_args.get(i + 1))
+        .cloned()
+        .unwrap_or_default();
+
+    let args_dir = format!("{out_dir}/rustc-args");
+    let _ = std::fs::create_dir_all(&args_dir);
+
+    let env_snapshot: Vec<(String, String)> = env::vars()
+        .filter(|(k, _)| {
+            !matches!(k.as_str(), "PATH" | "PSModulePath" | "PATHEXT" | "CARGO_MAKEFLAGS")
+            && !k.starts_with("MIR_CALLGRAPH_")
+        })
+        .collect();
+
+    let cached = RustcArgs {
+        args: full_args.to_vec(), crate_name: crate_name.clone(), sysroot, env: env_snapshot,
+    };
+    let suffix = if rustc_args.iter().any(|a| a == "--test") { ".test" } else { ".lib" };
+    if let Ok(json) = serde_json::to_string_pretty(&cached) {
+        let _ = std::fs::write(format!("{args_dir}/{crate_name}{suffix}.rustc-args.json"), json);
+    }
+}
+
+// ── Mode 2: Direct ──────────────────────────────────────────────────
+
+fn run_direct_mode(args: &[String]) {
+    let args_files: Vec<&String> = args.iter()
+        .skip_while(|a| *a != "--args-file").skip(1)
+        .take_while(|a| !a.starts_with("--")).collect();
+
+    if args_files.is_empty() {
+        eprintln!("[mir-callgraph] --direct requires --args-file <path>");
+        std::process::exit(1);
     }
 
-    // Mode 3: CLI mode (cargo wrapper)
+    let (json, _) = env_config();
+    let mut had_error = false;
+
+    for args_file in &args_files {
+        let cached: RustcArgs = match load_cached_args(args_file) {
+            Ok(c) => c,
+            Err(e) => { eprintln!("[mir-callgraph] {e}"); had_error = true; continue; }
+        };
+
+        eprintln!("[mir-callgraph] direct: compiling crate '{}'", cached.crate_name);
+        for (k, v) in &cached.env { unsafe { env::set_var(k, v); } }
+
+        let is_test = cached.args.iter().any(|a| a == "--test");
+        let db_path = env::var("MIR_CALLGRAPH_DB").ok();
+
+        let _guard = init_profiling(&cached.crate_name);
+
+        if let Err(e) = rustc_public::run!(&cached.args, || extract::extract_all(is_test, json, &db_path)) {
+            eprintln!("[mir-callgraph] run! error: {e:?}");
+        }
+    }
+
+    if had_error { std::process::exit(1); }
+}
+
+fn load_cached_args(path: &str) -> Result<RustcArgs, String> {
+    let content = std::fs::read_to_string(path).map_err(|e| format!("read error {path}: {e}"))?;
+    serde_json::from_str(&content).map_err(|e| format!("parse error {path}: {e}"))
+}
+
+fn init_profiling(crate_name: &str) -> Option<tracing_chrome::FlushGuard> {
+    if env::var("MIR_PROFILE").is_err() { return None; }
+    use tracing_subscriber::prelude::*;
+    let (layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
+        .file(format!("profile/{crate_name}.trace.json"))
+        .include_args(true).build();
+    tracing_subscriber::registry().with(layer).init();
+    Some(guard)
+}
+
+// ── Mode 3: CLI (cargo wrapper) ─────────────────────────────────────
+
+fn run_cli_mode(args: &[String]) {
     let json = args.iter().any(|a| a == "--json");
-    let exe = env::current_exe().unwrap_or_default();
     let keep_going = args.iter().any(|a| a == "--keep-going");
+    let exe = env::current_exe().unwrap_or_default();
 
     let mut cmd = Command::new("cargo");
     cmd.arg("+nightly").arg("check").arg("--tests")
@@ -524,7 +183,9 @@ fn main() {
         .env("RUSTC_WRAPPER", &exe);
     if keep_going { cmd.arg("--keep-going"); }
     if json { cmd.env("MIR_CALLGRAPH_JSON", "1"); }
-    for arg in args.iter().skip(1).filter(|a| *a != "--json" && *a != "--keep-going") { cmd.arg(arg); }
+    for arg in args.iter().skip(1).filter(|a| *a != "--json" && *a != "--keep-going") {
+        cmd.arg(arg);
+    }
 
     let status = cmd.status().expect("failed to run cargo check");
     std::process::exit(status.code().unwrap_or(1));
