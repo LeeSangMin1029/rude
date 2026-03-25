@@ -16,14 +16,23 @@ pub struct IncrementalArgs<'a> {
     pub mir_edge_dir: &'a Path,
 }
 
+/// Serializable edge-only cache (chunks are stored separately).
 #[derive(bincode::Encode, bincode::Decode)]
-pub struct CallGraph {
+struct EdgeCache {
     version: String,
-    pub names: Vec<String>,
-    pub files: Vec<String>,
-    pub kinds: Vec<String>,
-    pub lines: Vec<Option<(usize, usize)>>,
-    pub signatures: Vec<Option<String>>,
+    name_index: Vec<(String, u32)>,
+    callees: Vec<Vec<u32>>,
+    callers: Vec<Vec<u32>>,
+    is_test: Vec<bool>,
+    trait_impls: Vec<Vec<u32>>,
+    impl_of_trait: Vec<Option<u32>>,
+    fn_trait_impl: Vec<Option<u32>>,
+    call_sites: Vec<Vec<(u32, u32)>>,
+    field_access_index: Vec<(String, Vec<u32>)>,
+}
+
+pub struct CallGraph {
+    pub chunks: Vec<ParsedChunk>,
     pub name_index: Vec<(String, u32)>,
     pub callees: Vec<Vec<u32>>,
     pub callers: Vec<Vec<u32>>,
@@ -37,33 +46,26 @@ pub struct CallGraph {
 
 impl CallGraph {
 
-    fn assemble(chunks: &[ParsedChunk], index: &ChunkIndex, adj: ResolvedEdges, ) -> Self {
+    fn assemble(chunks: Vec<ParsedChunk>, index: &ChunkIndex, adj: ResolvedEdges, ) -> Self {
         let t = std::time::Instant::now();
-        let owner_field_types = index_tables::collect_owner_field_types(chunks);
+        let owner_field_types = index_tables::collect_owner_field_types(&chunks);
 
         let len = chunks.len();
-        let mut names = Vec::with_capacity(len);
-        let mut files = Vec::with_capacity(len);
-        let mut kinds = Vec::with_capacity(len);
-        let mut lines_vec = Vec::with_capacity(len);
-        let mut signatures = Vec::with_capacity(len);
         let mut is_test = Vec::with_capacity(len);
         let mut name_index = Vec::with_capacity(len);
 
+        let names: Vec<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
+        let kinds: Vec<&str> = chunks.iter().map(|c| c.kind.as_str()).collect();
+
         for (i, c) in chunks.iter().enumerate() {
             name_index.push((c.name.to_lowercase(), i as u32));
-            names.push(c.name.clone());
-            files.push(c.file.clone());
-            kinds.push(c.kind.clone());
-            lines_vec.push(c.lines);
-            signatures.push(c.signature.clone());
             is_test.push(is_test_chunk(c));
         }
         name_index.sort_by(|a, b| a.0.cmp(&b.0));
 
         let (trait_impls, field_access_index) = rayon::join(
             || index_tables::build_trait_impls(&names, &kinds, &index.exact, &index.short),
-            || index_tables::build_field_access_index(chunks, &owner_field_types),
+            || index_tables::build_field_access_index(&chunks, &owner_field_types),
         );
         let mut impl_of_trait: Vec<Option<u32>> = vec![None; len];
         for (trait_idx, impls) in trait_impls.iter().enumerate() {
@@ -76,9 +78,8 @@ impl CallGraph {
         eprintln!("      [graph] assemble: {:.1}ms", t.elapsed().as_secs_f64() * 1000.0);
 
         Self {
-            version: GRAPH_SOURCE_HASH.to_owned(),
-            names, files, kinds,
-            lines: lines_vec, signatures, name_index,
+            chunks,
+            name_index,
             callees: adj.callees, callers: adj.callers,
             is_test, trait_impls, impl_of_trait, fn_trait_impl,
             call_sites: adj.call_sites,
@@ -90,7 +91,7 @@ impl CallGraph {
     pub fn build(chunks: &[ParsedChunk]) -> Self {
         let index = ChunkIndex::build(chunks);
         let adj = edge_resolve::resolve_by_name_test(chunks, &index);
-        Self::assemble(chunks, &index, adj)
+        Self::assemble(chunks.to_vec(), &index, adj)
     }
 
     pub fn resolve(&self, name: &str) -> Vec<u32> {
@@ -126,7 +127,7 @@ impl CallGraph {
 
     pub fn rebuild(
         db: &Path,
-        chunks: &[ParsedChunk],
+        chunks: Vec<ParsedChunk>,
         mir_edges: Option<&MirEdgeMap>,
         incremental: Option<IncrementalArgs<'_>>,
     ) -> Result<Self> {
@@ -136,22 +137,22 @@ impl CallGraph {
     }
 
     pub fn build_only(
-        chunks: &[ParsedChunk],
+        chunks: Vec<ParsedChunk>,
         mir_edges: Option<&MirEdgeMap>,
         incremental: Option<IncrementalArgs<'_>>,
         db: &Path,
     ) -> Self {
         let t0 = std::time::Instant::now();
-        let index = ChunkIndex::build(chunks);
+        let index = ChunkIndex::build(&chunks);
         let (adj, label) = match (mir_edges, incremental) {
             (Some(mir), Some(inc)) if mir.total > 0 => {
                 let adj = edge_resolve::resolve_incremental(
-                    chunks, &index, mir, inc.changed_crates, db, inc.mir_edge_dir,
+                    &chunks, &index, mir, inc.changed_crates, db, inc.mir_edge_dir,
                 );
                 (adj, "mir-incremental")
             }
             (Some(mir), _) if mir.total > 0 => {
-                (edge_resolve::resolve_with_mir(chunks, &index, mir), "mir-resolve")
+                (edge_resolve::resolve_with_mir(&chunks, &index, mir), "mir-resolve")
             }
             _ => {
                 (edge_resolve::ResolvedEdges::empty(chunks.len()), "no-mir")
@@ -161,10 +162,41 @@ impl CallGraph {
         Self::assemble(chunks, &index, adj)
     }
 
+    fn to_edge_cache(&self) -> EdgeCache {
+        EdgeCache {
+            version: GRAPH_SOURCE_HASH.to_owned(),
+            name_index: self.name_index.clone(),
+            callees: self.callees.clone(),
+            callers: self.callers.clone(),
+            is_test: self.is_test.clone(),
+            trait_impls: self.trait_impls.clone(),
+            impl_of_trait: self.impl_of_trait.clone(),
+            fn_trait_impl: self.fn_trait_impl.clone(),
+            call_sites: self.call_sites.clone(),
+            field_access_index: self.field_access_index.clone(),
+        }
+    }
+
+    fn from_edge_cache(chunks: Vec<ParsedChunk>, ec: EdgeCache) -> Self {
+        Self {
+            chunks,
+            name_index: ec.name_index,
+            callees: ec.callees,
+            callers: ec.callers,
+            is_test: ec.is_test,
+            trait_impls: ec.trait_impls,
+            impl_of_trait: ec.impl_of_trait,
+            fn_trait_impl: ec.fn_trait_impl,
+            call_sites: ec.call_sites,
+            field_access_index: ec.field_access_index,
+        }
+    }
+
     pub fn save_background(self, db: &Path) {
         let db = db.to_path_buf();
         std::thread::spawn(move || {
-            match bincode::encode_to_vec(&self, bincode::config::standard()) {
+            let ec = self.to_edge_cache();
+            match bincode::encode_to_vec(&ec, bincode::config::standard()) {
                 Ok(bytes) => {
                     if let Ok(engine) = rude_db::StorageEngine::open(&db) {
                         if let Err(e) = engine.set_cache("graph", &bytes) {
@@ -186,8 +218,9 @@ impl CallGraph {
     }
 
     pub fn save_with_engine(&self, engine: &rude_db::StorageEngine) -> Result<()> {
-        let bytes = bincode::encode_to_vec(self, bincode::config::standard())
-            .context("failed to encode call graph")?;
+        let ec = self.to_edge_cache();
+        let bytes = bincode::encode_to_vec(&ec, bincode::config::standard())
+            .context("failed to encode edge cache")?;
         engine.set_cache("graph", &bytes)
             .context("failed to write graph cache")
     }
@@ -199,16 +232,18 @@ impl CallGraph {
 
     pub fn load_with_engine(engine: &rude_db::StorageEngine) -> Option<Self> {
         let bytes = engine.get_cache("graph").ok()??;
-        let (graph, _): (Self, _) = bincode::decode_from_slice(&bytes, bincode::config::standard()).ok()?;
-        if graph.version != GRAPH_SOURCE_HASH { return None; }
-        Some(graph)
+        let (ec, _): (EdgeCache, _) = bincode::decode_from_slice(&bytes, bincode::config::standard()).ok()?;
+        if ec.version != GRAPH_SOURCE_HASH { return None; }
+        let chunks = crate::analysis::loader::load_chunks_from_cache_with_engine(engine)?;
+        if chunks.len() != ec.callees.len() { return None; }
+        Some(Self::from_edge_cache(chunks, ec))
     }
 
-    pub fn len(&self) -> usize { self.names.len() }
-    pub fn is_empty(&self) -> bool { self.names.is_empty() }
+    pub fn len(&self) -> usize { self.chunks.len() }
+    pub fn is_empty(&self) -> bool { self.chunks.is_empty() }
 
     pub fn global_aliases(&self) -> (std::collections::BTreeMap<String, String>, Vec<(String, String)>) {
-        let all: Vec<&str> = self.files.iter().map(|f| crate::helpers::relative_path(f)).collect();
+        let all: Vec<&str> = self.chunks.iter().map(|c| crate::helpers::relative_path(&c.file)).collect();
         crate::helpers::build_path_aliases(&all)
     }
 }

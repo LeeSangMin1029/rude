@@ -59,13 +59,13 @@ pub(crate) fn build_field_access_index(
 }
 
 pub(crate) fn build_trait_impls(
-    names: &[String],
-    kinds: &[String],
+    names: &[&str],
+    kinds: &[&str],
     exact: &HashMap<String, u32>,
     short: &HashMap<String, u32>,
 ) -> Vec<Vec<u32>> {
     let mut trait_impls: Vec<Vec<u32>> = vec![Vec::new(); names.len()];
-    for (i, (name, kind)) in names.iter().zip(kinds.iter()).enumerate() {
+    for (i, (&name, &kind)) in names.iter().zip(kinds.iter()).enumerate() {
         if kind != "impl" { continue; }
         let lower = name.to_lowercase();
         // Match both "impl Trait for Type" and "<Type as Trait>" naming conventions
@@ -96,12 +96,12 @@ pub(crate) fn build_trait_impls(
 }
 
 pub(crate) fn build_fn_trait_impl(
-    names: &[String],
-    kinds: &[String],
+    names: &[&str],
+    kinds: &[&str],
 ) -> Vec<Option<u32>> {
     // Collect impl blocks that are trait impls (name contains " for ")
     let mut trait_impl_set: HashMap<String, u32> = HashMap::new();
-    for (i, (name, kind)) in names.iter().zip(kinds.iter()).enumerate() {
+    for (i, (&name, &kind)) in names.iter().zip(kinds.iter()).enumerate() {
         if kind == "impl" {
             let lower = name.to_lowercase();
             if lower.contains(" for ") {
@@ -111,7 +111,7 @@ pub(crate) fn build_fn_trait_impl(
     }
 
     let mut result = vec![None; names.len()];
-    for (i, (name, kind)) in names.iter().zip(kinds.iter()).enumerate() {
+    for (i, (&name, &kind)) in names.iter().zip(kinds.iter()).enumerate() {
         if kind != "function" { continue; }
         // Extract parent path: "foo::bar::method" → "foo::bar"
         let lower = name.to_lowercase();

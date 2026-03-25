@@ -268,7 +268,7 @@ fn prebuild_caches(
         changed_crates: &[],
         mir_edge_dir,
     });
-    rude_intel::graph::CallGraph::build_only(&chunks, mir_edges, incremental, db_path)
+    rude_intel::graph::CallGraph::build_only(chunks, mir_edges, incremental, db_path)
         .save_background(db_path);
 }
 fn scan_files_fast(input_path: &std::path::Path, exclude: &[String]) -> Vec<PathBuf> {

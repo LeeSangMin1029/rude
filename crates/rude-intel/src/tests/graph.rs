@@ -35,8 +35,8 @@ fn struct_chunk(name: &str, file: &str) -> ParsedChunk {
 fn has_edge(graph: &CallGraph, caller: &str, callee: &str) -> bool {
     let caller_lower = caller.to_lowercase();
     let callee_lower = callee.to_lowercase();
-    let caller_idx = graph.names.iter().position(|n| n.to_lowercase() == caller_lower);
-    let callee_idx = graph.names.iter().position(|n| n.to_lowercase() == callee_lower);
+    let caller_idx = graph.chunks.iter().position(|c| c.name.to_lowercase() == caller_lower);
+    let callee_idx = graph.chunks.iter().position(|c| c.name.to_lowercase() == callee_lower);
     if let (Some(ci), Some(ti)) = (caller_idx, callee_idx) {
         graph.callees[ci].iter().any(|&t| t as usize == ti)
     } else {
@@ -143,7 +143,7 @@ fn callers_populated() {
     ];
     let g = CallGraph::build(&chunks);
     assert!(!g.callers[1].is_empty());
-    assert_eq!(g.names[g.callers[1][0] as usize], "a");
+    assert_eq!(g.chunks[g.callers[1][0] as usize].name, "a");
 }
 
 #[test]

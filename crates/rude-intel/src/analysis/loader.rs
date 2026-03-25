@@ -77,15 +77,8 @@ fn ensure_project_root_with_engine(engine: &rude_db::StorageEngine) {
     }
 }
 pub fn load_or_build_graph(db: &Path) -> Result<crate::graph::CallGraph> {
-    let (g, _) = load_or_build_graph_with_chunks(db)?;
-    Ok(g)
-}
-
-pub fn load_or_build_graph_with_chunks(
-    db: &Path,
-) -> Result<(crate::graph::CallGraph, Option<Vec<ParsedChunk>>)> {
     if let Some(g) = crate::graph::CallGraph::load(db) {
-        return Ok((g, None));
+        return Ok(g);
     }
 
     let chunks = load_chunks(db)?;
@@ -107,8 +100,8 @@ pub fn load_or_build_graph_with_chunks(
     } else {
         eprintln!("[graph] Building graph (name-resolve fallback)...");
     }
-    let g = crate::graph::CallGraph::build_only(&chunks, mir_edges.as_ref(), None, db);
+    let g = crate::graph::CallGraph::build_only(chunks, mir_edges.as_ref(), None, db);
 
     let _ = g.save(db);
-    Ok((g, Some(chunks)))
+    Ok(g)
 }

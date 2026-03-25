@@ -13,10 +13,6 @@ use rude_intel::trace;
 pub(crate) fn load_or_build_graph() -> Result<graph::CallGraph> {
     rude_intel::loader::load_or_build_graph(crate::db())
 }
-pub(crate) fn load_or_build_graph_with_chunks() -> Result<(graph::CallGraph, Option<Vec<ParsedChunk>>)> {
-    rude_intel::loader::load_or_build_graph_with_chunks(crate::db())
-}
-
 pub fn run_aliases() -> Result<()> {
     let graph = load_or_build_graph()?;
     let (_alias_map, legend) = graph.global_aliases();
@@ -84,11 +80,11 @@ fn print_trait_impls_if_relevant(name: Option<&str>) -> Result<()> {
     for idx in graph.resolve(name) {
         let i = idx as usize;
         let impls = &graph.trait_impls[i];
-        if graph.kinds[i] != "trait" || impls.is_empty() { continue; }
-        println!("  implementations of {}:", graph.names[i]);
+        if graph.chunks[i].kind != "trait" || impls.is_empty() { continue; }
+        println!("  implementations of {}:", graph.chunks[i].name);
         for ii in impls.iter().map(|&x| x as usize) {
-            println!("    {}{}  [{}] {}", relative_path(&graph.files[ii]),
-                format_lines_opt(graph.lines[ii]), graph.kinds[ii], graph.names[ii]);
+            println!("    {}{}  [{}] {}", relative_path(&graph.chunks[ii].file),
+                format_lines_opt(graph.chunks[ii].lines), graph.chunks[ii].kind, graph.chunks[ii].name);
         }
         println!();
     }
@@ -108,9 +104,8 @@ pub fn run_context(
     if blast { return run_blast(&symbol, depth, include_tests, &scope); }
 
     use rude_intel::context_cmd;
-    let chunks = load_chunks(crate::db())?;
     let graph = load_or_build_graph()?;
-    let result = context_cmd::build_context(&graph, &chunks, &symbol, depth);
+    let result = context_cmd::build_context(&graph, &symbol, depth);
 
     if result.seeds.is_empty() {
         println!("No symbol found matching \"{symbol}\".");
@@ -130,7 +125,7 @@ pub fn run_context(
 
     if let Some(ref sc) = scope {
         entries.retain(|e| e.tag == "def" || {
-            let f = &graph.files[e.idx as usize];
+            let f = &graph.chunks[e.idx as usize].file;
             f.starts_with(sc.as_str()) || f.contains(sc.as_str())
         });
     }
@@ -146,12 +141,12 @@ pub fn run_context(
     }
 
     // Field access summary for struct seeds
-    if let Some(&si) = result.seeds.iter().find(|&&s| graph.kinds[s as usize] == "struct") {
-        let field_entries = graph.find_field_accesses_for_type(&graph.names[si as usize].clone());
+    if let Some(&si) = result.seeds.iter().find(|&&s| graph.chunks[s as usize].kind == "struct") {
+        let field_entries = graph.find_field_accesses_for_type(&graph.chunks[si as usize].name.clone());
         if !field_entries.is_empty() {
             println!("@ [field accesses]");
             for (field, indices) in &field_entries {
-                let names: Vec<&str> = indices.iter().map(|&i| graph.names[i as usize].as_str()).collect();
+                let names: Vec<&str> = indices.iter().map(|&i| graph.chunks[i as usize].name.as_str()).collect();
                 println!("  .{field} ← {}", names.join(", "));
             }
             println!();
@@ -213,7 +208,7 @@ fn tag_blast(
 ) -> Vec<TaggedEntry> {
     all.into_iter()
         .filter(|e| scope.as_ref().map_or(true, |prefix| {
-            let f = &graph.files[e.idx as usize];
+            let f = &graph.chunks[e.idx as usize].file;
             f.starts_with(prefix.as_str()) || f.contains(prefix.as_str())
         }))
         .filter(|e| include_tests || !e.is_test)
@@ -247,10 +242,10 @@ pub fn run_trace(from: String, to: String) -> Result<()> {
             println!("=== trace: {from} \u{2192} {to} ({} hops) ===\n", path.len() - 1);
             for (step, &idx) in path.iter().enumerate() {
                 let i = idx as usize;
-                let short = apply_alias(relative_path(&graph.files[i]), &alias_map);
+                let short = apply_alias(relative_path(&graph.chunks[i].file), &alias_map);
                 let test_marker = if graph.is_test[i] { " [test]" } else { "" };
                 let (arrow, indent) = if step == 0 { ("  ", String::new()) } else { ("→ ", "  ".repeat(step)) };
-                println!("  {indent}{arrow}{short}{}  {}{test_marker}", format_lines_opt(graph.lines[i]), graph.names[i]);
+                println!("  {indent}{arrow}{short}{}  {}{test_marker}", format_lines_opt(graph.chunks[i].lines), graph.chunks[i].name);
             }
             println!();
         }
@@ -322,7 +317,7 @@ fn print_tagged(
     sorted.sort_by_key(|e| role_priority(e.tag));
     let deduped: Vec<&TaggedEntry> = sorted.into_iter().filter(|e| seen.insert(e.idx)).collect();
 
-    let files: Vec<&str> = deduped.iter().map(|e| relative_path(&graph.files[e.idx as usize])).collect();
+    let files: Vec<&str> = deduped.iter().map(|e| relative_path(&graph.chunks[e.idx as usize].file)).collect();
     let mut groups: BTreeMap<&str, Vec<&TaggedEntry>> = BTreeMap::new();
     for (entry, file) in deduped.iter().zip(files.iter()) { groups.entry(file).or_default().push(entry); }
 
@@ -330,14 +325,14 @@ fn print_tagged(
         println!("@ {}", apply_alias(file, alias_map));
         for e in items {
             let i = e.idx as usize;
-            let kind_tag = if graph.kinds[i] == "function" { String::new() } else { format!("[{}] ", graph.kinds[i]) };
+            let kind_tag = if graph.chunks[i].kind == "function" { String::new() } else { format!("[{}] ", graph.chunks[i].kind) };
             let test_marker = if graph.is_test[i] { " [test]" } else { "" };
             let call_site = if e.call_line > 0 { format!(" → :{}", e.call_line) } else { String::new() };
-            println!("  [{}] {} {kind_tag}{}{test_marker}{call_site}", e.tag, format_lines_opt(graph.lines[i]), graph.names[i]);
-            if e.sig { if let Some(s) = &graph.signatures[i] { println!("    {s}"); } }
+            println!("  [{}] {} {kind_tag}{}{test_marker}{call_site}", e.tag, format_lines_opt(graph.chunks[i].lines), graph.chunks[i].name);
+            if e.sig { if let Some(s) = &graph.chunks[i].signature { println!("    {s}"); } }
             if show_source && (e.tag == "def" || e.sig) {
-                if let Some((start, end)) = graph.lines[i] {
-                    if let Ok(content) = std::fs::read_to_string(&graph.files[i]) {
+                if let Some((start, end)) = graph.chunks[i].lines {
+                    if let Ok(content) = std::fs::read_to_string(&graph.chunks[i].file) {
                         let lines: Vec<&str> = content.lines().collect();
                         let s = start.saturating_sub(1);
                         let e2 = end.min(lines.len());

@@ -236,7 +236,7 @@ fn concurrent_graph_save_and_load() {
                 for _ in 0..iterations {
                     match CallGraph::load(&db) {
                         Some(g) => {
-                            assert!(!g.names.is_empty());
+                            assert!(!g.chunks.is_empty());
                             success += 1;
                         }
                         None => miss += 1,

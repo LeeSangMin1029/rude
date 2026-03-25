@@ -28,7 +28,7 @@ pub fn expand_seeds_with_traits(graph: &CallGraph, seeds: &[u32]) -> Vec<u32> {
     for &seed in seeds {
         let i = seed as usize;
         // seed가 trait → 모든 impl 추가
-        if graph.kinds[i] == "trait" {
+        if graph.chunks[i].kind == "trait" {
             for &impl_idx in &graph.trait_impls[i] {
                 if seen.insert(impl_idx) {
                     expanded.push(impl_idx);

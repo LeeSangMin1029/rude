@@ -6,7 +6,7 @@ mod query;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use query::{load_or_build_graph, load_or_build_graph_with_chunks};
+pub(crate) use query::load_or_build_graph;
 pub use cluster::run_cluster;
 pub use coverage::run_coverage;
 pub use dead::run_dead;

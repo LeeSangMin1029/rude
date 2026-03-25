@@ -1,6 +1,5 @@
 use crate::graph::bfs::{bfs_generic, BfsDirection};
 use crate::graph::build::CallGraph;
-use crate::data::parse::ParsedChunk;
 
 pub struct ContextEntry {
     pub idx: u32,
@@ -18,7 +17,6 @@ pub struct ContextResult {
 
 pub fn build_context(
     graph: &CallGraph,
-    chunks: &[ParsedChunk],
     symbol: &str,
     depth: u32,
 ) -> ContextResult {
@@ -41,14 +39,14 @@ pub fn build_context(
         all.into_iter().filter(|e| e.depth > 0).collect()
     };
 
-    let types = collect_types(graph, chunks, &seeds);
+    let types = collect_types(graph, &seeds);
     let tests = collect_tests(graph, &seeds, depth);
-    let unresolved_calls = collect_unresolved(graph, chunks, &seeds);
+    let unresolved_calls = collect_unresolved(graph, &seeds);
 
     ContextResult { seeds, callers, callees, types, tests, unresolved_calls }
 }
 
-fn collect_types(graph: &CallGraph, chunks: &[ParsedChunk], seeds: &[u32]) -> Vec<u32> {
+fn collect_types(graph: &CallGraph, seeds: &[u32]) -> Vec<u32> {
     let mut type_indices = Vec::new();
     let mut seen = vec![false; graph.len()];
 
@@ -60,10 +58,10 @@ fn collect_types(graph: &CallGraph, chunks: &[ParsedChunk], seeds: &[u32]) -> Ve
 
     for &seed in seeds {
         let seed_usize = seed as usize;
-        if seed_usize >= chunks.len() {
+        if seed_usize >= graph.chunks.len() {
             continue;
         }
-        let chunk = &chunks[seed_usize];
+        let chunk = &graph.chunks[seed_usize];
         for type_name in &chunk.types {
             let resolved = graph.resolve(type_name);
             for idx in resolved {
@@ -79,21 +77,21 @@ fn collect_types(graph: &CallGraph, chunks: &[ParsedChunk], seeds: &[u32]) -> Ve
     type_indices
 }
 
-fn collect_unresolved(graph: &CallGraph, chunks: &[ParsedChunk], seeds: &[u32]) -> Vec<String> {
+fn collect_unresolved(graph: &CallGraph, seeds: &[u32]) -> Vec<String> {
     let mut unresolved = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
     for &seed in seeds {
         let seed_usize = seed as usize;
-        if seed_usize >= chunks.len() {
+        if seed_usize >= graph.chunks.len() {
             continue;
         }
         let resolved_names: std::collections::HashSet<&str> = graph.callees
             .get(seed_usize)
-            .map(|cs| cs.iter().map(|&idx| graph.names[idx as usize].as_str()).collect())
+            .map(|cs| cs.iter().map(|&idx| graph.chunks[idx as usize].name.as_str()).collect())
             .unwrap_or_default();
 
-        for call in &chunks[seed_usize].calls {
+        for call in &graph.chunks[seed_usize].calls {
             let short = call.rsplit("::").next().unwrap_or(call);
             let leaf = short.rsplit('.').next().unwrap_or(short);
             let is_resolved = resolved_names.iter().any(|n| {

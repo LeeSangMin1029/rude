@@ -214,17 +214,17 @@ pub(crate) fn join_lines(lines: &[&str], trailing_nl: bool) -> String {
 }
 
 fn warn_callers(symbols: &[&str]) {
-    let Ok((graph, _)) = crate::commands::intel::load_or_build_graph_with_chunks() else { return };
+    let Ok(graph) = crate::commands::intel::load_or_build_graph() else { return };
     for &sym in symbols {
-        let idxs: Vec<usize> = graph.names.iter().enumerate()
-            .filter(|(_, n)| *n == sym || n.ends_with(&format!("::{sym}")))
+        let idxs: Vec<usize> = graph.chunks.iter().enumerate()
+            .filter(|(_, c)| c.name == sym || c.name.ends_with(&format!("::{sym}")))
             .map(|(i, _)| i).collect();
         for &i in &idxs {
             let callers: Vec<_> = graph.callers[i].iter()
                 .filter(|&&c| !graph.is_test[c as usize] && !idxs.contains(&(c as usize))).collect();
             if !callers.is_empty() {
                 eprintln!("  warning: {sym} has {} caller(s):", callers.len());
-                for &&c in &callers { eprintln!("    → {} ({})", graph.names[c as usize], graph.files[c as usize]); }
+                for &&c in &callers { eprintln!("    → {} ({})", graph.chunks[c as usize].name, graph.chunks[c as usize].file); }
             }
         }
     }

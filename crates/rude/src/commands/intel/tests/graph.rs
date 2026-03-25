@@ -17,11 +17,11 @@ fn build_records_metadata() {
     let graph = CallGraph::build(&chunks);
 
     assert_eq!(graph.len(), 1);
-    assert_eq!(graph.names[0], "Foo::bar");
-    assert_eq!(graph.files[0], "src/foo.rs");
-    assert_eq!(graph.kinds[0], "function");
-    assert_eq!(graph.lines[0], Some((1, 10)));
-    assert_eq!(graph.signatures[0].as_deref(), Some("fn Foo::bar()"));
+    assert_eq!(graph.chunks[0].name, "Foo::bar");
+    assert_eq!(graph.chunks[0].file, "src/foo.rs");
+    assert_eq!(graph.chunks[0].kind, "function");
+    assert_eq!(graph.chunks[0].lines, Some((1, 10)));
+    assert_eq!(graph.chunks[0].signature.as_deref(), Some("fn Foo::bar()"));
 }
 
 #[test]

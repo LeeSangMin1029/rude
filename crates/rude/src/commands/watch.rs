@@ -188,21 +188,21 @@ fn rebuild_graph_cache(
 ) -> Result<()> {
     let chunks = rude_intel::loader::load_chunks(db_path)?;
 
+    // Save chunks cache before building graph (graph.load reads chunks from cache)
+    rude_intel::loader::save_chunks_cache(db_path, &chunks);
+
     let incremental = rude_intel::graph::IncrementalArgs {
         changed_crates,
         mir_edge_dir: mir_out_dir,
     };
     let graph = rude_intel::graph::CallGraph::rebuild(
-        db_path, &chunks, Some(mir_edge_map), Some(incremental),
+        db_path, chunks, Some(mir_edge_map), Some(incremental),
     )?;
     eprintln!(
         "[watch] graph: {} nodes, {} edges",
         graph.len(),
         graph.callees.iter().map(Vec::len).sum::<usize>()
     );
-
-    // Also update chunks cache in sqlite
-    rude_intel::loader::save_chunks_cache(db_path, &chunks);
 
     Ok(())
 }

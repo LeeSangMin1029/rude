@@ -60,10 +60,10 @@ pub fn render_tree(
     let mut buf = String::new();
     for node in nodes {
         let i = node.idx as usize;
-        let name = &graph.names[i];
-        let file = relative_path(&graph.files[i]);
+        let name = &graph.chunks[i].name;
+        let file = relative_path(&graph.chunks[i].file);
         let short = apply_alias(file, alias_map);
-        let lines = format_lines_opt(graph.lines[i]);
+        let lines = format_lines_opt(graph.chunks[i].lines);
         let test_marker = if graph.is_test[i] { " [test]" } else { "" };
         buf.push_str(&format!("{short}{lines}  {name}{test_marker}\n"));
         render_children(graph, &node.children, &mut buf, "  ", alias_map);
@@ -85,10 +85,10 @@ fn render_children(
         let extension = if is_last { "    " } else { "\u{2502}   " };
 
         let i = child.idx as usize;
-        let name = &graph.names[i];
-        let file = relative_path(&graph.files[i]);
+        let name = &graph.chunks[i].name;
+        let file = relative_path(&graph.chunks[i].file);
         let short = apply_alias(file, alias_map);
-        let lines = format_lines_opt(graph.lines[i]);
+        let lines = format_lines_opt(graph.chunks[i].lines);
         let test_marker = if graph.is_test[i] { " [test]" } else { "" };
         let backref = if child.backreference { "  \u{21a9}" } else { "" };
 

@@ -11,20 +11,20 @@ pub fn run_dead(
 ) -> Result<()> {
 
     let graph = load_or_build_graph()?;
-    let n = graph.names.len();
+    let n = graph.chunks.len();
     let (alias_map, _) = graph.global_aliases();
 
     let mut dead: Vec<usize> = Vec::new();
 
     for i in 0..n {
-        if graph.is_test[i] || graph.kinds[i] != "function" {
+        if graph.is_test[i] || graph.chunks[i].kind != "function" {
             continue;
         }
-        if is_derive_generated(&graph.names[i]) {
+        if is_derive_generated(&graph.chunks[i].name) {
             continue;
         }
         if let Some(ref filter) = file_filter {
-            if !graph.files[i].contains(filter.as_str()) {
+            if !graph.chunks[i].file.contains(filter.as_str()) {
                 continue;
             }
         }
@@ -32,21 +32,21 @@ pub fn run_dead(
             continue;
         }
         if !include_pub {
-            let is_pub = graph.signatures[i]
+            let is_pub = graph.chunks[i].signature
                 .as_deref()
                 .is_some_and(|s| s.starts_with("pub ") || s.starts_with("pub(crate)"));
             if is_pub {
                 continue;
             }
         }
-        if graph.names[i].starts_with('<') && graph.names[i].contains(" as ") {
+        if graph.chunks[i].name.starts_with('<') && graph.chunks[i].name.contains(" as ") {
             continue;
         }
-        let name = &graph.names[i];
+        let name = &graph.chunks[i].name;
         if name == "main" || name.ends_with("::main") || name.ends_with("::run") {
             continue;
         }
-        let file = &graph.files[i];
+        let file = &graph.chunks[i].file;
         if !file.ends_with(".rs") {
             continue;
         }
@@ -62,7 +62,7 @@ pub fn run_dead(
 
     let mut by_crate: std::collections::BTreeMap<String, Vec<usize>> = std::collections::BTreeMap::new();
     for &i in &dead {
-        let crate_name = extract_crate_name(&graph.files[i]);
+        let crate_name = extract_crate_name(&graph.chunks[i].file);
         by_crate.entry(crate_name).or_default().push(i);
     }
 
@@ -71,10 +71,10 @@ pub fn run_dead(
     for (crate_name, indices) in &by_crate {
         println!("[{}] {} dead:", crate_name, indices.len());
         for &i in indices {
-            let loc = format_lines_opt(graph.lines[i]);
-            let rel = relative_path(&graph.files[i]);
+            let loc = format_lines_opt(graph.chunks[i].lines);
+            let rel = relative_path(&graph.chunks[i].file);
             let short = apply_alias(rel, &alias_map);
-            println!("  {short}{loc}  {}", graph.names[i]);
+            println!("  {short}{loc}  {}", graph.chunks[i].name);
         }
         println!();
     }

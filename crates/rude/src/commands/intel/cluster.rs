@@ -5,15 +5,15 @@ use super::query::load_or_build_graph;
 
 pub fn run_cluster(file: String, min_lines: usize) -> Result<()> {
     let graph = load_or_build_graph()?;
-    let n = graph.names.len();
+    let n = graph.chunks.len();
 
     // 1. Collect function indices belonging to the target file.
     let mut file_indices: Vec<usize> = Vec::new();
     for i in 0..n {
-        if graph.kinds[i] != "function" {
+        if graph.chunks[i].kind != "function" {
             continue;
         }
-        if graph.files[i].contains(file.as_str()) || graph.files[i].ends_with(&file) {
+        if graph.chunks[i].file.contains(file.as_str()) || graph.chunks[i].file.ends_with(&file) {
             file_indices.push(i);
         }
     }
@@ -92,7 +92,7 @@ pub fn run_cluster(file: String, min_lines: usize) -> Result<()> {
             .iter()
             .map(|&li| {
                 let gi = file_indices[li];
-                graph.lines[gi]
+                graph.chunks[gi].lines
                     .map(|(s, e)| if e >= s { e - s + 1 } else { 0 })
                     .unwrap_or(0)
             })
@@ -105,7 +105,7 @@ pub fn run_cluster(file: String, min_lines: usize) -> Result<()> {
     for g in &mut groups {
         g.sort_by_key(|&li| {
             let gi = file_indices[li];
-            graph.lines[gi].map(|(s, _)| s).unwrap_or(0)
+            graph.chunks[gi].lines.map(|(s, _)| s).unwrap_or(0)
         });
     }
 
@@ -130,10 +130,10 @@ pub fn run_cluster(file: String, min_lines: usize) -> Result<()> {
 
         for &li in members {
             let gi = file_indices[li];
-            let line_range = graph.lines[gi]
+            let line_range = graph.chunks[gi].lines
                 .map(|(s, e)| format!(":{s}-{e}"))
                 .unwrap_or_default();
-            println!("  {line_range:<12} {}", graph.names[gi]);
+            println!("  {line_range:<12} {}", graph.chunks[gi].name);
         }
         println!();
     }
