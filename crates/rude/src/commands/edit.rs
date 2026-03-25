@@ -274,119 +274,123 @@ where
 }
 
 /// Replace the body of a symbol with new content.
-/// How to splice new content relative to a symbol's range.
-enum Splice { Replace, Before, After }
+/// How to splice content relative to a symbol's range.
+enum Splice<'a> { Replace(&'a str), Before(&'a str), After(&'a str), Delete }
 
-/// Core: locate symbol → splice content → write back.
-fn edit_symbol(db: &Path, symbol: &str, file: Option<&str>, body: &str, mode: Splice) -> Result<()> {
+/// Core: locate symbol → splice → write back. Caller warning on Delete.
+fn edit_symbol(db: &Path, symbol: &str, file: Option<&str>, mode: Splice) -> Result<()> {
+    if matches!(mode, Splice::Delete) {
+        warn_callers(db, &[symbol]);
+    }
     let loc = locate_symbol(db, symbol, file)?;
-    let body = body.trim_end();
 
     locked_edit(&loc.abs_path, |content| {
         let lines: Vec<&str> = content.lines().collect();
-        let body_lines: Vec<&str> = body.lines().collect();
-        let cap = lines.len() + body_lines.len() + 1;
-        let mut result: Vec<&str> = Vec::with_capacity(cap);
+        let mut result: Vec<&str> = Vec::with_capacity(lines.len());
 
-        let print_start = match mode {
-            Splice::Replace => {
+        match mode {
+            Splice::Replace(body) | Splice::Before(body) | Splice::After(body) => {
+                let body = body.trim_end();
+                let body_lines: Vec<&str> = body.lines().collect();
+                match mode {
+                    Splice::Replace(_) => {
+                        result.extend_from_slice(&lines[..loc.start_line]);
+                        result.extend_from_slice(&body_lines);
+                        if loc.end_line + 1 < lines.len() { result.extend_from_slice(&lines[loc.end_line + 1..]); }
+                        eprintln!("Replaced {symbol} (L{}-{} → L{}-{}) in {}",
+                            loc.start_line + 1, loc.end_line + 1, loc.start_line + 1, loc.start_line + body_lines.len(), loc.rel_path);
+                    }
+                    Splice::After(_) => {
+                        result.extend_from_slice(&lines[..=loc.end_line]);
+                        result.push("");
+                        result.extend_from_slice(&body_lines);
+                        if loc.end_line + 1 < lines.len() { result.extend_from_slice(&lines[loc.end_line + 1..]); }
+                        eprintln!("Inserted after {symbol} (after L{}) in {}", loc.end_line + 1, loc.rel_path);
+                    }
+                    Splice::Before(_) => {
+                        result.extend_from_slice(&lines[..loc.start_line]);
+                        result.extend_from_slice(&body_lines);
+                        result.push("");
+                        result.extend_from_slice(&lines[loc.start_line..]);
+                        eprintln!("Inserted before {symbol} (before L{}) in {}", loc.start_line + 1, loc.rel_path);
+                    }
+                    _ => unreachable!(),
+                }
+                print_numbered_range(&body_lines, loc.start_line + 1);
+            }
+            Splice::Delete => {
                 result.extend_from_slice(&lines[..loc.start_line]);
-                result.extend_from_slice(&body_lines);
-                if loc.end_line + 1 < lines.len() { result.extend_from_slice(&lines[loc.end_line + 1..]); }
-                let new_end = loc.start_line + body_lines.len();
-                eprintln!("Replaced {symbol} (L{}-{} → L{}-{}) in {}",
-                    loc.start_line + 1, loc.end_line + 1, loc.start_line + 1, new_end, loc.rel_path);
-                loc.start_line + 1
+                let mut after = loc.end_line + 1;
+                while after < lines.len() && lines[after].trim().is_empty() { after += 1; }
+                if after < lines.len() { result.extend_from_slice(&lines[after..]); }
+                eprintln!("Deleted {symbol} (L{}-{}) from {}", loc.start_line + 1, loc.end_line + 1, loc.rel_path);
             }
-            Splice::After => {
-                result.extend_from_slice(&lines[..=loc.end_line]);
-                result.push("");
-                result.extend_from_slice(&body_lines);
-                if loc.end_line + 1 < lines.len() { result.extend_from_slice(&lines[loc.end_line + 1..]); }
-                eprintln!("Inserted after {symbol} (after L{}) in {}", loc.end_line + 1, loc.rel_path);
-                loc.end_line + 2
-            }
-            Splice::Before => {
-                result.extend_from_slice(&lines[..loc.start_line]);
-                result.extend_from_slice(&body_lines);
-                result.push("");
-                result.extend_from_slice(&lines[loc.start_line..]);
-                eprintln!("Inserted before {symbol} (before L{}) in {}", loc.start_line + 1, loc.rel_path);
-                loc.start_line + 1
-            }
-        };
-        print_numbered_range(&body_lines, print_start);
+        }
         Ok(join_lines(&result, content.ends_with('\n')))
     })
 }
 
-pub fn replace(db: PathBuf, symbol: String, file: Option<String>, body: String) -> Result<()> {
-    edit_symbol(&db, &symbol, file.as_deref(), &body, Splice::Replace)
-}
-
-pub fn insert_after(db: PathBuf, symbol: String, file: Option<String>, body: String) -> Result<()> {
-    edit_symbol(&db, &symbol, file.as_deref(), &body, Splice::After)
-}
-
-pub fn insert_before(db: PathBuf, symbol: String, file: Option<String>, body: String) -> Result<()> {
-    edit_symbol(&db, &symbol, file.as_deref(), &body, Splice::Before)
-}
-
-/// Delete a symbol from the source file.
-/// Delete one or more symbols. Warns about callers before deletion.
-/// Multiple symbols are deleted in one pass (no line drift).
-pub fn delete_symbols(db: PathBuf, symbols: &[&str], file: Option<&str>) -> Result<()> {
-    if symbols.is_empty() { return Ok(()); }
-
-    // Warn about callers
-    if let Ok((graph, _)) = crate::commands::intel::load_or_build_graph_with_chunks(&db) {
-        for &sym in symbols {
-            let target_idx: Vec<usize> = graph.names.iter().enumerate()
-                .filter(|(_, n)| *n == sym || n.ends_with(&format!("::{sym}")))
-                .map(|(i, _)| i)
+/// Warn about callers before deletion.
+fn warn_callers(db: &Path, symbols: &[&str]) {
+    let Ok((graph, _)) = crate::commands::intel::load_or_build_graph_with_chunks(db) else { return };
+    for &sym in symbols {
+        let idxs: Vec<usize> = graph.names.iter().enumerate()
+            .filter(|(_, n)| *n == sym || n.ends_with(&format!("::{sym}")))
+            .map(|(i, _)| i).collect();
+        for &idx in &idxs {
+            let callers: Vec<_> = graph.callers[idx].iter()
+                .filter(|&&c| !graph.is_test[c as usize] && !idxs.contains(&(c as usize)))
                 .collect();
-            for &idx in &target_idx {
-                let callers: Vec<_> = graph.callers[idx].iter()
-                    .filter(|&&c| !graph.is_test[c as usize] && !target_idx.contains(&(c as usize)))
-                    .collect();
-                if !callers.is_empty() {
-                    eprintln!("  warning: {sym} has {} caller(s):", callers.len());
-                    for &&c in &callers {
-                        eprintln!("    → {} ({})", graph.names[c as usize], graph.files[c as usize]);
-                    }
+            if !callers.is_empty() {
+                eprintln!("  warning: {sym} has {} caller(s):", callers.len());
+                for &&c in &callers {
+                    eprintln!("    → {} ({})", graph.names[c as usize], graph.files[c as usize]);
                 }
             }
         }
     }
+}
 
-    // Locate all symbols
+pub fn replace(db: PathBuf, symbol: String, file: Option<String>, body: String) -> Result<()> {
+    edit_symbol(&db, &symbol, file.as_deref(), Splice::Replace(&body))
+}
+
+pub fn insert_after(db: PathBuf, symbol: String, file: Option<String>, body: String) -> Result<()> {
+    edit_symbol(&db, &symbol, file.as_deref(), Splice::After(&body))
+}
+
+pub fn insert_before(db: PathBuf, symbol: String, file: Option<String>, body: String) -> Result<()> {
+    edit_symbol(&db, &symbol, file.as_deref(), Splice::Before(&body))
+}
+
+pub fn delete_symbol(db: PathBuf, symbol: String, file: Option<String>) -> Result<()> {
+    edit_symbol(&db, &symbol, file.as_deref(), Splice::Delete)
+}
+
+/// Batch delete: multiple symbols in one pass (no line drift).
+pub fn delete_symbols(db: PathBuf, symbols: &[&str], file: Option<&str>) -> Result<()> {
+    if symbols.is_empty() { return Ok(()); }
+    warn_callers(&db, symbols);
+
     let mut locs: Vec<(usize, usize, String)> = Vec::new();
     for &sym in symbols {
         let loc = locate_symbol(&db, sym, file)?;
         locs.push((loc.start_line, loc.end_line, sym.to_string()));
     }
-    locs.sort_by(|a, b| b.0.cmp(&a.0)); // back-to-front
+    locs.sort_by(|a, b| b.0.cmp(&a.0));
 
     let first_loc = locate_symbol(&db, symbols[0], file)?;
-
     locked_edit(&first_loc.abs_path, |content| {
         let mut lines: Vec<&str> = content.lines().collect();
         for (start, end, name) in &locs {
             let end = (*end + 1).min(lines.len());
             let mut after = end;
-            while after < lines.len() && lines[after].trim().is_empty() {
-                after += 1;
-            }
+            while after < lines.len() && lines[after].trim().is_empty() { after += 1; }
             lines.drain(*start..after);
             eprintln!("  Deleted {name} (L{}-{})", start + 1, end);
         }
         Ok(join_lines(&lines, content.ends_with('\n')))
     })
-}
-
-/// Single-symbol convenience wrapper.
-pub fn delete_symbol(db: PathBuf, symbol: String, file: Option<String>) -> Result<()> {
-    delete_symbols(db, &[&symbol], file.as_deref())
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
