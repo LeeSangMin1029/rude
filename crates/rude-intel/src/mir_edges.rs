@@ -555,24 +555,18 @@ pub fn run_mir_callgraph_for(
 /// terminates them. The PID file is always removed afterwards.
 fn kill_previous_test_bg(out_dir: &Path) {
     let pid_file = out_dir.join(".test-bg.pid");
+    if !pid_file.exists() { return; }
     let content = match std::fs::read_to_string(&pid_file) {
         Ok(c) => c,
         Err(_) => return,
     };
-    // Always remove the PID file first — even if kill fails, we don't want stale entries.
     let _ = std::fs::remove_file(&pid_file);
 
     for line in content.lines() {
-        let pid: u32 = match line.trim().parse() {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-        kill_process_by_pid(pid);
+        if let Ok(pid) = line.trim().parse::<u32>() {
+            kill_process_by_pid(pid);
+        }
     }
-
-    // Validate JSONL files — kill may have interrupted a write mid-line,
-    // leaving a corrupt (partial) last line. Remove corrupt files so the
-    // next build regenerates them cleanly.
     validate_jsonl_files_after_kill(out_dir);
 }
 
@@ -736,34 +730,28 @@ pub fn run_mir_direct(
     }
 
     // ── Phase 3: Direct mode — lib sync, test fire-and-forget ──────
-    let t3 = std::time::Instant::now();
     let bin = find_mir_callgraph_bin(mir_callgraph_bin)?;
-    eprintln!("  [timing] find_bin: {:.0}ms", t3.elapsed().as_secs_f64() * 1000.0);
 
-    let t_kill = std::time::Instant::now();
     kill_previous_test_bg(&out_dir);
-    eprintln!("  [timing] kill_bg: {:.0}ms", t_kill.elapsed().as_secs_f64() * 1000.0);
 
-    let t_trunc = std::time::Instant::now();
     pre_truncate_crates(crates, &out_dir, &mir_db);
-    eprintln!("  [timing] pre_truncate: {:.0}ms", t_trunc.elapsed().as_secs_f64() * 1000.0);
 
     // ── Phase 3a: Launch lib builds synchronously ──────────────────
-    let t_lib = std::time::Instant::now();
-    let t_nightly = std::time::Instant::now();
     let mut lib_children: Vec<(PathBuf, std::process::Child)> = Vec::new();
     let mut had_error = false;
 
     for args_file in &lib_files {
         let mut cmd = Command::new(&bin);
         add_nightly_path(&mut cmd);
-        eprintln!("  [timing] nightly_path: {:.0}ms", t_nightly.elapsed().as_secs_f64() * 1000.0);
         cmd.current_dir(project_root)
             .arg("--direct")
             .arg("--args-file").arg(args_file)
             .env("MIR_CALLGRAPH_OUT", &out_dir)
             .env("MIR_CALLGRAPH_DB", &mir_db)
             .env("MIR_CALLGRAPH_JSON", "1");
+        if std::env::var("MIR_PROFILE").is_ok() {
+            cmd.env("MIR_PROFILE", "1");
+        }
         match cmd.spawn() {
             Ok(child) => lib_children.push((args_file.clone(), child)),
             Err(e) => {
@@ -773,8 +761,6 @@ pub fn run_mir_direct(
         }
     }
 
-    eprintln!("  [timing] lib_spawn: {:.0}ms", t_lib.elapsed().as_secs_f64() * 1000.0);
-    let t_wait = std::time::Instant::now();
     for (path, mut child) in lib_children {
         if let Ok(status) = child.wait() {
             if !status.success() {
@@ -784,8 +770,6 @@ pub fn run_mir_direct(
         }
     }
 
-    eprintln!("  [timing] lib_wait_only: {:.0}ms", t_wait.elapsed().as_secs_f64() * 1000.0);
-    eprintln!("  [timing] lib_total: {:.0}ms", t_lib.elapsed().as_secs_f64() * 1000.0);
 
     if had_error {
         eprintln!("  [mir] some lib builds failed, refreshing via cargo...");
@@ -836,11 +820,12 @@ pub fn run_mir_direct(
 
     run_language_extractors(project_root, &out_dir, rust_only);
     // Prefer sqlite if available, fallback to JSONL.
-    if mir_db.exists() {
+    let result = if mir_db.exists() {
         MirEdgeMap::from_sqlite(&mir_db, Some(crates))
     } else {
         MirEdgeMap::from_dir_filtered(&out_dir, Some(crates))
-    }
+    };
+    result
 }
 
 /// Check if all requested crates have valid --extern artifact paths.

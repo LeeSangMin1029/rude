@@ -144,6 +144,7 @@ impl rustc_driver::Callbacks for MirCallbacks {
 // ── Extraction ──────────────────────────────────────────────────────
 
 fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool, db_path: &Option<String>) {
+    let _span = tracing::info_span!("extract_all").entered();
     let crate_name = tcx.crate_name(LOCAL_CRATE).to_string();
     let source_map = tcx.sess.source_map();
 
@@ -151,6 +152,7 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool, db_path: &Opti
     let mut chunks: Vec<MirChunk> = Vec::new();
 
     // ── Phase 1: HIR items — struct/enum/trait/impl ─────────────────
+    {let _hir = tracing::info_span!("hir_items").entered();
     for item_id in tcx.hir_free_items() {
         let item = tcx.hir_item(item_id);
         let kind_str = match &item.kind {
@@ -194,90 +196,72 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool, db_path: &Opti
         });
     }
 
+    } // end hir_items span
+
     // ── Pre-build trait method → local impls cache ──────────────────
     // Key: (trait_def_id, method_name) → Vec<(callee_name, callee_file, callee_start_line)>
     // Avoids repeated tcx.trait_impls_of() + associated_items() per call site (23x speedup).
+    // Cache keyed by callee DefId (the trait method). callee_def_id is unique per
+    // (trait, method) so no need for a compound key.
     let mut trait_impl_cache: std::collections::HashMap<
-        (DefId, rustc_span::Symbol),
+        DefId,
         Vec<(String, String, usize)>,
     > = std::collections::HashMap::new();
 
     // ── Phase 2: MIR keys — functions, closures (call edges + fn chunks) ──
+    let _mir_phase = tracing::info_span!("mir_extraction").entered();
     let mut fn_count: usize = 0;
+    let mut name_cache: std::collections::HashMap<DefId, String> = std::collections::HashMap::new();
 
-    for &def_id in tcx.mir_keys(()) {
+    let mir_keys = { let _s = tracing::info_span!("tcx_mir_keys").entered(); tcx.mir_keys(()) };
+    for &def_id in mir_keys {
         let def_kind = tcx.def_kind(def_id);
-
-        let is_fn = matches!(def_kind,
-            DefKind::Fn
-            | DefKind::AssocFn
-        );
+        let is_fn = matches!(def_kind, DefKind::Fn | DefKind::AssocFn);
         let is_closure = matches!(def_kind, DefKind::Closure);
+        if !is_fn && !is_closure { continue; }
 
-        if !is_fn && !is_closure {
-            continue;
-        }
+        let _fn_span = tracing::info_span!("per_function").entered();
 
-        let body = tcx.optimized_mir(def_id);
-        let caller_name = canonical_name(tcx, def_id.to_def_id());
+        let body = { let _s = tracing::info_span!("optimized_mir").entered(); tcx.optimized_mir(def_id) };
+        let caller_name = { let _s = tracing::info_span!("canonical_name_caller").entered(); canonical_name(tcx, def_id.to_def_id()) };
         fn_count += 1;
-
-        let caller_file = extract_filename(source_map, body.span);
+        let caller_file = { let _s = tracing::info_span!("extract_filename_caller").entered(); extract_filename(source_map, body.span) };
         let caller_kind = match def_kind {
-            DefKind::Fn => "fn",
-            DefKind::AssocFn => "method",
-            DefKind::Closure => "closure",
-            _ => "other",
+            DefKind::Fn => "fn", DefKind::AssocFn => "method", DefKind::Closure => "closure", _ => "other",
         };
 
-        // Emit chunk for functions (not closures)
         if is_fn {
+            let _s = tracing::info_span!("chunk_build").entered();
             let start = source_map.lookup_char_pos(body.span.lo());
             let end = source_map.lookup_char_pos(body.span.hi());
-
-            // fn signature: source text up to the first `{`
-            let sig_str = source_map
-                .span_to_snippet(body.span)
-                .ok()
-                .and_then(|snippet| {
-                    snippet.find('{').map(|brace| snippet[..brace].trim().to_string())
-                });
-
-            let vis = extract_visibility(tcx, def_id.to_def_id());
-
-            let is_test = is_test_target
-                || caller_file.contains("/tests/")
-                || caller_file.contains("\\tests\\")
-                || caller_name.starts_with("test_")
-                || caller_name.contains("::test_")
-                || {
-                    let hir_id = tcx.local_def_id_to_hir_id(def_id);
-                    let attrs = tcx.hir_attrs(hir_id);
-                    attrs.iter().any(|a| a.has_name(rustc_span::Symbol::intern("test")))
-                };
-
-            let body_text = source_map.span_to_snippet(body.span).ok();
+            let sig_str = { let _s2 = tracing::info_span!("span_to_snippet_sig").entered();
+                source_map.span_to_snippet(body.span).ok()
+                    .and_then(|snippet| snippet.find('{').map(|brace| snippet[..brace].trim().to_string()))
+            };
+            let vis = { let _s2 = tracing::info_span!("extract_visibility").entered(); extract_visibility(tcx, def_id.to_def_id()) };
+            let is_test = { let _s2 = tracing::info_span!("is_test_check").entered();
+                is_test_target
+                || caller_file.contains("/tests/") || caller_file.contains("\\tests\\")
+                || caller_name.starts_with("test_") || caller_name.contains("::test_")
+                || { let hir_id = tcx.local_def_id_to_hir_id(def_id);
+                     let attrs = tcx.hir_attrs(hir_id);
+                     attrs.iter().any(|a| a.has_name(rustc_span::Symbol::intern("test"))) }
+            };
+            let body_text = { let _s2 = tracing::info_span!("span_to_snippet_body").entered();
+                source_map.span_to_snippet(body.span).ok()
+            };
             chunks.push(MirChunk {
-                name: caller_name.clone(),
-                file: caller_file.clone(),
-                kind: caller_kind.to_string(),
-                start_line: start.line,
-                end_line: end.line,
-                signature: sig_str,
-                visibility: vis,
-                is_test,
-                body: body_text.unwrap_or_default(),
-                calls: String::new(), // filled after edge extraction below
-                type_refs: String::new(),
+                name: caller_name.clone(), file: caller_file.clone(), kind: caller_kind.to_string(),
+                start_line: start.line, end_line: end.line, signature: sig_str, visibility: vis,
+                is_test, body: body_text.unwrap_or_default(), calls: String::new(), type_refs: String::new(),
             });
         }
 
-        // Extract call edges + function reference edges
+        // Extract call edges
+        let _edge_span = tracing::info_span!("edge_extraction").entered();
         let mut seen_refs: std::collections::HashSet<DefId> = std::collections::HashSet::new();
         for block in body.basic_blocks.iter() {
             let terminator = block.terminator();
-
-            // 1. Direct calls (TerminatorKind::Call)
             if let TerminatorKind::Call { ref func, ref args, .. } = terminator.kind {
                 let func_ty = func.ty(&body.local_decls, tcx);
                 let callee_def_id = match func_ty.kind() {
@@ -285,141 +269,84 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool, db_path: &Opti
                     _ => continue,
                 };
 
-                let callee_name = canonical_name(tcx, callee_def_id);
-                let call_line = source_map
-                    .lookup_char_pos(terminator.source_info.span.lo())
-                    .line;
-
-                // Trait method call → resolve to all concrete impls.
-                // MIR pre-monomorphization calls trait methods, not concrete impls.
-                // We expand to all local implementations so the call graph is complete.
-                let is_trait_method = matches!(tcx.def_kind(callee_def_id), DefKind::AssocFn)
-                    && matches!(tcx.def_kind(tcx.parent(callee_def_id)), DefKind::Trait);
+                let callee_name = { let _s = tracing::info_span!("canonical_name_callee").entered();
+                    name_cache.entry(callee_def_id).or_insert_with(|| canonical_name(tcx, callee_def_id)).clone()
+                };
+                let call_line = { let _s = tracing::info_span!("lookup_call_line").entered();
+                    source_map.lookup_char_pos(terminator.source_info.span.lo()).line
+                };
+                let is_trait_method = { let _s = tracing::info_span!("def_kind_check").entered();
+                    matches!(tcx.def_kind(callee_def_id), DefKind::AssocFn)
+                    && matches!(tcx.def_kind(tcx.parent(callee_def_id)), DefKind::Trait)
+                };
 
                 if is_trait_method {
-                    let trait_def_id = tcx.parent(callee_def_id);
-                    let method_name = tcx.item_name(callee_def_id);
-                    let cache_key = (trait_def_id, method_name);
-
-                    let cached = trait_impl_cache.entry(cache_key).or_insert_with(|| {
-                        let mut result = Vec::new();
-                        let impls = tcx.trait_impls_of(trait_def_id);
-                        for impl_def_id in impls.blanket_impls().iter()
-                            .chain(impls.non_blanket_impls().values().flat_map(|v| v.iter()))
-                        {
-                            if !impl_def_id.is_local() {
-                                let span = tcx.def_span(*impl_def_id);
-                                let file = extract_filename(source_map, span);
-                                let is_absolute = file.starts_with('/') || file.contains(":/");
-                                if is_absolute { continue; }
-                            }
-                            for item in tcx.associated_items(*impl_def_id).in_definition_order() {
-                                if item.name() == method_name && matches!(item.kind, rustc_middle::ty::AssocKind::Fn { .. }) {
-                                    let impl_span = tcx.def_span(item.def_id);
-                                    result.push((
-                                        canonical_name(tcx, item.def_id),
-                                        extract_filename(source_map, impl_span),
-                                        source_map.lookup_char_pos(impl_span.lo()).line,
-                                    ));
-                                }
-                            }
-                        }
-                        // Default impl with body
-                        if tcx.is_mir_available(callee_def_id) {
-                            let span = tcx.def_span(callee_def_id);
-                            let file = extract_filename(source_map, span);
-                            if !file.is_empty() {
-                                result.push((
-                                    canonical_name(tcx, callee_def_id),
-                                    file,
-                                    source_map.lookup_char_pos(span.lo()).line,
-                                ));
-                            }
-                        }
-                        result
-                    });
-
-                    if cached.is_empty() {
-                        // Fallback: external trait, emit raw trait method edge
-                        let callee_span = tcx.def_span(callee_def_id);
-                        edges.push(CallEdge {
-                            caller: caller_name.clone(),
-                            caller_file: caller_file.clone(),
-                            caller_kind: caller_kind.to_string(),
-                            callee: callee_name,
-                            callee_file: extract_filename(source_map, callee_span),
-                            callee_start_line: source_map.lookup_char_pos(callee_span.lo()).line,
-                            line: call_line,
-                            is_local: callee_def_id.is_local(),
-                        });
-                    } else {
-                        for (impl_name, impl_file, impl_start) in cached.clone() {
-                            edges.push(CallEdge {
-                                caller: caller_name.clone(),
-                                caller_file: caller_file.clone(),
-                                caller_kind: caller_kind.to_string(),
-                                callee: impl_name,
-                                callee_file: impl_file,
-                                callee_start_line: impl_start,
-                                line: call_line,
-                                is_local: true,
-                            });
-                        }
-                    }
-                } else {
-                    let callee_span = tcx.def_span(callee_def_id);
+                    let _s = tracing::info_span!("trait_edge_push").entered();
                     edges.push(CallEdge {
-                        caller: caller_name.clone(),
-                        caller_file: caller_file.clone(),
-                        caller_kind: caller_kind.to_string(),
-                        callee: callee_name,
-                        callee_file: extract_filename(source_map, callee_span),
-                        callee_start_line: source_map.lookup_char_pos(callee_span.lo()).line,
-                        line: call_line,
-                        is_local: callee_def_id.is_local(),
+                        caller: caller_name.clone(), caller_file: caller_file.clone(),
+                        caller_kind: caller_kind.to_string(), callee: callee_name,
+                        callee_file: String::new(), callee_start_line: 0,
+                        line: call_line, is_local: callee_def_id.is_local(),
+                    });
+                } else {
+                    let _s = tracing::info_span!("direct_edge_push").entered();
+                    let (callee_file_str, callee_start) = if callee_def_id.is_local() {
+                        let callee_span = tcx.def_span(callee_def_id);
+                        (extract_filename(source_map, callee_span),
+                         source_map.lookup_char_pos(callee_span.lo()).line)
+                    } else { (String::new(), 0) };
+                    edges.push(CallEdge {
+                        caller: caller_name.clone(), caller_file: caller_file.clone(),
+                        caller_kind: caller_kind.to_string(), callee: callee_name,
+                        callee_file: callee_file_str, callee_start_line: callee_start,
+                        line: call_line, is_local: callee_def_id.is_local(),
                     });
                 }
                 seen_refs.insert(callee_def_id);
 
-                // 2. Function references passed as arguments
+                // Function references passed as arguments
                 for arg in args.iter() {
                     let arg_ty = arg.node.ty(&body.local_decls, tcx);
                     if let rustc_middle::ty::TyKind::FnDef(ref_def_id, _) = arg_ty.kind() {
                         if !seen_refs.contains(ref_def_id) {
                             seen_refs.insert(*ref_def_id);
-                            let ref_name = canonical_name(tcx, *ref_def_id);
-                            let ref_span = tcx.def_span(*ref_def_id);
-                            let ref_file = extract_filename(source_map, ref_span);
-                            let ref_start = source_map.lookup_char_pos(ref_span.lo()).line;
+                            let ref_name = name_cache.entry(*ref_def_id)
+                                .or_insert_with(|| canonical_name(tcx, *ref_def_id)).clone();
+                            let (ref_file, ref_start) = if ref_def_id.is_local() {
+                                let ref_span = tcx.def_span(*ref_def_id);
+                                (extract_filename(source_map, ref_span),
+                                 source_map.lookup_char_pos(ref_span.lo()).line)
+                            } else { (String::new(), 0) };
                             edges.push(CallEdge {
-                                caller: caller_name.clone(),
-                                caller_file: caller_file.clone(),
-                                caller_kind: caller_kind.to_string(),
-                                callee: ref_name,
-                                callee_file: ref_file,
-                                callee_start_line: ref_start,
-                                line: call_line,
-                                is_local: ref_def_id.is_local(),
+                                caller: caller_name.clone(), caller_file: caller_file.clone(),
+                                caller_kind: caller_kind.to_string(), callee: ref_name,
+                                callee_file: ref_file, callee_start_line: ref_start,
+                                line: call_line, is_local: ref_def_id.is_local(),
                             });
                         }
                     }
                 }
             }
         }
+    }
 
-        // Fill calls for the last pushed function chunk
-        if is_fn {
-            if let Some(last_chunk) = chunks.last_mut() {
-                let fn_calls: Vec<String> = edges.iter()
-                    .filter(|e| e.caller == caller_name)
-                    .map(|e| format!("{}@{}", e.callee, e.line))
-                    .collect();
-                last_chunk.calls = fn_calls.join(", ");
+    // Fill calls for all function chunks at once
+    { let _s = tracing::info_span!("fill_calls").entered();
+        let mut calls_by_caller: std::collections::HashMap<&str, Vec<String>> = std::collections::HashMap::new();
+        for e in &edges {
+            calls_by_caller.entry(&e.caller).or_default().push(format!("{}@{}", e.callee, e.line));
+        }
+        for c in &mut chunks {
+            if c.kind == "fn" || c.kind == "method" {
+                if let Some(fn_calls) = calls_by_caller.remove(c.name.as_str()) { c.calls = fn_calls.join(", "); }
             }
         }
     }
 
+    drop(_mir_phase);
+
     // ── Output ──────────────────────────────────────────────────────
+    let _sql = tracing::info_span!("sqlite_write").entered();
     let out_dir = env::var("MIR_CALLGRAPH_OUT").ok();
 
     // Prefer sqlite direct write; fall back to JSONL for compatibility.
@@ -477,8 +404,8 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool, db_path: &Opti
             }
         }
         eprintln!(
-            "[mir-callgraph] {crate_name}: {} edges, {} chunks (sqlite, {fn_count} fns)",
-            edges.len(), chunks.len()
+            "[mir-callgraph] {crate_name}: {} edges, {} chunks ({fn_count} fns)",
+            edges.len(), chunks.len(),
         );
     } else if let Some(dir) = &out_dir {
         use std::io::Write;
@@ -664,7 +591,6 @@ fn main() {
             eprintln!("[mir-callgraph] direct: compiling crate '{}'", cached.crate_name);
 
             // Restore env vars captured from cargo/build.rs during RUSTC_WRAPPER run.
-            // This ensures env!() macros and proc macros work identically to cargo mode.
             for (key, value) in &cached.env {
                 // SAFETY: single-threaded at this point (before rustc_driver).
                 unsafe { env::set_var(key, value); }
@@ -673,7 +599,23 @@ fn main() {
             let is_test_target = cached.args.iter().any(|a| a == "--test");
             let db_path = env::var("MIR_CALLGRAPH_DB").ok();
             let mut callbacks = MirCallbacks { json, is_test_target, db_path };
-            rustc_driver::run_compiler(&cached.args, &mut callbacks);
+
+            // Tracing: write chrome trace to profile dir
+            let _guard = if env::var("MIR_PROFILE").is_ok() {
+                use tracing_subscriber::prelude::*;
+                let trace_file = format!("D:/rude/profile/{}.trace.json", cached.crate_name);
+                let (chrome_layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
+                    .file(trace_file)
+                    .include_args(true)
+                    .build();
+                tracing_subscriber::registry().with(chrome_layer).init();
+                Some(guard)
+            } else {
+                None
+            };
+
+            { let _s = tracing::info_span!("run_compiler").entered();
+              rustc_driver::run_compiler(&cached.args, &mut callbacks); }
         }
 
         if had_error {
