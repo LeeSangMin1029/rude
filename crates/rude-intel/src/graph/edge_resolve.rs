@@ -134,15 +134,12 @@ fn load_edge_bundle(engine: &rude_db::StorageEngine) -> Option<EdgeCacheBundle> 
 
 fn is_crate_cache_stale(
     mir_edge_dir: &Path,
-    crate_name: &str,
     bundle_mtime: Option<std::time::SystemTime>,
 ) -> bool {
     let Some(cache_mtime) = bundle_mtime else { return true };
-    let mtime = |p: std::path::PathBuf| std::fs::metadata(p).and_then(|m| m.modified()).ok();
-    let jsonl = mtime(mir_edge_dir.join(format!("{crate_name}.edges.jsonl")));
-    let sqlite = mtime(mir_edge_dir.join("mir.db"));
-    let source = match (jsonl, sqlite) { (Some(j), Some(s)) => Some(j.max(s)), (j, s) => j.or(s) };
-    source.is_some_and(|t| t > cache_mtime)
+    std::fs::metadata(mir_edge_dir.join("mir.db"))
+        .and_then(|m| m.modified())
+        .is_ok_and(|t| t > cache_mtime)
 }
 
 type MirIndexes<'a> = (
@@ -242,7 +239,7 @@ pub(crate) fn resolve_incremental(
     for crate_name in &all_crate_names {
         let needs_resolve = changed_set.contains(crate_name)
             || !hash_matches
-            || is_crate_cache_stale(mir_edge_dir, crate_name, bundle_mtime);
+            || is_crate_cache_stale(mir_edge_dir, bundle_mtime);
 
         if !needs_resolve {
             if let Some(cache) = cached.get(crate_name) {

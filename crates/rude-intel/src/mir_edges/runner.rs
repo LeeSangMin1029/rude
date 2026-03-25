@@ -203,19 +203,6 @@ fn kill_process_by_pid(pid: u32) {
         .status();
 }
 
-fn pre_truncate_crates(crates: &[&str], out_dir: &Path, _mir_db: &Path) {
-    // SQLite: mir-callgraph now handles delta DELETE internally
-    // (changed functions only, not whole crate), so no pre-truncate needed.
-
-    // JSONL fallback: truncate files
-    for krate in crates {
-        let u = krate.replace('-', "_");
-        for ext in [".edges.jsonl", ".chunks.jsonl"] {
-            let p = out_dir.join(format!("{u}{ext}"));
-            if p.exists() { let _ = std::fs::write(&p, ""); }
-        }
-    }
-}
 
 pub fn run_mir_direct(
     project_root: &Path,
@@ -270,8 +257,6 @@ pub fn run_mir_direct(
     let bin = find_mir_callgraph_bin(mir_callgraph_bin)?;
 
     kill_previous_test_bg(&out_dir);
-
-    pre_truncate_crates(crates, &out_dir, &mir_db);
 
     let mut lib_children: Vec<(PathBuf, std::process::Child)> = Vec::new();
     let mut had_error = false;

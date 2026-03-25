@@ -85,12 +85,7 @@ pub fn detect_missing_edge_crates(project_root: &Path) -> Vec<String> {
         if args_dir.exists() && !lib_args.exists() {
             continue;
         }
-
-        // Fallback: check JSONL
-        let edge_file = edge_dir.join(format!("{cn}.edges.jsonl"));
-        if !edge_file.exists() {
-            missing.push(name);
-        }
+        missing.push(name);
     }
     missing
 }

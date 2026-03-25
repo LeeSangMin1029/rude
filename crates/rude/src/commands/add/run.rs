@@ -100,7 +100,7 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     std::fs::create_dir_all(&mir_out_dir).ok();
     let mir_db = rude_intel::mir_edges::mir_db_path(&input_path);
 
-    let incremental_crates = run_mir_analysis(&input_path, &mir_db, &mir_out_dir, &code_files)?;
+    let incremental_crates = run_mir_analysis(&input_path, &mir_db, &code_files)?;
 
     let mir_chunks = rude_intel::mir_edges::MirEdgeMap::load_chunks_from_sqlite(
         &mir_db, to_crate_filter(&incremental_crates).as_deref(),
@@ -189,14 +189,9 @@ fn lang_summary(files: &[&PathBuf]) -> String {
 fn run_mir_analysis(
     input_path: &std::path::Path,
     mir_db: &std::path::Path,
-    mir_out_dir: &std::path::Path,
     code_files: &[&PathBuf],
 ) -> Result<Vec<String>> {
-    let has_cached_edges = mir_db.exists()
-        || (mir_out_dir.exists()
-            && std::fs::read_dir(mir_out_dir).is_ok_and(|mut d| d.any(|e| {
-                e.is_ok_and(|e| e.path().to_string_lossy().ends_with(".edges.jsonl"))
-            })));
+    let has_cached_edges = mir_db.exists();
 
     if !has_cached_edges {
         rude_intel::mir_edges::clear_mir_db(input_path, &[]).ok();
