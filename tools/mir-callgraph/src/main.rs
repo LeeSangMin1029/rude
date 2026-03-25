@@ -4,6 +4,7 @@ extern crate rustc_driver;
 extern crate rustc_hir;
 extern crate rustc_interface;
 extern crate rustc_middle;
+extern crate rustc_query_system;
 extern crate rustc_session;
 extern crate rustc_span;
 
@@ -191,6 +192,15 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool) {
     }
 
     // ── Phase 2: MIR keys — functions, closures (call edges + fn chunks) ──
+    // Load previous MIR hashes from sqlite for delta detection.
+    let prev_hashes: std::collections::HashMap<String, u64> = if let Some(ref db) = db_path {
+        load_prev_hashes(db, &crate_name)
+    } else {
+        std::collections::HashMap::new()
+    };
+    let mut new_hashes: Vec<(String, u64)> = Vec::new();
+    let incremental = !prev_hashes.is_empty();
+
     for &def_id in tcx.mir_keys(()) {
         let def_kind = tcx.def_kind(def_id);
 
@@ -201,12 +211,35 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool) {
         let is_closure = matches!(def_kind, rustc_hir::def::DefKind::Closure);
 
         if !is_fn && !is_closure {
-            // struct/enum/trait/impl are handled by HIR traversal above
             continue;
         }
 
         let body = tcx.optimized_mir(def_id);
+
+        // Compute MIR body hash for delta detection.
+        let mir_hash = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            // Hash basic blocks count + terminator kinds as a fast fingerprint
+            body.basic_blocks.len().hash(&mut hasher);
+            for block in body.basic_blocks.iter() {
+                std::mem::discriminant(&block.terminator().kind).hash(&mut hasher);
+                block.statements.len().hash(&mut hasher);
+            }
+            hasher.finish()
+        };
         let caller_name = canonical_name(tcx, def_id.to_def_id());
+
+        // Delta detection: skip unchanged functions.
+        new_hashes.push((caller_name.clone(), mir_hash));
+        if incremental {
+            if let Some(&prev) = prev_hashes.get(&caller_name) {
+                if prev == mir_hash {
+                    continue; // MIR unchanged — skip edge extraction + chunk emission
+                }
+            }
+        }
+
         let caller_file = extract_filename(source_map, body.span);
         let caller_kind = match def_kind {
             rustc_hir::def::DefKind::Fn => "fn",
@@ -325,6 +358,14 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool) {
         }
     }
 
+    // Save MIR hashes for next run's delta detection.
+    if let Some(ref db) = env::var("MIR_CALLGRAPH_DB").ok() {
+        save_hashes(db, &crate_name, &new_hashes);
+    }
+
+    let total_fns = new_hashes.len();
+    let changed_fns = if incremental { edges.len().min(total_fns) } else { total_fns };
+
     // ── Output ──────────────────────────────────────────────────────
     let out_dir = env::var("MIR_CALLGRAPH_OUT").ok();
     let db_path = env::var("MIR_CALLGRAPH_DB").ok();
@@ -376,8 +417,8 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool) {
             }
         }
         eprintln!(
-            "[mir-callgraph] {crate_name}: {} edges, {} chunks (sqlite)",
-            edges.len(), chunks.len()
+            "[mir-callgraph] {crate_name}: {} edges, {} chunks (sqlite, {changed_fns}/{total_fns} changed)",
+            edges.len(), chunks.len(), changed_fns, total_fns
         );
     } else if let Some(dir) = &out_dir {
         use std::io::Write;
@@ -404,7 +445,7 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool) {
 
         eprintln!(
             "[mir-callgraph] {crate_name}: {} edges, {} chunks",
-            edges.len(), chunks.len()
+            edges.len(), chunks.len(), changed_fns, total_fns
         );
     } else if json {
         use std::io::Write;
@@ -606,4 +647,38 @@ fn main() {
 
     let status = cmd.status().expect("failed to run cargo check");
     std::process::exit(status.code().unwrap_or(1));
+}
+
+// ── MIR hash helpers for delta detection ─────────────────────────
+
+fn load_prev_hashes(db_path: &str, crate_name: &str) -> std::collections::HashMap<String, u64> {
+    let mut map = std::collections::HashMap::new();
+    let Ok(conn) = rusqlite::Connection::open(db_path) else { return map };
+    let _ = conn.execute_batch("CREATE TABLE IF NOT EXISTS mir_hashes (name TEXT, hash INTEGER, crate_name TEXT)");
+    let Ok(mut stmt) = conn.prepare("SELECT name, hash FROM mir_hashes WHERE crate_name = ?1") else { return map };
+    let cn = crate_name.replace('-', "_");
+    if let Ok(rows) = stmt.query_map([&cn], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+    }) {
+        for r in rows.flatten() {
+            map.insert(r.0, r.1);
+        }
+    }
+    map
+}
+
+fn save_hashes(db_path: &str, crate_name: &str, hashes: &[(String, u64)]) {
+    let Ok(conn) = rusqlite::Connection::open(db_path) else { return };
+    let _ = conn.execute_batch("CREATE TABLE IF NOT EXISTS mir_hashes (name TEXT, hash INTEGER, crate_name TEXT)");
+    let cn = crate_name.replace('-', "_");
+    let _ = conn.execute("DELETE FROM mir_hashes WHERE crate_name = ?1", [&cn]);
+    if let Ok(tx) = conn.unchecked_transaction() {
+        {
+            let mut stmt = tx.prepare_cached("INSERT INTO mir_hashes VALUES (?1, ?2, ?3)").unwrap();
+            for (name, hash) in hashes {
+                let _ = stmt.execute(rusqlite::params![name, *hash as i64, cn]);
+            }
+        }
+        let _ = tx.commit();
+    }
 }

@@ -716,22 +716,28 @@ pub fn run_mir_direct(
     }
 
     // ── Phase 3: Direct mode — lib sync, test fire-and-forget ──────
+    let t3 = std::time::Instant::now();
     let bin = find_mir_callgraph_bin(mir_callgraph_bin)?;
+    eprintln!("  [timing] find_bin: {:.0}ms", t3.elapsed().as_secs_f64() * 1000.0);
 
-    // Kill any leftover background test process from a previous run.
+    let t_kill = std::time::Instant::now();
     kill_previous_test_bg(&out_dir);
+    eprintln!("  [timing] kill_bg: {:.0}ms", t_kill.elapsed().as_secs_f64() * 1000.0);
 
-    // Pre-truncate: sqlite DELETE for crates we're about to rebuild,
-    // plus JSONL truncate as fallback for older mir-callgraph binaries.
+    let t_trunc = std::time::Instant::now();
     pre_truncate_crates(crates, &out_dir, &mir_db);
+    eprintln!("  [timing] pre_truncate: {:.0}ms", t_trunc.elapsed().as_secs_f64() * 1000.0);
 
     // ── Phase 3a: Launch lib builds synchronously ──────────────────
+    let t_lib = std::time::Instant::now();
+    let t_nightly = std::time::Instant::now();
     let mut lib_children: Vec<(PathBuf, std::process::Child)> = Vec::new();
     let mut had_error = false;
 
     for args_file in &lib_files {
         let mut cmd = Command::new(&bin);
         add_nightly_path(&mut cmd);
+        eprintln!("  [timing] nightly_path: {:.0}ms", t_nightly.elapsed().as_secs_f64() * 1000.0);
         cmd.current_dir(project_root)
             .arg("--direct")
             .arg("--args-file").arg(args_file)
@@ -747,6 +753,8 @@ pub fn run_mir_direct(
         }
     }
 
+    eprintln!("  [timing] lib_spawn: {:.0}ms", t_lib.elapsed().as_secs_f64() * 1000.0);
+    let t_wait = std::time::Instant::now();
     for (path, mut child) in lib_children {
         if let Ok(status) = child.wait() {
             if !status.success() {
@@ -755,6 +763,9 @@ pub fn run_mir_direct(
             }
         }
     }
+
+    eprintln!("  [timing] lib_wait_only: {:.0}ms", t_wait.elapsed().as_secs_f64() * 1000.0);
+    eprintln!("  [timing] lib_total: {:.0}ms", t_lib.elapsed().as_secs_f64() * 1000.0);
 
     if had_error {
         eprintln!("  [mir] some lib builds failed, refreshing via cargo...");

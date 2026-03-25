@@ -123,8 +123,9 @@ pub fn run(db_path: PathBuf, input_path: PathBuf, exclude: &[String]) -> Result<
         let _ = config.save(&db_path);
     }
 
-    // === Pass 1: Extract chunks via MIR (no daemon needed) ===
+    // === Pass 1: Extract chunks via MIR ===
     let t0 = std::time::Instant::now();
+    let t_phase = std::time::Instant::now();
     let mut entries: Vec<CodeChunkEntry> = Vec::new();
     let mut file_metadata_map: HashMap<String, (u64, u64, Vec<u64>)> = HashMap::new();
 
@@ -161,12 +162,14 @@ pub fn run(db_path: PathBuf, input_path: PathBuf, exclude: &[String]) -> Result<
         if !changed_crates.is_empty() {
             let crate_refs: Vec<&str> = changed_crates.iter().map(|s| s.as_str()).collect();
             eprintln!("  [mir] incremental: {} crate(s) — {}", crate_refs.len(), crate_refs.join(", "));
-            // Skip py/ts extractors when only .rs files changed (~0.3s saving)
             let rust_only = code_files.iter().all(|f| {
                 f.extension().and_then(|e| e.to_str()) == Some("rs")
             });
+            eprintln!("  [timing] detect: {:.0}ms", t_phase.elapsed().as_secs_f64() * 1000.0);
+            let t_mir = std::time::Instant::now();
             rude_intel::mir_edges::run_mir_direct(&input_path, None, &crate_refs, rust_only)
                 .context("mir-callgraph incremental failed")?;
+            eprintln!("  [timing] mir_direct: {:.0}ms", t_mir.elapsed().as_secs_f64() * 1000.0);
             incremental_crates = changed_crates;
         }
     } else {
@@ -176,6 +179,7 @@ pub fn run(db_path: PathBuf, input_path: PathBuf, exclude: &[String]) -> Result<
     }
 
     // Load MIR chunks — prefer sqlite, fallback to JSONL
+    let t_load = std::time::Instant::now();
     let mir_chunks = if mir_db.exists() {
         let only = if incremental_crates.is_empty() {
             None
@@ -192,12 +196,14 @@ pub fn run(db_path: PathBuf, input_path: PathBuf, exclude: &[String]) -> Result<
         let refs: Vec<&str> = incremental_crates.iter().map(|s| s.as_str()).collect();
         rude_intel::mir_edges::load_mir_chunks_filtered(&mir_out_dir, Some(&refs))
     }.context("failed to load MIR chunks")?;
+    eprintln!("  [timing] load_chunks: {:.0}ms ({} mir_chunks)", t_load.elapsed().as_secs_f64() * 1000.0, mir_chunks.len());
 
+    let t_convert = std::time::Instant::now();
     let changed_sources: std::collections::HashSet<String> = code_files.iter()
         .filter_map(|f| source_cache.get(*f).cloned())
         .collect();
-    // Convert MirChunks directly to CodeChunkEntries — no source file reading.
     super::ingest::chunks_from_mir_direct(&mir_chunks, &db_path, &mut entries, &mut file_metadata_map, Some(&changed_sources))?;
+    eprintln!("  [timing] convert: {:.0}ms ({} entries)", t_convert.elapsed().as_secs_f64() * 1000.0, entries.len());
 
     eprintln!("  chunk: {:.1}s ({} chunks)", t0.elapsed().as_secs_f64(), entries.len());
 
