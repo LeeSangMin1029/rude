@@ -42,6 +42,12 @@ struct MirChunk {
     is_test: bool,
     /// Full source text of the item.
     body: String,
+    /// Comma-separated callee names with call lines: "name@line,name@line,..."
+    #[serde(default)]
+    calls: String,
+    /// Comma-separated type references.
+    #[serde(default)]
+    type_refs: String,
 }
 
 // ── Cached rustc args for direct mode ───────────────────────────────
@@ -179,6 +185,8 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool) {
             visibility: vis,
             is_test: false,
             body: body_text.unwrap_or_default(),
+            calls: String::new(),
+            type_refs: String::new(),
         });
     }
 
@@ -240,6 +248,8 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool) {
                 visibility: vis,
                 is_test,
                 body: body_text.unwrap_or_default(),
+                calls: String::new(), // filled after edge extraction below
+                type_refs: String::new(),
             });
         }
 
@@ -302,6 +312,17 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool) {
                 }
             }
         }
+
+        // Fill calls for the last pushed function chunk
+        if is_fn {
+            if let Some(last_chunk) = chunks.last_mut() {
+                let fn_calls: Vec<String> = edges.iter()
+                    .filter(|e| e.caller == caller_name)
+                    .map(|e| format!("{}@{}", e.callee, e.line))
+                    .collect();
+                last_chunk.calls = fn_calls.join(", ");
+            }
+        }
     }
 
     // ── Output ──────────────────────────────────────────────────────
@@ -321,7 +342,7 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool) {
                     name TEXT, file TEXT, kind TEXT,
                     start_line INTEGER, end_line INTEGER,
                     signature TEXT, visibility TEXT, is_test INTEGER,
-                    body TEXT, crate_name TEXT
+                    body TEXT, calls TEXT, type_refs TEXT, crate_name TEXT
                 );
             ");
 
@@ -340,14 +361,14 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool) {
                 }
                 {
                     let mut chunk_stmt = tx.prepare_cached(
-                        "INSERT INTO mir_chunks VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)"
+                        "INSERT INTO mir_chunks VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)"
                     ).unwrap();
                     for c in &chunks {
                         let _ = chunk_stmt.execute(rusqlite::params![
                             c.name, c.file, c.kind,
                             c.start_line, c.end_line,
                             c.signature, c.visibility, c.is_test as i32,
-                            c.body, crate_name,
+                            c.body, c.calls, c.type_refs, crate_name,
                         ]);
                     }
                 }

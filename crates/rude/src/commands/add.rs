@@ -196,8 +196,8 @@ pub fn run(db_path: PathBuf, input_path: PathBuf, exclude: &[String]) -> Result<
     let changed_sources: std::collections::HashSet<String> = code_files.iter()
         .filter_map(|f| source_cache.get(*f).cloned())
         .collect();
-
-    super::ingest::chunk_from_mir(&mir_chunks, &db_path, &mut entries, &mut file_metadata_map, Some(&changed_sources))?;
+    // Convert MirChunks directly to CodeChunkEntries — no source file reading.
+    super::ingest::chunks_from_mir_direct(&mir_chunks, &db_path, &mut entries, &mut file_metadata_map, Some(&changed_sources))?;
 
     eprintln!("  chunk: {:.1}s ({} chunks)", t0.elapsed().as_secs_f64(), entries.len());
 

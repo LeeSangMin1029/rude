@@ -87,7 +87,143 @@ pub fn lookup_called_by<'a>(
 }
 
 
-/// Create code chunks from MIR chunk definitions + source files.
+/// Direct MirChunk → CodeChunkEntry conversion. No file I/O.
+/// Uses body/calls/type_refs from MIR extraction (sqlite or JSONL with body).
+pub fn chunks_from_mir_direct(
+    mir_chunks: &[rude_intel::mir_edges::MirChunk],
+    db_path: &Path,
+    entries: &mut Vec<CodeChunkEntry>,
+    file_metadata_map: &mut HashMap<String, (u64, u64, Vec<u64>)>,
+    changed_sources: Option<&std::collections::HashSet<String>>,
+) -> Result<(), anyhow::Error> {
+    use rude_db::file_utils::{generate_id, normalize_source};
+    use rude_intel::parse::normalize_path;
+
+    // Dedup: same name in same file, prefer prod over test
+    let mut seen: HashMap<(&str, &str), usize> = HashMap::new();
+    let mut deduped: Vec<&rude_intel::mir_edges::MirChunk> = Vec::new();
+    for mc in mir_chunks {
+        let key = (mc.name.as_str(), mc.file.as_str());
+        if let Some(&idx) = seen.get(&key) {
+            if deduped[idx].is_test && !mc.is_test {
+                deduped[idx] = mc;
+            }
+        } else {
+            seen.insert(key, deduped.len());
+            deduped.push(mc);
+        }
+    }
+
+    // Group by file for file_metadata_map
+    let mut by_file: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, mc) in deduped.iter().enumerate() {
+        by_file.entry(mc.file.as_str()).or_default().push(i);
+    }
+
+    for (file_key, indices) in &by_file {
+        let normalized_file = normalize_path(file_key);
+        // Try to resolve absolute path for source
+        let db_parent = db_path.parent().unwrap_or(Path::new("."));
+        let workspace = db_parent.canonicalize().unwrap_or_else(|_| db_parent.to_path_buf());
+        let file_path = workspace.join(file_key);
+        let source = if file_path.exists() {
+            normalize_source(&file_path)
+        } else {
+            normalize_source(Path::new(file_key))
+        };
+        // Skip unchanged files
+        if let Some(changed) = changed_sources {
+            if !changed.contains(&source) { continue; }
+        }
+        let mtime = rude_db::file_utils::get_file_mtime(&file_path).unwrap_or(0);
+        let size = file_index::get_file_size(&file_path).unwrap_or(0);
+        let ext = std::path::Path::new(file_key).extension().and_then(|e| e.to_str()).unwrap_or("");
+        let lang = rude_db::lang_for_ext(ext);
+
+        let mut chunk_ids = Vec::with_capacity(indices.len());
+
+        for &idx in indices {
+            let mc = deduped[idx];
+            let id = generate_id(&source, idx);
+            chunk_ids.push(id);
+
+            // Parse calls from "callee@line, callee@line, ..." format
+            let (calls, call_lines): (Vec<String>, Vec<u32>) = if mc.calls.is_empty() {
+                (Vec::new(), Vec::new())
+            } else {
+                mc.calls.split(", ").map(|token| {
+                    if let Some(at) = token.rfind('@') {
+                        let name = token[..at].to_owned();
+                        let line = token[at+1..].parse().unwrap_or(0);
+                        (name, line)
+                    } else {
+                        (token.to_owned(), 0u32)
+                    }
+                }).unzip()
+            };
+
+            let kind = match mc.kind.as_str() {
+                "fn" | "method" => chunk_code::CodeNodeKind::Function,
+                "struct" => chunk_code::CodeNodeKind::Struct,
+                "enum" => chunk_code::CodeNodeKind::Enum,
+                "trait" => chunk_code::CodeNodeKind::Trait,
+                "impl" => chunk_code::CodeNodeKind::Impl,
+                _ => chunk_code::CodeNodeKind::Function,
+            };
+
+            let type_refs: Vec<String> = if mc.type_refs.is_empty() {
+                Vec::new()
+            } else {
+                mc.type_refs.split(", ").map(|s| s.to_owned()).collect()
+            };
+
+            let code_chunk = chunk_code::CodeChunk {
+                text: mc.body.clone(),
+                kind,
+                name: mc.name.clone(),
+                signature: mc.signature.clone(),
+                calls,
+                call_lines,
+                type_refs,
+                start_line: mc.start_line.saturating_sub(1),
+                end_line: mc.end_line.saturating_sub(1),
+                start_byte: 0,
+                end_byte: mc.body.len(),
+                chunk_index: idx,
+                imports: Vec::new(),
+                visibility: mc.visibility.clone().unwrap_or_default(),
+                string_args: Vec::new(),
+                param_flows: Vec::new(),
+                param_types: Vec::new(),
+                field_types: Vec::new(),
+                local_types: Vec::new(),
+                let_call_bindings: Vec::new(),
+                return_type: None,
+                field_accesses: Vec::new(),
+                enum_variants: Vec::new(),
+                is_test: mc.is_test,
+                sub_blocks: Vec::new(),
+                ast_hash: 0,
+                body_hash: 0,
+                doc_comment: None,
+            };
+
+            entries.push(CodeChunkEntry {
+                chunk: code_chunk,
+                source: source.clone(),
+                file_path_str: normalized_file.clone(),
+                mtime,
+                lang,
+            });
+        }
+
+        file_metadata_map.insert(source.clone(), (mtime, size, chunk_ids));
+    }
+
+    Ok(())
+}
+
+/// Create code chunks from MIR chunk definitions + source files (legacy).
 /// Reads source text from files using MIR-provided line ranges.
 pub fn chunk_from_mir(
     mir_chunks: &[rude_intel::mir_edges::MirChunk],

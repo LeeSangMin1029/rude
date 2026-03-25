@@ -230,9 +230,9 @@ impl MirEdgeMap {
             let placeholders: Vec<String> = crates.iter().enumerate()
                 .map(|(i, _)| format!("?{}", i + 1))
                 .collect();
-            format!("SELECT name, file, kind, start_line, end_line, signature, visibility, is_test, body FROM mir_chunks WHERE crate_name IN ({})", placeholders.join(","))
+            format!("SELECT name, file, kind, start_line, end_line, signature, visibility, is_test, body, calls, type_refs FROM mir_chunks WHERE crate_name IN ({})", placeholders.join(","))
         } else {
-            "SELECT name, file, kind, start_line, end_line, signature, visibility, is_test, body FROM mir_chunks".to_owned()
+            "SELECT name, file, kind, start_line, end_line, signature, visibility, is_test, body, calls, type_refs FROM mir_chunks".to_owned()
         };
 
         let mut stmt = conn.prepare(&query).context("failed to prepare chunk query")?;
@@ -254,6 +254,8 @@ impl MirEdgeMap {
                 visibility: row.get(6)?,
                 is_test: row.get(7)?,
                 body: row.get::<_, String>(8).unwrap_or_default(),
+                calls: row.get::<_, String>(9).unwrap_or_default(),
+                type_refs: row.get::<_, String>(10).unwrap_or_default(),
             })
         }).context("failed to query chunks")?;
 
@@ -1133,9 +1135,12 @@ pub struct MirChunk {
     pub visibility: Option<String>,
     #[serde(default)]
     pub is_test: bool,
-    /// Full source text (from span_to_snippet). Eliminates source file re-reading.
     #[serde(default)]
     pub body: String,
+    #[serde(default)]
+    pub calls: String,
+    #[serde(default)]
+    pub type_refs: String,
 }
 
 /// Load MIR chunks from a JSONL file.
