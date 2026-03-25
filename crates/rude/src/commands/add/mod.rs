@@ -191,13 +191,8 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     }
 
     // Load MIR chunks from sqlite
-    let only_crates = if incremental_crates.is_empty() {
-        None
-    } else {
-        Some(incremental_crates.iter().map(|s| s.as_str()).collect::<Vec<&str>>())
-    };
     let mir_chunks = rude_intel::mir_edges::MirEdgeMap::load_chunks_from_sqlite(
-        &mir_db, only_crates.as_deref(),
+        &mir_db, to_crate_filter(&incremental_crates).as_deref(),
     ).context("failed to load MIR chunks")?;
 
     let changed_sources: std::collections::HashSet<String> = code_files.iter()
@@ -272,26 +267,30 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
         drop(engine);
 
         // Load only changed crates' MIR edges — prefer sqlite, fallback to JSONL.
-        let mir_edges = if mir_db.exists() {
-            let only = if incremental_crates.is_empty() {
-                None
-            } else {
-                Some(incremental_crates.iter().map(|s| s.as_str()).collect::<Vec<&str>>())
-            };
-            rude_intel::mir_edges::MirEdgeMap::from_sqlite(&mir_db, only.as_deref()).ok()
-        } else if mir_out_dir.exists() && !incremental_crates.is_empty() {
-            let refs: Vec<&str> = incremental_crates.iter().map(|s| s.as_str()).collect();
-            rude_intel::mir_edges::MirEdgeMap::from_sqlite(&mir_db, Some(&refs)).ok()
-        } else if mir_out_dir.exists() {
-            rude_intel::mir_edges::MirEdgeMap::from_sqlite(&mir_db, None).ok()
-        } else {
-            None
-        };
+        let mir_edges = load_mir_edges(&mir_db, &mir_out_dir, &incremental_crates);
 
-        prebuild_caches(&db_path, &entries, &current_sources, &all_files, mir_edges.as_ref(), &mir_out_dir);
+        prebuild_caches(&db_path, &entries, mir_edges.as_ref(), &mir_out_dir);
     }
 
     Ok(())
+}
+
+/// Convert a crate list to `Option<Vec<&str>>` filter (None = all crates).
+fn to_crate_filter(crates: &[String]) -> Option<Vec<&str>> {
+    if crates.is_empty() { None } else { Some(crates.iter().map(String::as_str).collect()) }
+}
+
+/// Load MIR edges from sqlite, filtered to the given incremental crates.
+fn load_mir_edges(
+    mir_db: &std::path::Path,
+    mir_out_dir: &std::path::Path,
+    incremental_crates: &[String],
+) -> Option<rude_intel::mir_edges::MirEdgeMap> {
+    if mir_db.exists() || mir_out_dir.exists() {
+        rude_intel::mir_edges::MirEdgeMap::from_sqlite(mir_db, to_crate_filter(incremental_crates).as_deref()).ok()
+    } else {
+        None
+    }
 }
 
 /// Rebuild chunks.bin + graph.bin caches.
@@ -301,8 +300,6 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
 fn prebuild_caches(
     db_path: &std::path::Path,
     new_entries: &[CodeChunkEntry],
-    _current_sources: &std::collections::HashSet<String>,
-    _all_files: &[PathBuf],
     mir_edges: Option<&rude_intel::mir_edges::MirEdgeMap>,
     mir_edge_dir: &std::path::Path,
 ) {

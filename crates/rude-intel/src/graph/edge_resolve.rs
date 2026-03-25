@@ -153,6 +153,29 @@ fn save_edge_bundle(db_path: &Path, bundle: &EdgeCacheBundle) -> Result<()> {
         .with_context(|| format!("failed to write edge cache: {}", path.display()))
 }
 
+/// Merge old cached crate entries with newly resolved ones, prune stale crates.
+fn merge_crate_caches(
+    bundle: Option<EdgeCacheBundle>,
+    hash_matches: bool,
+    new_crates: HashMap<String, CrateEdgeCache>,
+    all_crate_names: &std::collections::HashSet<&str>,
+) -> Vec<(String, CrateEdgeCache)> {
+    let mut final_crates: Vec<(String, CrateEdgeCache)> = if hash_matches {
+        bundle.map(|b| b.crates).unwrap_or_default()
+            .into_iter()
+            .filter(|(name, _)| !new_crates.contains_key(name) && all_crate_names.contains(name.as_str()))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    final_crates.extend(new_crates);
+    let pre = final_crates.len();
+    final_crates.retain(|(name, _)| all_crate_names.contains(name.as_str()));
+    let pruned = pre - final_crates.len();
+    if pruned > 0 { eprintln!("      [edge-resolve] pruned {pruned} stale crate(s) from edge cache"); }
+    final_crates
+}
+
 fn load_edge_bundle(db_path: &Path) -> Option<EdgeCacheBundle> {
     let bytes = std::fs::read(edge_bundle_path(db_path)).ok()?;
     let (bundle, _): (EdgeCacheBundle, _) =
@@ -319,19 +342,7 @@ pub(crate) fn resolve_incremental(
     }
 
     // Merge cached + newly resolved, prune stale crates, save.
-    let mut final_crates: Vec<(String, CrateEdgeCache)> = if hash_matches {
-        bundle.map(|b| b.crates).unwrap_or_default()
-            .into_iter()
-            .filter(|(name, _)| !new_crates.contains_key(name) && all_crate_names.contains(name.as_str()))
-            .collect()
-    } else {
-        Vec::new()
-    };
-    final_crates.extend(new_crates);
-    let pre = final_crates.len();
-    final_crates.retain(|(name, _)| all_crate_names.contains(name.as_str()));
-    let pruned = pre - final_crates.len();
-    if pruned > 0 { eprintln!("      [edge-resolve] pruned {pruned} stale crate(s) from edge cache"); }
+    let final_crates = merge_crate_caches(bundle, hash_matches, new_crates, &all_crate_names);
     let new_bundle = EdgeCacheBundle { chunks_hash, crates: final_crates };
     let _ = save_edge_bundle(db_path, &new_bundle);
 

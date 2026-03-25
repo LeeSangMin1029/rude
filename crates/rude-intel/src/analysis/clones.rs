@@ -251,13 +251,7 @@ fn build_chunk_ranges(
     ids: &[u64],
 ) -> HashMap<u64, (String, i64, i64)> {
     ids.iter()
-        .filter_map(|&id| {
-            let p = pstore.get_payload(id).ok()??;
-            let (Some(PayloadValue::Integer(s)), Some(PayloadValue::Integer(e))) =
-                (p.custom.get("start_line"), p.custom.get("end_line"))
-            else { return None };
-            Some((id, (p.source.clone(), *s, *e)))
-        })
+        .filter_map(|&id| get_chunk_source_range(pstore, id).map(|r| (id, r)))
         .collect()
 }
 
@@ -314,16 +308,31 @@ fn find_sub_block_clones(
     clones
 }
 
-/// Check if one chunk fully contains the other (same file, line range containment).
-fn chunk_contains(
+/// Check containment between two ranged chunks (same file required).
+///
+/// Returns:
+/// - `Some(i)` / `Some(j)` — index of the parent (larger) chunk to remove.
+/// - `Some(usize::MAX)` — mutual containment (equal ranges).
+/// - `None` — different files or no containment.
+///
+/// Also used as a plain boolean via `containment_remove_idx(...).is_some()`.
+fn containment_remove_idx(
     ranges: &HashMap<u64, (String, i64, i64)>,
-    id_a: u64,
-    id_b: u64,
-) -> bool {
-    let (Some(a), Some(b)) = (ranges.get(&id_a), ranges.get(&id_b)) else {
-        return false;
-    };
-    a.0 == b.0 && ((a.1 <= b.1 && a.2 >= b.2) || (b.1 <= a.1 && b.2 >= a.2))
+    id_a: u64, i: usize,
+    id_b: u64, j: usize,
+) -> Option<usize> {
+    let (a, b) = (ranges.get(&id_a)?, ranges.get(&id_b)?);
+    if a.0 != b.0 { return None; }
+    let (a_size, b_size) = (a.2 - a.1, b.2 - b.1);
+    if (a.1 <= b.1 && a.2 >= b.2) || (a_size > b_size && a.1 <= b.1) { Some(i) }
+    else if (b.1 <= a.1 && b.2 >= a.2) || (b_size > a_size && b.1 <= a.1) { Some(j) }
+    else { None }
+}
+
+/// Check if one chunk fully contains the other (same file, line range containment).
+#[inline]
+fn chunk_contains(ranges: &HashMap<u64, (String, i64, i64)>, id_a: u64, id_b: u64) -> bool {
+    containment_remove_idx(ranges, id_a, 0, id_b, 1).is_some()
 }
 
 /// Remove entries from parent chunks when a more specific child chunk exists.
@@ -342,15 +351,8 @@ fn deduplicate_contained_entries(
             let (id_a, _, _) = entries[i];
             let (id_b, _, _) = entries[j];
             if id_a == id_b { continue; }
-            let (Some(a), Some(b)) = (ranges.get(&id_a), ranges.get(&id_b)) else { continue };
-            if a.0 != b.0 { continue; }
-            // Same file: remove whichever chunk is the larger parent
-            let a_size = a.2 - a.1;
-            let b_size = b.2 - b.1;
-            if (a.1 <= b.1 && a.2 >= b.2) || (a_size > b_size && a.1 <= b.1) {
-                to_remove.push(i); // A is parent/larger, remove A
-            } else if (b.1 <= a.1 && b.2 >= a.2) || (b_size > a_size && b.1 <= a.1) {
-                to_remove.push(j); // B is parent/larger, remove B
+            if let Some(idx) = containment_remove_idx(ranges, id_a, i, id_b, j) {
+                to_remove.push(idx);
             }
         }
     }
@@ -370,24 +372,27 @@ fn is_test_chunk(pstore: &(impl PayloadStore + ?Sized), id: u64) -> bool {
         .is_some_and(|t| t.lines().next().unwrap_or("").contains("] test_"))
 }
 
+/// Get `(source_file, start_line, end_line)` from a chunk's payload.
+///
+/// Single fetch — shared by `chunks_overlap`, `chunk_lines`, `build_chunk_ranges`.
+fn get_chunk_source_range(pstore: &(impl PayloadStore + ?Sized), id: u64) -> Option<(String, i64, i64)> {
+    let p = pstore.get_payload(id).ok()??;
+    match (p.custom.get("start_line"), p.custom.get("end_line")) {
+        (Some(PayloadValue::Integer(s)), Some(PayloadValue::Integer(e))) => Some((p.source.clone(), *s, *e)),
+        _ => None,
+    }
+}
+
 /// Check if two chunks overlap in the same file (parent/child relationship).
 pub fn chunks_overlap(pstore: &(impl PayloadStore + ?Sized), id_a: u64, id_b: u64) -> bool {
-    let Some(pa) = pstore.get_payload(id_a).ok().flatten() else { return false };
-    let Some(pb) = pstore.get_payload(id_b).ok().flatten() else { return false };
-    if pa.source != pb.source { return false; }
-    let (Some(PayloadValue::Integer(sa)), Some(PayloadValue::Integer(ea))) =
-        (pa.custom.get("start_line"), pa.custom.get("end_line")) else { return false };
-    let (Some(PayloadValue::Integer(sb)), Some(PayloadValue::Integer(eb))) =
-        (pb.custom.get("start_line"), pb.custom.get("end_line")) else { return false };
-    *sa <= *eb && *sb <= *ea
+    let (Some((fa, sa, ea)), Some((fb, sb, eb))) =
+        (get_chunk_source_range(pstore, id_a), get_chunk_source_range(pstore, id_b)) else { return false };
+    fa == fb && sa <= eb && sb <= ea
 }
 
 /// Get the number of lines in a chunk from its custom fields.
 pub fn chunk_lines(pstore: &(impl PayloadStore + ?Sized), id: u64) -> usize {
-    let Some(payload) = pstore.get_payload(id).ok().flatten() else { return 0 };
-    let (Some(PayloadValue::Integer(s)), Some(PayloadValue::Integer(e))) =
-        (payload.custom.get("start_line"), payload.custom.get("end_line"))
-    else { return 0 };
+    let Some((_, s, e)) = get_chunk_source_range(pstore, id) else { return 0 };
     #[expect(clippy::cast_sign_loss)]
     { (e - s + 1) as usize }
 }
