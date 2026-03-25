@@ -78,6 +78,11 @@ impl StorageEngine {
              CREATE TABLE IF NOT EXISTS config (
                  key   TEXT PRIMARY KEY,
                  value TEXT NOT NULL
+             );
+
+             CREATE TABLE IF NOT EXISTS kv_cache (
+                 key   TEXT PRIMARY KEY,
+                 value BLOB NOT NULL
              );",
         )
         .context("failed to create schema")?;
@@ -173,44 +178,6 @@ impl StorageEngine {
             .context("failed to query text")
     }
 
-    pub fn iter_all(&self) -> Result<Vec<(u64, Payload, String)>> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT id, source, tags, custom, created_at, source_modified_at,
-                        chunk_index, chunk_total, text
-                 FROM chunks ORDER BY id",
-            )
-            .context("failed to prepare iter_all")?;
-
-        let rows = stmt
-            .query_map([], |row| {
-                let id: i64 = row.get(0)?;
-                Ok((
-                    id as u64,
-                    PayloadRow {
-                        source: row.get(1)?,
-                        tags_json: row.get(2)?,
-                        custom_json: row.get(3)?,
-                        created_at: row.get(4)?,
-                        source_modified_at: row.get(5)?,
-                        chunk_index: row.get(6)?,
-                        chunk_total: row.get(7)?,
-                    },
-                    row.get::<_, String>(8)?,
-                ))
-            })
-            .context("failed to query all chunks")?;
-
-        let mut result = Vec::new();
-        for row in rows {
-            let (id, prow, text) = row.context("failed to read row")?;
-            let payload = Self::row_to_payload(&prow)?;
-            result.push((id, payload, text));
-        }
-        Ok(result)
-    }
-
     pub fn all_ids(&self) -> Result<Vec<u64>> {
         let mut stmt = self
             .conn
@@ -234,6 +201,46 @@ impl StorageEngine {
         self.conn
             .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
             .context("failed to checkpoint WAL")?;
+        Ok(())
+    }
+
+    pub fn get_cache(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        // Ensure kv_cache table exists (for databases created before this schema addition)
+        self.conn
+            .execute(
+                "CREATE TABLE IF NOT EXISTS kv_cache (key TEXT PRIMARY KEY, value BLOB NOT NULL)",
+                [],
+            )
+            .ok();
+
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT value FROM kv_cache WHERE key = ?1")
+            .context("failed to prepare kv_cache SELECT")?;
+        let mut rows = stmt
+            .query_map(params![key], |row| row.get::<_, Vec<u8>>(0))
+            .context("failed to query kv_cache")?;
+        match rows.next() {
+            Some(v) => Ok(Some(v.context("failed to read kv_cache value")?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn set_cache(&self, key: &str, data: &[u8]) -> Result<()> {
+        // Ensure kv_cache table exists
+        self.conn
+            .execute(
+                "CREATE TABLE IF NOT EXISTS kv_cache (key TEXT PRIMARY KEY, value BLOB NOT NULL)",
+                [],
+            )
+            .ok();
+
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO kv_cache (key, value) VALUES (?1, ?2)",
+                params![key, data],
+            )
+            .context("failed to set kv_cache value")?;
         Ok(())
     }
 

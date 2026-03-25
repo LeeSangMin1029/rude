@@ -1,6 +1,5 @@
 
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Result;
 
@@ -12,32 +11,15 @@ pub fn load_chunks(path: &Path) -> Result<Vec<ParsedChunk>> {
     // Ensure project root is set for path normalization (idempotent).
     ensure_project_root(path);
 
-    let cache = cache_path(path);
-    // Use store.db mtime — the SQLite database file.
-    let db_mtime = fs::metadata(path.join("store.db"))
-        .and_then(|m| m.modified())
-        .ok();
-
-    // Try cache hit: version prefix byte + bincode payload.
-    if let Some(db_t) = db_mtime
-        && let Ok(cache_meta) = fs::metadata(&cache)
-        && let Ok(cache_t) = cache_meta.modified()
-        && cache_t >= db_t
-        && let Ok(bytes) = fs::read(&cache)
-        && bytes.first() == Some(&CHUNKS_CACHE_VERSION)
-    {
-        let config = bincode::config::standard();
-        if let Ok((chunks, _)) =
-            bincode::decode_from_slice::<Vec<ParsedChunk>, _>(&bytes[1..], config)
-        {
-            eprintln!("  chunks.bin cache hit: {} chunks from {:.1}MB", chunks.len(), bytes.len() as f64 / 1_048_576.0);
-            return Ok(chunks);
-        }
+    // Try cache hit from sqlite kv_cache.
+    if let Some(chunks) = load_chunks_from_cache(path) {
+        eprintln!("  chunks cache hit: {} chunks", chunks.len());
+        return Ok(chunks);
     }
 
     // Cache miss — load from mir.db
     let chunks = load_chunks_from_mir_db(path)?;
-    save_chunks_cache(&cache, &chunks);
+    save_chunks_cache(path, &chunks);
     Ok(chunks)
 }
 
@@ -50,29 +32,26 @@ pub fn load_chunks_from_mir_db(db_path: &Path) -> Result<Vec<ParsedChunk>> {
     Ok(crate::mir_edges::mir_chunks_to_parsed(&mir_chunks))
 }
 
-pub fn save_chunks_cache(path: &Path, chunks: &[ParsedChunk]) {
+pub fn save_chunks_cache(db: &Path, chunks: &[ParsedChunk]) {
     let config = bincode::config::standard();
-    // Prepend version byte, then encode chunks.
     let mut bytes = vec![CHUNKS_CACHE_VERSION];
     if let Ok(chunk_bytes) = bincode::encode_to_vec(chunks, config) {
         bytes.extend_from_slice(&chunk_bytes);
-        let _ = fs::write(path, bytes);
+        if let Ok(engine) = rude_db::StorageEngine::open(db) {
+            let _ = engine.set_cache("chunks", &bytes);
+        }
     }
 }
 
 pub fn load_chunks_from_cache(db: &Path) -> Option<Vec<ParsedChunk>> {
-    let cache = cache_path(db);
-    let bytes = fs::read(&cache).ok()?;
+    let engine = rude_db::StorageEngine::open(db).ok()?;
+    let bytes = engine.get_cache("chunks").ok()??;
     if bytes.first() != Some(&CHUNKS_CACHE_VERSION) {
         return None;
     }
     let config = bincode::config::standard();
     let (chunks, _) = bincode::decode_from_slice::<Vec<ParsedChunk>, _>(&bytes[1..], config).ok()?;
     Some(chunks)
-}
-
-pub fn cache_path(db: &Path) -> PathBuf {
-    db.join("cache").join("chunks.bin")
 }
 
 fn ensure_project_root(db: &Path) {

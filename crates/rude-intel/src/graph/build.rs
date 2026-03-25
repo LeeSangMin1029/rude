@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -162,19 +161,14 @@ impl CallGraph {
     }
 
     pub fn save_background(self, db: &Path) {
-        let path = graph_cache_path(db);
-        let _ = fs::create_dir_all(path.parent().unwrap_or(Path::new(".")));
+        let db = db.to_path_buf();
         std::thread::spawn(move || {
             match bincode::encode_to_vec(&self, bincode::config::standard()) {
                 Ok(bytes) => {
-                    let tmp_path = path.with_extension("tmp.bin");
-                    if let Err(e) = fs::write(&tmp_path, bytes) {
-                        eprintln!("[graph] background save write failed: {e}");
-                        return;
-                    }
-                    if let Err(e) = fs::rename(&tmp_path, &path) {
-                        eprintln!("[graph] background save rename failed: {e}");
-                        let _ = fs::remove_file(&tmp_path);
+                    if let Ok(engine) = rude_db::StorageEngine::open(&db) {
+                        if let Err(e) = engine.set_cache("graph", &bytes) {
+                            eprintln!("[graph] background save failed: {e}");
+                        }
                     }
                 }
                 Err(e) => {
@@ -185,16 +179,17 @@ impl CallGraph {
     }
 
     pub fn save(&self, db: &Path) -> Result<()> {
-        let path = graph_cache_path(db);
-        let _ = fs::create_dir_all(path.parent().unwrap_or(Path::new(".")));
         let bytes = bincode::encode_to_vec(self, bincode::config::standard())
             .context("failed to encode call graph")?;
-        fs::write(&path, bytes).with_context(|| format!("failed to write {}", path.display()))
+        let engine = rude_db::StorageEngine::open(db)
+            .context("failed to open db for graph cache")?;
+        engine.set_cache("graph", &bytes)
+            .context("failed to write graph cache")
     }
 
     pub fn load(db: &Path) -> Option<Self> {
-        let path = graph_cache_path(db);
-        let bytes = fs::read(&path).ok()?;
+        let engine = rude_db::StorageEngine::open(db).ok()?;
+        let bytes = engine.get_cache("graph").ok()??;
         let (graph, _): (Self, _) = bincode::decode_from_slice(&bytes, bincode::config::standard()).ok()?;
         if graph.version != GRAPH_SOURCE_HASH { return None; }
         Some(graph)
@@ -207,8 +202,4 @@ impl CallGraph {
         let all: Vec<&str> = self.files.iter().map(|f| crate::helpers::relative_path(f)).collect();
         crate::helpers::build_path_aliases(&all)
     }
-}
-
-fn graph_cache_path(db: &Path) -> std::path::PathBuf {
-    db.join("cache").join("graph.bin")
 }

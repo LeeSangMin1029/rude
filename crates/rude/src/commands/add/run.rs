@@ -115,7 +115,7 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
                     .map(|e| e.chunk_ids.clone())
                     .unwrap_or_default();
                 let hash = rude_db::file_utils::content_hash(f).unwrap_or(0);
-                file_idx.update_file_with_hash(source, mtime, size, existing_chunk_ids, hash);
+                file_idx.update_file(source, mtime, size, existing_chunk_ids, Some(hash));
             }
         }
     }
@@ -251,16 +251,10 @@ fn prebuild_caches(
     mir_edges: Option<&rude_intel::mir_edges::MirEdgeMap>,
     mir_edge_dir: &std::path::Path,
 ) {
-    let cache = rude_intel::loader::cache_path(db_path);
-    if let Some(parent) = cache.parent() { let _ = std::fs::create_dir_all(parent); }
-
     let chunks = merge_chunks_cache(db_path, new_entries);
     eprintln!("    [cache] {} chunks", chunks.len());
 
-    rude_intel::loader::save_chunks_cache(&cache, &chunks);
-    if let Ok(file) = std::fs::OpenOptions::new().write(true).open(&cache) {
-        let _ = file.set_modified(std::time::SystemTime::now());
-    }
+    rude_intel::loader::save_chunks_cache(db_path, &chunks);
 
     let incremental = mir_edges.map(|_| rude_intel::graph::IncrementalArgs {
         changed_crates: &[],
@@ -313,7 +307,7 @@ fn direct_bulk_write(
     let mut file_idx = file_index::load_file_index(db_path)?;
     for (path, (mtime, size, chunk_ids)) in file_metadata_map {
         let hash = rude_db::file_utils::content_hash(std::path::Path::new(path)).unwrap_or(0);
-        file_idx.update_file_with_hash(path.to_string(), *mtime, *size, chunk_ids.clone(), hash);
+        file_idx.update_file(path.to_string(), *mtime, *size, chunk_ids.clone(), Some(hash));
     }
     file_index::save_file_index(db_path, &file_idx)?;
 

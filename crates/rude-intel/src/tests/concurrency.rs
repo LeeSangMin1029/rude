@@ -27,9 +27,8 @@ fn test_chunk(name: &str, file: &str, calls: &[&str]) -> ParsedChunk {
     }
 }
 
-/// Create a temporary DB directory with chunks and graph cache.
-/// Creates a dummy `store.db` so `load_chunks` cache-hit logic works
-/// (it checks `store.db` mtime to validate the cache).
+/// Create a temporary DB directory with chunks and graph cache in sqlite.
+/// Creates `store.db` via StorageEngine so `load_chunks` / `CallGraph::load` work.
 fn setup_test_db(dir: &Path) -> Vec<ParsedChunk> {
     let chunks = vec![
         test_chunk("mod_a::foo", "src/a.rs", &["mod_b::bar"]),
@@ -39,17 +38,13 @@ fn setup_test_db(dir: &Path) -> Vec<ParsedChunk> {
         test_chunk("mod_d::entry", "src/d.rs", &["mod_a::foo", "mod_b::bar"]),
     ];
 
-    // Create dummy store.db (load_chunks checks its mtime for cache validity)
-    std::fs::write(dir.join("store.db"), b"dummy").unwrap();
+    // Initialize store.db with schema (needed for StorageEngine::open + kv_cache table)
+    let _engine = rude_db::StorageEngine::open_exclusive(dir).unwrap();
 
-    // Save chunks cache (must be written AFTER store.db so cache mtime >= db mtime)
-    let cache_dir = dir.join("cache");
-    std::fs::create_dir_all(&cache_dir).unwrap();
-    // Small sleep to ensure cache file gets a strictly newer mtime
-    std::thread::sleep(std::time::Duration::from_millis(50));
-    save_chunks_cache(&cache_dir.join("chunks.bin"), &chunks);
+    // Save chunks cache to sqlite kv_cache
+    save_chunks_cache(dir, &chunks);
 
-    // Build and save graph
+    // Build and save graph to sqlite kv_cache
     let graph = CallGraph::build(&chunks);
     graph.save(dir).unwrap();
 
@@ -99,20 +94,19 @@ fn read_during_cache_write_does_not_panic() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path();
     let chunks = setup_test_db(db);
-    let cache_path = db.join("cache").join("chunks.bin");
 
     let barrier = Arc::new(Barrier::new(2));
     let iterations = 200;
 
-    // Writer thread: repeatedly overwrites cache
+    // Writer thread: repeatedly overwrites cache via sqlite
     let writer = {
-        let cache_path = cache_path.clone();
+        let db = db.to_path_buf();
         let chunks = chunks.clone();
         let barrier = Arc::clone(&barrier);
         std::thread::spawn(move || {
             barrier.wait();
             for _ in 0..iterations {
-                save_chunks_cache(&cache_path, &chunks);
+                save_chunks_cache(&db, &chunks);
             }
         })
     };
@@ -132,8 +126,6 @@ fn read_during_cache_write_does_not_panic() {
                         success += 1;
                     }
                     Err(_) => {
-                        // Graceful failure (e.g., partial read → decode error) is acceptable.
-                        // Panic or corruption is NOT.
                         graceful_fail += 1;
                     }
                 }
@@ -145,7 +137,6 @@ fn read_during_cache_write_does_not_panic() {
     writer.join().unwrap();
     let (success, graceful_fail) = reader.join().unwrap();
     eprintln!("read-during-write: {success} ok, {graceful_fail} graceful failures (no panics)");
-    // At least some reads should succeed
     assert!(success > 0, "all reads failed during concurrent write");
 }
 
@@ -155,12 +146,10 @@ fn read_during_cache_write_does_not_panic() {
 fn concurrent_cache_writes_produce_valid_output() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path();
-    let cache_dir = db.join("cache");
-    std::fs::create_dir_all(&cache_dir).unwrap();
-    let cache_path = cache_dir.join("chunks.bin");
+    let _engine = rude_db::StorageEngine::open_exclusive(db).unwrap();
 
-    // Two different chunk sets — after concurrent writes, the final file
-    // must be decodable and match one of them.
+    // Two different chunk sets — after concurrent writes, the final sqlite
+    // cache must be decodable and match one of them.
     let chunks_a: Vec<ParsedChunk> = (0..10)
         .map(|i| test_chunk(&format!("a::fn_{i}"), "src/a.rs", &[]))
         .collect();
@@ -172,24 +161,24 @@ fn concurrent_cache_writes_produce_valid_output() {
     let iterations = 200;
 
     let writer_a = {
-        let path = cache_path.clone();
+        let db = db.to_path_buf();
         let chunks = chunks_a.clone();
         let barrier = Arc::clone(&barrier);
         std::thread::spawn(move || {
             barrier.wait();
             for _ in 0..iterations {
-                save_chunks_cache(&path, &chunks);
+                save_chunks_cache(&db, &chunks);
             }
         })
     };
 
     let writer_b = {
-        let path = cache_path.clone();
+        let db = db.to_path_buf();
         let chunks = chunks_b.clone();
         std::thread::spawn(move || {
             barrier.wait();
             for _ in 0..iterations {
-                save_chunks_cache(&path, &chunks);
+                save_chunks_cache(&db, &chunks);
             }
         })
     };
@@ -197,15 +186,12 @@ fn concurrent_cache_writes_produce_valid_output() {
     writer_a.join().unwrap();
     writer_b.join().unwrap();
 
-    // Final file must be valid — one of the two chunk sets
-    let bytes = std::fs::read(&cache_path).unwrap();
-    let config = bincode::config::standard();
-    let (result, _): (Vec<ParsedChunk>, _) =
-        bincode::decode_from_slice(&bytes[1..], config)
-            .expect("cache file corrupted after concurrent writes");
+    // Final cache must be valid — one of the two chunk sets
+    use crate::loader::load_chunks_from_cache;
+    let result = load_chunks_from_cache(db).expect("cache corrupted after concurrent writes");
     assert!(
         result.len() == 10 || result.len() == 20,
-        "unexpected chunk count {} — file may contain interleaved data",
+        "unexpected chunk count {} — cache may contain interleaved data",
         result.len()
     );
 }

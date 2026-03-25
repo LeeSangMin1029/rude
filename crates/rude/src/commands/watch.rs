@@ -203,7 +203,7 @@ fn update_db(
     // Update file index
     let mut file_idx = file_index::load_file_index(db_path)?;
     for (path, (mtime, size, chunk_ids)) in file_metadata_map {
-        file_idx.update_file(path.clone(), *mtime, *size, chunk_ids.clone());
+        file_idx.update_file(path.clone(), *mtime, *size, chunk_ids.clone(), None);
     }
     file_index::save_file_index(db_path, &file_idx)?;
 
@@ -231,9 +231,8 @@ fn rebuild_graph_cache(
         graph.callees.iter().map(Vec::len).sum::<usize>()
     );
 
-    // Also update chunks.bin cache
-    let cache_path = db_path.join("cache").join("chunks.bin");
-    rude_intel::loader::save_chunks_cache(&cache_path, &chunks);
+    // Also update chunks cache in sqlite
+    rude_intel::loader::save_chunks_cache(db_path, &chunks);
 
     Ok(())
 }
