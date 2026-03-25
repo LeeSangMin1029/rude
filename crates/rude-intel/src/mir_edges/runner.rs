@@ -105,6 +105,7 @@ pub fn run_mir_callgraph(project_root: &Path, mir_callgraph_bin: Option<&Path>) 
     run_mir_callgraph_for(project_root, mir_callgraph_bin, &[], false)
 }
 
+#[tracing::instrument(skip_all)]
 pub fn run_mir_callgraph_for(
     project_root: &Path,
     mir_callgraph_bin: Option<&Path>,
@@ -204,6 +205,7 @@ fn kill_process_by_pid(pid: u32) {
 }
 
 
+#[tracing::instrument(skip_all)]
 pub fn run_mir_direct(
     project_root: &Path,
     mir_callgraph_bin: Option<&Path>,

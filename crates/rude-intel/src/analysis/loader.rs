@@ -37,6 +37,7 @@ pub fn load_chunks_from_mir_db(db_path: &Path) -> Result<Vec<ParsedChunk>> {
     Ok(parsed)
 }
 
+#[tracing::instrument(skip_all)]
 pub fn save_chunks_cache(db: &Path, chunks: &[ParsedChunk]) {
     let config = bincode::config::standard();
     let mut bytes = vec![CHUNKS_CACHE_VERSION];

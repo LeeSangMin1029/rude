@@ -6,13 +6,9 @@ use anyhow::Context as _;
 use clap::Parser;
 
 fn main() {
-    #[allow(clippy::expect_used)]
-    let directive = "rude=info".parse().expect("static directive");
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env().add_directive(directive),
-        )
-        .init();
+    let _guard = init_tracing();
+
+
 
     rude_db::interrupt::install_handler();
 
@@ -94,6 +90,23 @@ fn run() -> anyhow::Result<()> {
         Commands::Split { symbols, to, dry_run } => {
             commands::edit::split(symbols, to, dry_run)
         }
+    }
+}
+
+fn init_tracing() -> Option<tracing_chrome::FlushGuard> {
+    if std::env::var("RUDE_PROFILE").is_ok() {
+        use tracing_subscriber::prelude::*;
+        let (layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
+            .file("rude-profile.json").include_args(true).build();
+        tracing_subscriber::registry().with(layer).init();
+        Some(guard)
+    } else {
+        #[allow(clippy::expect_used)]
+        let directive = "rude=info".parse().expect("static directive");
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env().add_directive(directive))
+            .init();
+        None
     }
 }
 

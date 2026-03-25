@@ -14,6 +14,7 @@ use super::{ingest_mir, write_chunks, CodeChunkEntry};
 const TEXT_ONLY_DIM: usize = 1;
 const TEXT_ONLY_MODEL: &str = "text-only";
 
+#[tracing::instrument(skip_all)]
 pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     let db_path = crate::db().to_path_buf();
     use rude_db::file_utils::get_file_mtime;

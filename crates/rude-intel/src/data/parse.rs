@@ -51,24 +51,6 @@ impl ParsedChunk {
         }
     }
 
-    /// Build custom payload fields for DB storage.
-    /// Most chunk data is read from graph.chunks (cached), so only
-    /// `called_by` and `minhash` are stored in the DB custom map.
-    pub fn to_custom_fields(&self, called_by: &[String]) -> std::collections::HashMap<String, rude_db::PayloadValue> {
-        use rude_db::PayloadValue;
-        use std::collections::HashMap;
-
-        let mut c = HashMap::new();
-
-        if !called_by.is_empty() {
-            c.insert("called_by".to_owned(), PayloadValue::StringList(called_by.to_vec()));
-        }
-        if let Some(ref mh) = self.minhash {
-            c.insert("minhash".to_owned(), PayloadValue::String(mh.clone()));
-        }
-
-        c
-    }
 }
 
 pub fn normalize_path(p: &str) -> String {

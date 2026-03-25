@@ -133,6 +133,7 @@ impl CallGraph {
         Ok(graph)
     }
 
+#[tracing::instrument(skip_all)]
     pub fn build_only(
         chunks: Vec<ParsedChunk>,
         mir_edges: Option<&MirEdgeMap>,

@@ -74,53 +74,27 @@ fn find_callers<'a>(
     result
 }
 
+#[tracing::instrument(skip_all)]
 pub(crate) fn build_payload(
     entry: &CodeChunkEntry,
     now: u64,
     chunk_total: usize,
-    reverse: &HashMap<String, Vec<String>>,
-    include_role_tag: bool,
 ) -> (u64, rude_db::Payload, String) {
     use rude_db::file_utils::generate_id;
-    use rude_db::PayloadValue;
-
     let chunk = &entry.chunk;
     let id = generate_id(&entry.source, chunk.chunk_index);
 
-    let called_by_refs = find_callers(reverse, &chunk.name);
-    let called_by_strings: Vec<String> = called_by_refs.iter().map(|s| (*s).to_owned()).collect();
-
-    let is_test = rude_intel::graph::is_test_path(&entry.source) || chunk.name.starts_with("test_");
-
-    let mut tags = Vec::with_capacity(5 + called_by_refs.len());
-    tags.push(format!("kind:{}", chunk.kind));
-    tags.push(format!("lang:{}", entry.lang));
-    if include_role_tag {
-        tags.push(format!("role:{}", if is_test { "test" } else { "prod" }));
-    }
-    if !chunk.visibility.is_empty() {
-        tags.push(format!("vis:{}", chunk.visibility));
-    }
-    for caller in &called_by_refs {
-        tags.push(format!("caller:{caller}"));
-    }
-
-    let mut custom = chunk.to_custom_fields(&called_by_strings);
-    custom.insert("title".into(), PayloadValue::String(chunk.name.clone()));
-
     let payload = rude_db::Payload {
         source: entry.source.clone(),
-        tags,
+        tags: Vec::new(),
         created_at: now,
         source_modified_at: entry.mtime,
         chunk_index: chunk.chunk_index as u32,
         chunk_total: chunk_total as u32,
-        custom,
+        custom: Default::default(),
     };
 
-    let embed_text = chunk.text.clone();
-
-    (id, payload, embed_text)
+    (id, payload, chunk.text.clone())
 }
 
 fn parse_param_types(signature: Option<&str>) -> Vec<(String, String)> {
@@ -201,6 +175,7 @@ fn parse_enum_variants(chunk_lines: &[&str]) -> Vec<String> {
         .collect()
 }
 
+#[tracing::instrument(skip_all)]
 pub(crate) fn ingest_mir(
     mir_chunks: &[rude_intel::mir_edges::MirChunk],
     db_path: &Path,
@@ -313,6 +288,7 @@ pub(crate) fn ingest_mir(
 
 /// Removes stale chunks, inserts new chunks in batch, and updates `file_idx` in memory.
 /// The caller is responsible for calling `file_index::save_file_index` afterwards.
+#[tracing::instrument(skip_all)]
 pub(crate) fn write_chunks(
     entries: &[CodeChunkEntry],
     engine: &mut rude_db::StorageEngine,
@@ -334,8 +310,6 @@ pub(crate) fn write_chunks(
         }
     }
 
-    // Build callers and per-file chunk counts.
-    let reverse_index = build_callers(entries);
     let mut chunk_total_map: HashMap<&str, usize> = HashMap::new();
     for entry in entries {
         *chunk_total_map.entry(entry.source.as_str()).or_default() += 1;
@@ -349,7 +323,7 @@ pub(crate) fn write_chunks(
     use rayon::prelude::*;
     let encoded: Vec<(u64, Payload, String)> = entries.par_iter().map(|entry| {
         let chunk_total = chunk_total_map.get(entry.source.as_str()).copied().unwrap_or(1);
-        build_payload(entry, now, chunk_total, &reverse_index, false)
+        build_payload(entry, now, chunk_total)
     }).collect();
     let batch: Vec<(u64, Payload, &str)> = encoded.iter()
         .map(|(id, payload, text)| (*id, payload.clone(), text.as_str())).collect();
