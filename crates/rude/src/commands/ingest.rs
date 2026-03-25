@@ -203,13 +203,130 @@ pub fn chunks_from_mir_direct(
                 mc.type_refs.split(", ").map(|s| s.to_owned()).collect()
             };
 
-            // Prefer source signature (has pub, param names) over MIR signature
-            let source_sig = if !body_text.is_empty() {
-                body_text.split('{').next()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-            } else { None };
-            let signature = source_sig.or_else(|| mc.signature.clone());
+            let chunk_lines: Vec<&str> = body_text.lines().collect();
+
+            // Use MIR signature directly; fallback to first line of body
+            let signature = mc.signature.clone().or_else(|| {
+                let first = chunk_lines.first()?;
+                let sig_line = first.split('{').next()?.trim();
+                if sig_line.is_empty() {
+                    None
+                } else {
+                    Some(sig_line.to_owned())
+                }
+            });
+
+            // Parse param_types from signature: `name: Type` patterns
+            let param_types: Vec<(String, String)> = signature
+                .as_deref()
+                .and_then(|sig| {
+                    let paren_start = sig.find('(')?;
+                    let paren_end = sig.rfind(')')?;
+                    if paren_start >= paren_end {
+                        return None;
+                    }
+                    let params_str = &sig[paren_start + 1..paren_end];
+                    let pairs: Vec<(String, String)> = params_str
+                        .split(',')
+                        .filter_map(|p| {
+                            let p = p.trim();
+                            if p == "self" || p == "&self" || p == "&mut self" || p.is_empty() {
+                                return None;
+                            }
+                            let (name, ty) = p.split_once(':')?;
+                            Some((name.trim().to_owned(), ty.trim().to_owned()))
+                        })
+                        .collect();
+                    Some(pairs)
+                })
+                .unwrap_or_default();
+
+            // Parse return_type from signature: after `->`
+            let return_type: Option<String> = signature.as_deref().and_then(|sig| {
+                let after_arrow = sig.split("->").nth(1)?;
+                let rt = after_arrow.trim().trim_end_matches('{').trim();
+                if rt.is_empty() {
+                    None
+                } else {
+                    Some(rt.to_owned())
+                }
+            });
+
+            // Parse field_types for structs: `name: Type,` patterns in body
+            let field_types: Vec<(String, String)> =
+                if kind == chunk_code::CodeNodeKind::Struct && chunk_lines.len() > 1 {
+                    chunk_lines[1..]
+                        .iter()
+                        .filter_map(|line| {
+                            let trimmed = line.trim().trim_end_matches(',');
+                            if trimmed.starts_with("//") || trimmed.is_empty() || trimmed == "}" {
+                                return None;
+                            }
+                            let stripped = trimmed
+                                .strip_prefix("pub(crate) ")
+                                .or_else(|| trimmed.strip_prefix("pub(super) "))
+                                .or_else(|| trimmed.strip_prefix("pub "))
+                                .unwrap_or(trimmed);
+                            let (name, ty) = stripped.split_once(':')?;
+                            Some((name.trim().to_owned(), ty.trim().to_owned()))
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+
+            // Parse enum_variants
+            let enum_variants: Vec<String> =
+                if kind == chunk_code::CodeNodeKind::Enum && chunk_lines.len() > 1 {
+                    chunk_lines[1..]
+                        .iter()
+                        .filter_map(|line| {
+                            let trimmed = line.trim().trim_end_matches(',');
+                            if trimmed.starts_with("//")
+                                || trimmed.is_empty()
+                                || trimmed == "}"
+                                || trimmed.starts_with('#')
+                            {
+                                return None;
+                            }
+                            let name = trimmed
+                                .split(|c: char| c == '(' || c == '{' || c == ' ')
+                                .next()?;
+                            if name.is_empty() {
+                                None
+                            } else {
+                                Some(name.to_owned())
+                            }
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+
+            // Determine visibility
+            let visibility = mc
+                .visibility
+                .clone()
+                .unwrap_or_else(|| {
+                    let first_line = chunk_lines.first().map(|l| l.trim()).unwrap_or("");
+                    if first_line.starts_with("pub(crate)") {
+                        "pub(crate)".to_owned()
+                    } else if first_line.starts_with("pub(super)") {
+                        "pub(super)".to_owned()
+                    } else if first_line.starts_with("pub") {
+                        "pub".to_owned()
+                    } else {
+                        String::new()
+                    }
+                });
+
+            // Compute is_test
+            let is_test = mc.is_test
+                || mc.file.contains("/tests/") || mc.file.contains("\\tests\\")
+                || mc.name.contains("::test_") || mc.name.starts_with("test_")
+                || chunk_lines
+                    .first()
+                    .is_some_and(|l| l.contains("#[test]") || l.contains("#[cfg(test)]"));
 
             let code_chunk = chunk_code::CodeChunk {
                 text: body_text.clone(),
@@ -225,17 +342,17 @@ pub fn chunks_from_mir_direct(
                 end_byte: body_text.len(),
                 chunk_index: idx,
                 imports: Vec::new(),
-                visibility: mc.visibility.clone().unwrap_or_default(),
+                visibility,
                 string_args: Vec::new(),
                 param_flows: Vec::new(),
-                param_types: Vec::new(),
-                field_types: Vec::new(),
+                param_types,
+                field_types,
                 local_types: Vec::new(),
                 let_call_bindings: Vec::new(),
-                return_type: None,
+                return_type,
                 field_accesses: Vec::new(),
-                enum_variants: Vec::new(),
-                is_test: mc.is_test,
+                enum_variants,
+                is_test,
                 sub_blocks: Vec::new(),
                 ast_hash: 0,
                 body_hash: 0,
