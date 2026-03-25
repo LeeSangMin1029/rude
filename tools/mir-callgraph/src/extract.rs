@@ -271,6 +271,28 @@ pub fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -
     let mut seen_types = collect_type_chunks(&krate, &mut chunks);
 
     // Phase 2: function chunks + call edges
+    // First pass: collect closure edges (closures are in all_local_items, not fn_defs)
+    let mut closure_edges: HashMap<String, Vec<CallEdge>> = HashMap::new();
+    for item in rustc_public::all_local_items() {
+        let name_str = item.name().to_string();
+        if !name_str.contains("{closure") || !item.has_body() { continue; }
+        let body = item.body().unwrap();
+        let parent_raw = &name_str[..name_str.find("::{closure").unwrap_or(name_str.len())];
+        let parent_name = strip_crate_prefix(parent_raw);
+        let parent_file = span_file(&body.span);
+        let mut buf: Vec<CallEdge> = Vec::new();
+        let mut extractor = CallExtractor {
+            caller_name: parent_name.clone(),
+            caller_file: parent_file,
+            locals: body.locals(),
+            edges: &mut buf,
+            name_cache: &mut name_cache,
+        };
+        extractor.visit_body(&body);
+        closure_edges.entry(parent_name).or_default().extend(buf);
+    }
+
+    // Second pass: regular functions
     for fn_def in krate.fn_defs() {
         let name_str = fn_def.name().to_string();
         if name_str.contains("{closure") { continue; }
@@ -278,7 +300,7 @@ pub fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -
         if !item.has_body() { continue; }
         fn_count += 1;
         let body = item.body().unwrap();
-        let name = strip_crate_prefix(&item.name());
+        let name = strip_crate_prefix(&name_str);
         let filename = span_file(&body.span);
         let (start_line, end_line) = span_lines(&body.span);
 
@@ -309,6 +331,11 @@ pub fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -
             name_cache: &mut name_cache,
         };
         extractor.visit_body(&body);
+
+        // Merge closure edges into parent function
+        if let Some(ce) = closure_edges.remove(&name) {
+            edges.extend(ce);
+        }
 
         chunks.push(MirChunk {
             name, file: filename.clone(), kind: "fn".to_string(),
