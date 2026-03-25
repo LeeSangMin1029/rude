@@ -119,7 +119,7 @@ fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -> Co
             });
         }
 
-        // Trait impls → impl chunks (+ infer struct/enum from self type name)
+        // Trait impls → impl chunks + struct/enum detection via AdtKind
         let mut seen_types: std::collections::HashSet<String> = std::collections::HashSet::new();
         for i in rustc_public::all_trait_impls() {
             let file = span_file(&i.span());
@@ -135,21 +135,33 @@ fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -> Co
                 calls: String::new(), type_refs: String::new(),
             });
 
-            // Extract struct/enum name from impl name: "<Foo as Bar>" → "Foo"
-            if let Some(rest) = impl_name.strip_prefix('<') {
-                if let Some(type_name) = rest.split(" as ").next() {
-                    let type_name = type_name.trim().to_string();
-                    if !type_name.is_empty() && seen_types.insert(type_name.clone()) {
-                        // We don't know if it's struct or enum — use "struct" as default
-                        chunks.push(MirChunk {
-                            name: type_name, file: file.clone(),
-                            kind: "struct".to_string(),
-                            start_line: start, end_line: end,
-                            signature: None, visibility: String::new(),
-                            is_test: false, body: String::new(),
-                            calls: String::new(), type_refs: String::new(),
-                        });
+            // Detect struct/enum/union via self type's AdtKind
+            let tr = i.trait_impl().value;
+            for arg in &tr.args().0 {
+                if let rustc_public::ty::GenericArgKind::Type(ty) = arg {
+                    if let TyKind::RigidTy(RigidTy::Adt(adt_def, _)) = ty.kind() {
+                        let type_name = strip_crate_prefix(&adt_def.name().to_string());
+                        if !type_name.is_empty() && seen_types.insert(type_name.clone()) {
+                            let kind_str = match adt_def.kind() {
+                                rustc_public::ty::AdtKind::Enum => "enum",
+                                rustc_public::ty::AdtKind::Union => "struct",
+                                rustc_public::ty::AdtKind::Struct => "struct",
+                            };
+                            let adt_span = adt_def.span();
+                            let adt_file = span_file(&adt_span);
+                            if adt_file.starts_with('/') || adt_file.contains(":/") { break; }
+                            let (adt_start, adt_end) = span_lines(&adt_span);
+                            chunks.push(MirChunk {
+                                name: type_name, file: adt_file,
+                                kind: kind_str.to_string(),
+                                start_line: adt_start, end_line: adt_end,
+                                signature: None, visibility: String::new(),
+                                is_test: false, body: String::new(),
+                                calls: String::new(), type_refs: String::new(),
+                            });
+                        }
                     }
+                    break; // first type arg is self type
                 }
             }
         }
@@ -179,6 +191,7 @@ fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -> Co
         struct CallExtractor<'a> {
             caller_name: String,
             caller_file: String,
+            locals: &'a [rustc_public::mir::LocalDecl],
             edges: &'a mut Vec<CallEdge>,
             name_cache: &'a mut std::collections::HashMap<String, String>,
         }
@@ -186,7 +199,7 @@ fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -> Co
         impl MirVisitor for CallExtractor<'_> {
             fn visit_terminator(&mut self, term: &Terminator, _loc: Location) {
                 if let TerminatorKind::Call { ref func, .. } = term.kind {
-                    if let Ok(op_ty) = func.ty(&[]) {
+                    if let Ok(op_ty) = func.ty(self.locals) {
                         if let TyKind::RigidTy(RigidTy::FnDef(def, _args)) = op_ty.kind() {
                             use rustc_public::CrateDef as _;
                             let raw_callee = def.name().to_string();
@@ -223,7 +236,7 @@ fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -> Co
                     // Also capture function references passed as arguments
                     if let TerminatorKind::Call { ref args, .. } = term.kind {
                         for arg in args {
-                            if let Ok(arg_ty) = arg.ty(&[]) {
+                            if let Ok(arg_ty) = arg.ty(self.locals) {
                                 if let TyKind::RigidTy(RigidTy::FnDef(ref_def, _)) = arg_ty.kind() {
                                     use rustc_public::CrateDef as _;
                                     let ref_name = self.name_cache.entry(ref_def.name().to_string())
@@ -252,6 +265,7 @@ fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -> Co
         let mut extractor = CallExtractor {
             caller_name: caller_name.clone(),
             caller_file: caller_file.clone(),
+            locals: body.locals(),
             edges: &mut edges,
             name_cache: &mut name_cache,
         };
@@ -367,7 +381,8 @@ fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -> Co
         eprintln!("[mir-callgraph] {crate_name}: {} edges, {} chunks", edges.len(), chunks.len());
     }
 
-    ControlFlow::Break(())
+    // Continue to let rustc emit metadata (required by cargo in RUSTC_WRAPPER mode)
+    ControlFlow::Continue(())
 }
 
 // ── Main ────────────────────────────────────────────────────────────
@@ -436,7 +451,14 @@ fn main() {
             let json = env::var("MIR_CALLGRAPH_JSON").is_ok();
             let is_test_target = rustc_args.iter().any(|a| a == "--test");
             let db_path = env::var("MIR_CALLGRAPH_DB").ok();
-            let _ = rustc_public::run!(&full_args, || extract_all(is_test_target, json, &db_path));
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                rustc_public::run!(&full_args, || extract_all(is_test_target, json, &db_path))
+            }));
+            match result {
+                Ok(Ok(_)) | Ok(Err(rustc_public::CompilerError::Interrupted(_))) | Ok(Err(rustc_public::CompilerError::Skipped)) => {}
+                Ok(Err(e)) => eprintln!("[mir-callgraph] run! error: {e:?}"),
+                Err(panic) => eprintln!("[mir-callgraph] panic: {panic:?}"),
+            }
         } else {
             let status = Command::new(&args[1]).args(&args[2..]).status().expect("failed to run rustc");
             std::process::exit(status.code().unwrap_or(1));
@@ -483,7 +505,9 @@ fn main() {
                 Some(guard)
             } else { None };
 
-            let _ = rustc_public::run!(&cached.args, || extract_all(is_test_target, json, &db_path));
+            if let Err(e) = rustc_public::run!(&cached.args, || extract_all(is_test_target, json, &db_path)) {
+                eprintln!("[mir-callgraph] run! error: {e:?}");
+            }
         }
 
         if had_error { std::process::exit(1); }
