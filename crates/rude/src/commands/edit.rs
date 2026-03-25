@@ -329,64 +329,36 @@ fn print_dry_run(
     }
 }
 
-fn insert_reexport(path: &std::path::Path, reexport_line: &str) -> Result<()> {
+fn insert_line_after(path: &Path, matcher: impl Fn(&str) -> bool, line: &str, skip_if: Option<&str>) -> Result<()> {
     locked_edit(path, |content| {
-        let lines: Vec<&str> = content.lines().collect();
-        let use_end = lines
-            .iter()
-            .rposition(|l| {
-                let t = l.trim();
-                t.starts_with("use ") || t.starts_with("pub use ")
-            })
-            .map(|i| i + 1)
-            .unwrap_or(0);
-
-        let mut result: Vec<String> = Vec::with_capacity(lines.len() + 2);
-        for (i, &line) in lines.iter().enumerate() {
-            result.push(line.to_string());
-            if i + 1 == use_end { result.push(reexport_line.to_string()); }
+        if let Some(check) = skip_if {
+            if content.lines().any(|l| l.trim() == check) { return Ok(content.to_string()); }
         }
-        if use_end == 0 {
-            result.insert(0, reexport_line.to_string());
+        let lines: Vec<&str> = content.lines().collect();
+        let pos = lines.iter().rposition(|l| matcher(l.trim())).map(|i| i + 1).unwrap_or(0);
+        let mut result: Vec<String> = Vec::with_capacity(lines.len() + 2);
+        for (i, &l) in lines.iter().enumerate() {
+            result.push(l.to_string());
+            if i + 1 == pos { result.push(line.to_string()); }
+        }
+        if pos == 0 {
+            result.insert(0, line.to_string());
             if !lines.is_empty() { result.insert(1, String::new()); }
         }
-
         let trailing = content.ends_with('\n');
         Ok(if trailing { result.join("\n") + "\n" } else { result.join("\n") })
     })
 }
 
-fn insert_mod_decl(path: &std::path::Path, mod_decl: &str, module_name: &str) -> Result<()> {
-    locked_edit(path, |content| {
-        let already_declared = content.lines().any(|l| {
-            let t = l.trim();
-            t == format!("mod {module_name};")
-                || t == format!("pub mod {module_name};")
-                || t == format!("pub(crate) mod {module_name};")
-        });
-        if already_declared { return Ok(content.to_string()); }
+fn insert_reexport(path: &Path, reexport_line: &str) -> Result<()> {
+    insert_line_after(path, |t| t.starts_with("use ") || t.starts_with("pub use "), reexport_line, None)
+}
 
-        let lines: Vec<&str> = content.lines().collect();
-        let mod_end = lines
-            .iter()
-            .rposition(|l| {
-                let t = l.trim();
-                (t.starts_with("mod ") || t.starts_with("pub mod ") || t.starts_with("pub(crate) mod "))
-                    && t.ends_with(';')
-            })
-            .map(|i| i + 1)
-            .unwrap_or(0);
-
-        let mut result: Vec<String> = Vec::with_capacity(lines.len() + 1);
-        for (i, &line) in lines.iter().enumerate() {
-            result.push(line.to_string());
-            if i + 1 == mod_end { result.push(mod_decl.to_string()); }
-        }
-        if mod_end == 0 { result.insert(0, mod_decl.to_string()); }
-
-        let trailing = content.ends_with('\n');
-        Ok(if trailing { result.join("\n") + "\n" } else { result.join("\n") })
-    })
+fn insert_mod_decl(path: &Path, mod_decl: &str, module_name: &str) -> Result<()> {
+    let check = format!("pub mod {module_name};");
+    insert_line_after(path,
+        |t| (t.starts_with("mod ") || t.starts_with("pub mod ") || t.starts_with("pub(crate) mod ")) && t.ends_with(';'),
+        mod_decl, Some(&check))
 }
 
 pub fn split(symbols: String, to: String, dry_run: bool) -> Result<()> {

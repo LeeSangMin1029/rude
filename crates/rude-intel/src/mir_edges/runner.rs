@@ -19,27 +19,21 @@ fn rude_home() -> Result<PathBuf> {
     Ok(home.join(".rude"))
 }
 
-pub(super) fn nightly_rustc_version() -> Option<String> {
-    Command::new("rustc")
-        .args(["+nightly", "--version"])
-        .output()
-        .ok()
+fn run_nightly_rustc(args: &[&str]) -> Option<String> {
+    let mut cmd_args = vec!["+nightly"];
+    cmd_args.extend(args);
+    Command::new("rustc").args(&cmd_args).output().ok()
         .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_owned())
 }
 
+pub(super) fn nightly_rustc_version() -> Option<String> {
+    run_nightly_rustc(&["--version"])
+}
+
 fn nightly_sysroot_bin() -> Option<String> {
-    Command::new("rustc")
-        .args(["+nightly", "--print", "sysroot"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| {
-            let sysroot = s.trim();
-            format!("{sysroot}/bin")
-        })
+    run_nightly_rustc(&["--print", "sysroot"]).map(|s| format!("{s}/bin"))
 }
 
 pub(super) fn add_nightly_path(cmd: &mut Command) {
