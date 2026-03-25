@@ -296,12 +296,14 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool, db_path: &Opti
                     for impl_def_id in impls.blanket_impls().iter()
                         .chain(impls.non_blanket_impls().values().flat_map(|v| v.iter()))
                     {
-                        // Include workspace-local impls (not just current crate).
-                        // Check if the impl's source file is a real file (not from external deps).
-                        let impl_span = tcx.def_span(*impl_def_id);
-                        let impl_file = extract_filename(source_map, impl_span);
-                        if impl_file.is_empty() || impl_file.starts_with('/') && impl_file.contains("/.cargo/") || impl_file.contains("\\.cargo\\") {
-                            continue;
+                        // Filter: local crate OR workspace source file.
+                        // Workspace files have relative paths (e.g. "crates/foo/src/lib.rs").
+                        // External deps have absolute paths (e.g. "C:/Users/.cargo/..." or "/home/.rustup/...").
+                        if !impl_def_id.is_local() {
+                            let span = tcx.def_span(*impl_def_id);
+                            let file = extract_filename(source_map, span);
+                            let is_absolute = file.starts_with('/') || file.contains(":/");
+                            if is_absolute { continue; }
                         }
                         for item in tcx.associated_items(*impl_def_id).in_definition_order() {
                             if item.name() == method_name && matches!(item.kind, rustc_middle::ty::AssocKind::Fn { .. }) {
