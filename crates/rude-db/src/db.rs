@@ -30,17 +30,10 @@ impl StorageEngine {
     pub fn open(dir: impl AsRef<Path>) -> Result<Self> {
         let dir = dir.as_ref().to_path_buf();
         let db_path = dir.join("store.db");
-
         if !db_path.exists() {
             bail!("database not found: {}", db_path.display());
         }
-
-        let conn = Connection::open(&db_path)
-            .with_context(|| format!("failed to open database: {}", db_path.display()))?;
-
-        Self::apply_pragmas(&conn)?;
-
-        Ok(Self { conn, dir })
+        Self::open_impl(dir, false)
     }
 
     /// Open (or create) a database with schema initialization.
@@ -50,14 +43,18 @@ impl StorageEngine {
         let dir = dir.as_ref().to_path_buf();
         std::fs::create_dir_all(&dir)
             .with_context(|| format!("failed to create directory: {}", dir.display()))?;
+        Self::open_impl(dir, true)
+    }
 
+    /// Internal: open the SQLite connection, apply pragmas, and optionally initialize schema.
+    fn open_impl(dir: PathBuf, init_schema: bool) -> Result<Self> {
         let db_path = dir.join("store.db");
         let conn = Connection::open(&db_path)
             .with_context(|| format!("failed to open database: {}", db_path.display()))?;
-
         Self::apply_pragmas(&conn)?;
-        Self::ensure_schema(&conn)?;
-
+        if init_schema {
+            Self::ensure_schema(&conn)?;
+        }
         Ok(Self { conn, dir })
     }
 
@@ -116,32 +113,7 @@ impl StorageEngine {
     /// Insert a chunk (id, payload, text). No vector argument — vectors
     /// are handled externally in rude.
     pub fn insert(&mut self, id: u64, payload: &Payload, text: &str) -> Result<()> {
-        let tags_json = serde_json::to_string(&payload.tags)
-            .context("failed to serialize tags")?;
-        let custom_json = serde_json::to_string(&payload.custom)
-            .context("failed to serialize custom")?;
-
-        self.conn
-            .execute(
-                "INSERT OR REPLACE INTO chunks
-                     (id, source, tags, custom, created_at, source_modified_at,
-                      chunk_index, chunk_total, text)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![
-                    id as i64,
-                    payload.source,
-                    tags_json,
-                    custom_json,
-                    payload.created_at as i64,
-                    payload.source_modified_at as i64,
-                    payload.chunk_index,
-                    payload.chunk_total,
-                    text,
-                ],
-            )
-            .context("failed to insert chunk")?;
-
-        Ok(())
+        self.insert_batch(&[(id, payload.clone(), text)])
     }
 
     /// Insert a batch of chunks inside a single transaction.
@@ -210,27 +182,20 @@ impl StorageEngine {
             )
             .context("failed to prepare get_payload")?;
 
-        let mut rows = stmt
-            .query_map(params![id as i64], |row| {
-                Ok(PayloadRow {
-                    source: row.get(0)?,
-                    tags_json: row.get(1)?,
-                    custom_json: row.get(2)?,
-                    created_at: row.get(3)?,
-                    source_modified_at: row.get(4)?,
-                    chunk_index: row.get(5)?,
-                    chunk_total: row.get(6)?,
-                })
+        let row = Self::query_first(&mut stmt, params![id as i64], |row| {
+            Ok(PayloadRow {
+                source: row.get(0)?,
+                tags_json: row.get(1)?,
+                custom_json: row.get(2)?,
+                created_at: row.get(3)?,
+                source_modified_at: row.get(4)?,
+                chunk_index: row.get(5)?,
+                chunk_total: row.get(6)?,
             })
-            .context("failed to query payload")?;
+        })
+        .context("failed to query payload")?;
 
-        match rows.next() {
-            Some(row) => {
-                let row = row.context("failed to read payload row")?;
-                Ok(Some(Self::row_to_payload(&row)?))
-            }
-            None => Ok(None),
-        }
+        row.map(|r| Self::row_to_payload(&r)).transpose()
     }
 
     /// Get text for a point.
@@ -240,14 +205,8 @@ impl StorageEngine {
             .prepare_cached("SELECT text FROM chunks WHERE id = ?1")
             .context("failed to prepare get_text")?;
 
-        let mut rows = stmt
-            .query_map(params![id as i64], |row| row.get(0))
-            .context("failed to query text")?;
-
-        match rows.next() {
-            Some(text) => Ok(Some(text.context("failed to read text")?)),
-            None => Ok(None),
-        }
+        Self::query_first(&mut stmt, params![id as i64], |row| row.get(0))
+            .context("failed to query text")
     }
 
     /// Iterate all chunks: returns `(id, payload, text)` tuples.
@@ -343,6 +302,23 @@ impl StorageEngine {
     // ------------------------------------------------------------------
     // Internal helpers
     // ------------------------------------------------------------------
+
+    /// Execute a prepared statement with `params` and return the first mapped row, if any.
+    fn query_first<T, P, F>(
+        stmt: &mut rusqlite::CachedStatement<'_>,
+        params: P,
+        f: F,
+    ) -> Result<Option<T>>
+    where
+        P: rusqlite::Params,
+        F: FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+    {
+        let mut rows = stmt.query_map(params, f)?;
+        match rows.next() {
+            Some(val) => Ok(Some(val?)),
+            None => Ok(None),
+        }
+    }
 
     fn row_to_payload(row: &PayloadRow) -> Result<Payload> {
         let tags: Vec<String> =

@@ -160,131 +160,56 @@ impl CodeChunk {
     /// Includes doc comment, signature, calls, called_by — not the full body.
     /// Use `called_by` to inject reverse-reference data from cross-file analysis.
     pub fn to_embed_text(&self, file_path: &str, called_by: &[String]) -> String {
+        // Helper: push "Label: items" if non-empty
+        fn push_list(parts: &mut Vec<String>, label: &str, items: &[String]) {
+            if !items.is_empty() {
+                parts.push(format!("{label}: {}", items.join(", ")));
+            }
+        }
+        fn pairs_to_strings<A: AsRef<str>, B: AsRef<str>>(
+            pairs: &[(A, B)],
+            sep: &str,
+        ) -> Vec<String> {
+            pairs.iter().map(|(a, b)| format!("{}{sep}{}", a.as_ref(), b.as_ref())).collect()
+        }
+
         let mut parts = Vec::new();
 
-        // [kind] visibility name
-        let vis = if self.visibility.is_empty() {
-            String::new()
-        } else {
-            format!("{} ", self.visibility)
-        };
+        let vis = if self.visibility.is_empty() { String::new() } else { format!("{} ", self.visibility) };
         parts.push(format!("[{}] {vis}{}", self.kind.as_str(), self.name));
+        parts.push(format!("File: {file_path}:{}-{}", self.start_line + 1, self.end_line + 1));
 
-        // File location
-        parts.push(format!(
-            "File: {file_path}:{}-{}",
-            self.start_line + 1,
-            self.end_line + 1
-        ));
+        if let Some(ref doc) = self.doc_comment { parts.push(doc.clone()); }
+        if let Some(ref sig) = self.signature    { parts.push(format!("Signature: {sig}")); }
 
-        // Doc comment
-        if let Some(ref doc) = self.doc_comment {
-            parts.push(doc.clone());
-        }
+        push_list(&mut parts, "Params",       &pairs_to_strings(&self.param_types, ": "));
+        push_list(&mut parts, "Fields",       &pairs_to_strings(&self.field_types, ": "));
 
-        // Signature
-        if let Some(ref sig) = self.signature {
-            parts.push(format!("Signature: {sig}"));
-        }
+        if let Some(ref ret) = self.return_type { parts.push(format!("Returns: {ret}")); }
 
-        // Parameter types
-        if !self.param_types.is_empty() {
-            let params: Vec<String> = self
-                .param_types
-                .iter()
-                .map(|(n, t)| format!("{n}: {t}"))
-                .collect();
-            parts.push(format!("Params: {}", params.join(", ")));
-        }
+        push_list(&mut parts, "Types", &self.type_refs);
 
-        // Struct field types
-        if !self.field_types.is_empty() {
-            let fields: Vec<String> = self
-                .field_types
-                .iter()
-                .map(|(n, t)| format!("{n}: {t}"))
-                .collect();
-            parts.push(format!("Fields: {}", fields.join(", ")));
-        }
-
-        // Return type
-        if let Some(ref ret) = self.return_type {
-            parts.push(format!("Returns: {ret}"));
-        }
-
-        // Type references
-        if !self.type_refs.is_empty() {
-            parts.push(format!("Types: {}", self.type_refs.join(", ")));
-        }
-
-        // Calls (with source line annotations: name@line, 1-based)
         if !self.calls.is_empty() {
-            let annotated: Vec<String> = self.calls.iter().enumerate().map(|(i, c)| {
-                if let Some(&line) = self.call_lines.get(i) {
-                    format!("{c}@{}", line + 1) // 0-based → 1-based
-                } else {
-                    c.clone()
-                }
-            }).collect();
-            parts.push(format!("Calls: {}", annotated.join(", ")));
-        }
-
-        // String args
-        if !self.string_args.is_empty() {
-            let items: Vec<String> = self.string_args.iter()
-                .map(|(callee, value, _, _)| format!("{callee}(\"{value}\")"))
+            let annotated: Vec<String> = self.calls.iter().enumerate()
+                .map(|(i, c)| match self.call_lines.get(i) {
+                    Some(&line) => format!("{c}@{}", line + 1),
+                    None        => c.clone(),
+                })
                 .collect();
-            parts.push(format!("Strings: {}", items.join(", ")));
+            push_list(&mut parts, "Calls", &annotated);
         }
 
-        // Parameter flows
-        if !self.param_flows.is_empty() {
-            let items: Vec<String> = self
-                .param_flows
-                .iter()
-                .map(|(pname, _, callee, _, _)| format!("{pname}\u{2192}{callee}"))
-                .collect();
-            parts.push(format!("Flows: {}", items.join(", ")));
-        }
-
-        // Local variable type annotations
-        if !self.local_types.is_empty() {
-            let items: Vec<String> = self
-                .local_types
-                .iter()
-                .map(|(name, ty)| format!("{name}: {ty}"))
-                .collect();
-            parts.push(format!("Locals: {}", items.join(", ")));
-        }
-
-        if !self.let_call_bindings.is_empty() {
-            let items: Vec<String> = self
-                .let_call_bindings
-                .iter()
-                .map(|(var, callee)| format!("{var}={callee}"))
-                .collect();
-            parts.push(format!("Bindings: {}", items.join(", ")));
-        }
-
-        // Field accesses (non-call)
-        if !self.field_accesses.is_empty() {
-            let items: Vec<String> = self
-                .field_accesses
-                .iter()
-                .map(|(recv, field)| format!("{recv}.{field}"))
-                .collect();
-            parts.push(format!("FieldAccesses: {}", items.join(", ")));
-        }
-
-        // Enum variant names
-        if !self.enum_variants.is_empty() {
-            parts.push(format!("Variants: {}", self.enum_variants.join(", ")));
-        }
-
-        // Called by (reverse references)
-        if !called_by.is_empty() {
-            parts.push(format!("Called by: {}", called_by.join(", ")));
-        }
+        push_list(&mut parts, "Strings",
+            &self.string_args.iter().map(|(c, v, _, _)| format!("{c}(\"{v}\")")).collect::<Vec<_>>());
+        push_list(&mut parts, "Flows",
+            &self.param_flows.iter().map(|(p, _, c, _, _)| format!("{p}\u{2192}{c}")).collect::<Vec<_>>());
+        push_list(&mut parts, "Locals",       &pairs_to_strings(&self.local_types, ": "));
+        push_list(&mut parts, "Bindings",
+            &self.let_call_bindings.iter().map(|(v, c)| format!("{v}={c}")).collect::<Vec<_>>());
+        push_list(&mut parts, "FieldAccesses",
+            &self.field_accesses.iter().map(|(r, f)| format!("{r}.{f}")).collect::<Vec<_>>());
+        push_list(&mut parts, "Variants",     &self.enum_variants);
+        push_list(&mut parts, "Called by",    called_by);
 
         parts.join("\n")
     }
@@ -293,137 +218,50 @@ impl CodeChunk {
     ///
     /// Pass `called_by` from cross-file reverse-reference analysis.
     pub fn to_custom_fields(&self, called_by: &[String]) -> HashMap<String, PayloadValue> {
-        let mut custom = HashMap::new();
-
-        custom.insert(
-            "kind".to_owned(),
-            PayloadValue::String(self.kind.as_str().to_owned()),
-        );
-        custom.insert(
-            "name".to_owned(),
-            PayloadValue::String(self.name.clone()),
-        );
-        custom.insert(
-            "visibility".to_owned(),
-            PayloadValue::String(self.visibility.clone()),
-        );
-        custom.insert(
-            "start_line".to_owned(),
-            PayloadValue::Integer(i64::try_from(self.start_line).unwrap_or(0)),
-        );
-        custom.insert(
-            "end_line".to_owned(),
-            PayloadValue::Integer(i64::try_from(self.end_line).unwrap_or(0)),
-        );
-
-        if let Some(ref sig) = self.signature {
-            custom.insert("signature".to_owned(), PayloadValue::String(sig.clone()));
+        // Helper: insert StringList only when non-empty
+        fn ins_list(m: &mut HashMap<String, PayloadValue>, key: &str, v: Vec<String>) {
+            if !v.is_empty() { m.insert(key.to_owned(), PayloadValue::StringList(v)); }
         }
-        if let Some(ref doc) = self.doc_comment {
-            custom.insert("doc".to_owned(), PayloadValue::String(doc.clone()));
-        }
-        if !self.calls.is_empty() {
-            custom.insert(
-                "calls".to_owned(),
-                PayloadValue::StringList(self.calls.clone()),
-            );
-        }
-        if !self.imports.is_empty() {
-            custom.insert(
-                "imports".to_owned(),
-                PayloadValue::StringList(self.imports.clone()),
-            );
-        }
-        if !called_by.is_empty() {
-            custom.insert(
-                "called_by".to_owned(),
-                PayloadValue::StringList(called_by.to_vec()),
-            );
-        }
-        if !self.type_refs.is_empty() {
-            custom.insert(
-                "type_refs".to_owned(),
-                PayloadValue::StringList(self.type_refs.clone()),
-            );
-        }
-        if let Some(ref ret) = self.return_type {
-            custom.insert("return_type".to_owned(), PayloadValue::String(ret.clone()));
-        }
-        if self.ast_hash != 0 {
-            #[expect(clippy::cast_possible_wrap, reason = "hash bits reinterpreted")]
-            custom.insert(
-                "ast_hash".to_owned(),
-                PayloadValue::Integer(self.ast_hash as i64),
-            );
-        }
-        if self.body_hash != 0 {
-            #[expect(clippy::cast_possible_wrap, reason = "hash bits reinterpreted")]
-            custom.insert(
-                "body_hash".to_owned(),
-                PayloadValue::Integer(self.body_hash as i64),
-            );
+        fn ins_str(m: &mut HashMap<String, PayloadValue>, key: &str, v: String) {
+            m.insert(key.to_owned(), PayloadValue::String(v));
         }
 
-        // String args
-        if !self.string_args.is_empty() {
-            let encoded: Vec<String> = self.string_args.iter()
-                .map(|(callee, value, line, pos)| format!("{callee}\t{value}\t{line}\t{pos}"))
-                .collect();
-            custom.insert(
-                "string_args".to_owned(),
-                PayloadValue::StringList(encoded),
-            );
-        }
+        let mut c = HashMap::new();
 
-        // Parameter flows
-        if !self.param_flows.is_empty() {
-            let encoded: Vec<String> = self
-                .param_flows
-                .iter()
-                .map(|(pname, ppos, callee, carg, line)| {
-                    format!("{pname}\t{ppos}\t{callee}\t{carg}\t{line}")
-                })
-                .collect();
-            custom.insert(
-                "param_flows".to_owned(),
-                PayloadValue::StringList(encoded),
-            );
-        }
+        ins_str(&mut c, "kind",       self.kind.as_str().to_owned());
+        ins_str(&mut c, "name",       self.name.clone());
+        ins_str(&mut c, "visibility", self.visibility.clone());
+        c.insert("start_line".to_owned(), PayloadValue::Integer(i64::try_from(self.start_line).unwrap_or(0)));
+        c.insert("end_line".to_owned(),   PayloadValue::Integer(i64::try_from(self.end_line).unwrap_or(0)));
 
-        // Local variable type annotations
-        if !self.local_types.is_empty() {
-            let encoded: Vec<String> = self
-                .local_types
-                .iter()
-                .map(|(name, ty)| format!("{name}\t{ty}"))
-                .collect();
-            custom.insert(
-                "local_types".to_owned(),
-                PayloadValue::StringList(encoded),
-            );
-        }
+        if let Some(ref s) = self.signature  { ins_str(&mut c, "signature",   s.clone()); }
+        if let Some(ref d) = self.doc_comment { ins_str(&mut c, "doc",        d.clone()); }
+        if let Some(ref r) = self.return_type { ins_str(&mut c, "return_type", r.clone()); }
 
-        // Sub-block AST hashes for fine-grained clone detection
-        if !self.sub_blocks.is_empty() {
-            let hashes: Vec<String> = self.sub_blocks.iter()
-                .map(|sb| format!("{:x}:{}-{}", sb.ast_hash, sb.start_line, sb.end_line))
-                .collect();
-            custom.insert(
-                "sub_block_hashes".to_owned(),
-                PayloadValue::StringList(hashes),
-            );
-        }
+        ins_list(&mut c, "calls",      self.calls.clone());
+        ins_list(&mut c, "imports",    self.imports.clone());
+        ins_list(&mut c, "called_by",  called_by.to_vec());
+        ins_list(&mut c, "type_refs",  self.type_refs.clone());
+        ins_list(&mut c, "string_args",
+            self.string_args.iter().map(|(cl, v, l, p)| format!("{cl}\t{v}\t{l}\t{p}")).collect());
+        ins_list(&mut c, "param_flows",
+            self.param_flows.iter().map(|(pn, pp, cl, ca, l)| format!("{pn}\t{pp}\t{cl}\t{ca}\t{l}")).collect());
+        ins_list(&mut c, "local_types",
+            self.local_types.iter().map(|(n, t)| format!("{n}\t{t}")).collect());
+        ins_list(&mut c, "sub_block_hashes",
+            self.sub_blocks.iter().map(|sb| format!("{:x}:{}-{}", sb.ast_hash, sb.start_line, sb.end_line)).collect());
+
+        #[expect(clippy::cast_possible_wrap, reason = "hash bits reinterpreted")]
+        if self.ast_hash  != 0 { c.insert("ast_hash".to_owned(),  PayloadValue::Integer(self.ast_hash  as i64)); }
+        #[expect(clippy::cast_possible_wrap, reason = "hash bits reinterpreted")]
+        if self.body_hash != 0 { c.insert("body_hash".to_owned(), PayloadValue::Integer(self.body_hash as i64)); }
 
         // MinHash token fingerprint for near-duplicate detection
         let tokens = minhash::code_tokens(&self.text);
         if tokens.len() >= 10 {
-            let sig = minhash::minhash_signature(&tokens, minhash::MINHASH_K);
-            custom.insert(
-                "minhash".to_owned(),
-                PayloadValue::String(minhash::minhash_to_hex(&sig)),
-            );
+            ins_str(&mut c, "minhash", minhash::minhash_to_hex(&minhash::minhash_signature(&tokens, minhash::MINHASH_K)));
         }
 
-        custom
+        c
     }
 }

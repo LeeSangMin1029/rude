@@ -161,16 +161,12 @@ pub fn load_or_build_graph_with_chunks(
         None
     };
 
-    let g = match mir_edges.as_ref() {
-        Some(mir) if mir.total > 0 => {
-            eprintln!("[graph] Rebuilding with MIR edges ({} total)...", mir.total);
-            crate::graph::CallGraph::build_with_mir(&chunks, mir)
-        }
-        _ => {
-            eprintln!("[graph] Building graph (name-resolve fallback)...");
-            crate::graph::CallGraph::build(&chunks)
-        }
-    };
+    if mir_edges.as_ref().map_or(false, |m| m.total > 0) {
+        eprintln!("[graph] Rebuilding with MIR edges ({} total)...", mir_edges.as_ref().unwrap().total);
+    } else {
+        eprintln!("[graph] Building graph (name-resolve fallback)...");
+    }
+    let g = crate::graph::CallGraph::build_only(&chunks, mir_edges.as_ref(), None, db);
 
     let _ = g.save(db);
     Ok((g, Some(chunks)))

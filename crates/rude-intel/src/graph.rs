@@ -56,45 +56,6 @@ pub struct CallGraph {
 // ── Build ───────────────────────────────────────────────────────────
 
 impl CallGraph {
-    /// Build call graph using name matching (legacy).
-    pub fn build(chunks: &[ParsedChunk]) -> Self {
-        let t0 = std::time::Instant::now();
-        let index = ChunkIndex::build(chunks);
-        let adj = edge_resolve::resolve_by_name(chunks, &index);
-        eprintln!("      [graph] name-resolve: {:.1}ms ({} chunks)", t0.elapsed().as_secs_f64() * 1000.0, chunks.len());
-        Self::assemble(chunks, &index, adj)
-    }
-
-    /// Build call graph using MIR-resolved edges (100% accurate).
-    /// Falls back to name matching for edges not found in MIR.
-    pub fn build_with_mir(chunks: &[ParsedChunk], mir_edges: &MirEdgeMap) -> Self {
-        let t0 = std::time::Instant::now();
-        let index = ChunkIndex::build(chunks);
-        let adj = edge_resolve::resolve_with_mir(chunks, &index, mir_edges);
-        eprintln!("      [graph] mir-resolve: {:.1}ms ({} chunks)", t0.elapsed().as_secs_f64() * 1000.0, chunks.len());
-        Self::assemble(chunks, &index, adj)
-    }
-
-    /// Build call graph with incremental MIR edge resolve.
-    ///
-    /// Only re-resolves edges for `changed_crates`; loads cached results
-    /// for unchanged crates. Falls back to full resolve if
-    /// `changed_crates` is empty.
-    pub fn build_with_mir_incremental(
-        chunks: &[ParsedChunk],
-        mir_edges: &MirEdgeMap,
-        changed_crates: &[String],
-        db_path: &Path,
-        mir_edge_dir: &Path,
-    ) -> Self {
-        let t0 = std::time::Instant::now();
-        let index = ChunkIndex::build(chunks);
-        let adj = edge_resolve::resolve_incremental(
-            chunks, &index, mir_edges, changed_crates, db_path, mir_edge_dir,
-        );
-        eprintln!("      [graph] mir-incremental: {:.1}ms ({} chunks)", t0.elapsed().as_secs_f64() * 1000.0, chunks.len());
-        Self::assemble(chunks, &index, adj)
-    }
 
     /// Assemble CallGraph from resolved edges + chunk metadata.
     fn assemble(chunks: &[ParsedChunk], index: &ChunkIndex, adj: ResolvedEdges, ) -> Self {
@@ -199,19 +160,34 @@ impl CallGraph {
     }
 
     /// Build graph without saving — caller decides when/how to persist.
+    ///
+    /// - `mir_edges` = None → name-resolve (legacy)
+    /// - `mir_edges` = Some → MIR resolve
+    /// - `incremental` = Some → per-crate cached MIR resolve
     pub fn build_only(
         chunks: &[ParsedChunk],
         mir_edges: Option<&MirEdgeMap>,
         incremental: Option<IncrementalArgs<'_>>,
         db: &Path,
     ) -> Self {
-        match (mir_edges, incremental) {
+        let t0 = std::time::Instant::now();
+        let index = ChunkIndex::build(chunks);
+        let (adj, label) = match (mir_edges, incremental) {
             (Some(mir), Some(inc)) if mir.total > 0 => {
-                Self::build_with_mir_incremental(chunks, mir, inc.changed_crates, db, inc.mir_edge_dir)
+                let adj = edge_resolve::resolve_incremental(
+                    chunks, &index, mir, inc.changed_crates, db, inc.mir_edge_dir,
+                );
+                (adj, "mir-incremental")
             }
-            (Some(mir), _) if mir.total > 0 => Self::build_with_mir(chunks, mir),
-            _ => Self::build(chunks),
-        }
+            (Some(mir), _) if mir.total > 0 => {
+                (edge_resolve::resolve_with_mir(chunks, &index, mir), "mir-resolve")
+            }
+            _ => {
+                (edge_resolve::resolve_by_name(chunks, &index), "name-resolve")
+            }
+        };
+        eprintln!("      [graph] {label}: {:.1}ms ({} chunks)", t0.elapsed().as_secs_f64() * 1000.0, chunks.len());
+        Self::assemble(chunks, &index, adj)
     }
 
     /// Encode and write graph to disk in a background thread.

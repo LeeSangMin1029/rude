@@ -22,60 +22,6 @@ use rude_intel::clones::{
 };
 use rude_db::StorageEngine;
 
-// ── JSON output types ────────────────────────────────────────────────────
-
-#[derive(Serialize)]
-struct PairsOutput {
-    pairs: Vec<PairJson>,
-}
-
-#[derive(Serialize)]
-struct PairJson {
-    a: String,
-    b: String,
-    sim: f32,
-}
-
-#[derive(Serialize)]
-struct UnifiedPairJson {
-    a: String,
-    b: String,
-    score: f32,
-    jaccard: f32,
-    ast_match: bool,
-    tag: String,
-}
-
-#[derive(Serialize)]
-struct UnifiedPairsOutput {
-    pairs: Vec<UnifiedPairJson>,
-}
-
-#[derive(Serialize)]
-struct GroupJson {
-    hash: String,
-    members: Vec<String>,
-}
-
-#[derive(Serialize)]
-struct GroupsOutput {
-    groups: Vec<GroupJson>,
-}
-
-#[derive(Serialize)]
-struct SubBlockJson {
-    a: String,
-    a_lines: [usize; 2],
-    b: String,
-    b_lines: [usize; 2],
-    body_match: bool,
-}
-
-#[derive(Serialize)]
-struct SubBlocksOutput {
-    sub_block_clones: Vec<SubBlockJson>,
-}
-
 // ── CLI entry point ──────────────────────────────────────────────────────
 
 /// Configuration for the dupes command.
@@ -335,6 +281,12 @@ fn group_by_file(
     by_file
 }
 
+// ── JSON output helper ───────────────────────────────────────────────────
+
+fn print_json<T: Serialize>(val: &T) {
+    println!("{}", serde_json::to_string(val).expect("JSON serialize"));
+}
+
 // ── Pair output (text / JSON) ────────────────────────────────────────────
 
 fn print_pairs_text(
@@ -373,19 +325,26 @@ fn print_pairs_text(
 }
 
 fn print_pairs_json(pairs: &[DupePair], pstore: &(impl PayloadStore + ?Sized)) {
-    let output = PairsOutput {
+    #[derive(Serialize)]
+    struct PairJson { a: String, b: String, sim: f32 }
+    #[derive(Serialize)]
+    struct Out { pairs: Vec<PairJson> }
+    print_json(&Out {
         pairs: pairs.iter().map(|p| PairJson {
             a: label(pstore, p.id_a),
             b: label(pstore, p.id_b),
             sim: p.similarity,
         }).collect(),
-    };
-    println!("{}", serde_json::to_string(&output).expect("JSON serialize"));
+    });
 }
 
 fn print_unified_json(pairs: &[UnifiedDupePair], pstore: &(impl PayloadStore + ?Sized)) {
-    let output = UnifiedPairsOutput {
-        pairs: pairs.iter().map(|p| UnifiedPairJson {
+    #[derive(Serialize)]
+    struct PairJson { a: String, b: String, score: f32, jaccard: f32, ast_match: bool, tag: String }
+    #[derive(Serialize)]
+    struct Out { pairs: Vec<PairJson> }
+    print_json(&Out {
+        pairs: pairs.iter().map(|p| PairJson {
             a: label(pstore, p.id_a),
             b: label(pstore, p.id_b),
             score: p.score,
@@ -393,8 +352,7 @@ fn print_unified_json(pairs: &[UnifiedDupePair], pstore: &(impl PayloadStore + ?
             ast_match: p.ast_match,
             tag: p.tag(),
         }).collect(),
-    };
-    println!("{}", serde_json::to_string(&output).expect("JSON serialize"));
+    });
 }
 
 // ── Group output (AST hash mode) ─────────────────────────────────────────
@@ -455,13 +413,16 @@ fn print_groups_text(groups: &[(u64, Vec<u64>)], pstore: &(impl PayloadStore + ?
 }
 
 fn print_groups_json(groups: &[(u64, Vec<u64>)], pstore: &(impl PayloadStore + ?Sized)) {
-    let output = GroupsOutput {
+    #[derive(Serialize)]
+    struct GroupJson { hash: String, members: Vec<String> }
+    #[derive(Serialize)]
+    struct Out { groups: Vec<GroupJson> }
+    print_json(&Out {
         groups: groups.iter().map(|(hash, ids)| GroupJson {
             hash: format!("{hash:016x}"),
             members: ids.iter().map(|&id| label(pstore, id)).collect(),
         }).collect(),
-    };
-    println!("{}", serde_json::to_string(&output).expect("JSON serialize"));
+    });
 }
 
 // ── Sub-block output ─────────────────────────────────────────────────────
@@ -495,7 +456,11 @@ fn print_sub_block_text(clones: &[SubBlockClone], pstore: &(impl PayloadStore + 
 }
 
 fn print_sub_block_json(clones: &[SubBlockClone], pstore: &(impl PayloadStore + ?Sized)) {
-    let output = SubBlocksOutput {
+    #[derive(Serialize)]
+    struct SubBlockJson { a: String, a_lines: [usize; 2], b: String, b_lines: [usize; 2], body_match: bool }
+    #[derive(Serialize)]
+    struct Out { sub_block_clones: Vec<SubBlockJson> }
+    print_json(&Out {
         sub_block_clones: clones.iter().map(|c| SubBlockJson {
             a: label(pstore, c.chunk_id_a),
             a_lines: [c.block_a_start + 1, c.block_a_end + 1],
@@ -503,8 +468,7 @@ fn print_sub_block_json(clones: &[SubBlockClone], pstore: &(impl PayloadStore + 
             b_lines: [c.block_b_start + 1, c.block_b_end + 1],
             body_match: c.body_match,
         }).collect(),
-    };
-    println!("{}", serde_json::to_string(&output).expect("JSON serialize"));
+    });
 }
 
 // ── Analyze output ───────────────────────────────────────────────────────
