@@ -273,7 +273,10 @@ pub(crate) fn ingest_mir(
                 if let Some(ref lines) = file_lines {
                     let start = mc.start_line.saturating_sub(1);
                     let end = mc.end_line.min(lines.len());
-                    if start < end { parsed_chunk.text = lines[start..end].join("\n"); }
+                    if start < end {
+                        parsed_chunk.text = lines[start..end].join("\n");
+                        parsed_chunk.compute_minhash();
+                    }
                 }
             }
 
