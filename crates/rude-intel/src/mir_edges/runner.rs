@@ -76,7 +76,7 @@ fn install_mir_callgraph() -> Result<PathBuf> {
     std::fs::create_dir_all(&bin_dir)?;
     let status = Command::new("cargo")
         .args(["+nightly", "install", "--git", REPO_URL,
-               "--bin", "mir-callgraph", "--root", &base.to_string_lossy(), "--force"])
+               "mir-callgraph", "--root", &base.to_string_lossy(), "--force"])
         .status()
         .context("failed to run cargo +nightly install")?;
 
