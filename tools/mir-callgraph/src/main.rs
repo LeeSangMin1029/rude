@@ -208,7 +208,12 @@ fn local_workspace_packages() -> Vec<String> {
         .output().ok();
     let Some(out) = output.filter(|o| o.status.success()) else { return Vec::new() };
     let Ok(json) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else { return Vec::new() };
+    // Use package ID (e.g. "path+file:///...#name@ver") to avoid ambiguous specs
     json.get("packages").and_then(|p| p.as_array()).map(|pkgs| {
-        pkgs.iter().filter_map(|p| p.get("name")?.as_str().map(|s| s.to_owned())).collect()
+        pkgs.iter().filter_map(|p| {
+            let id = p.get("id")?.as_str()?;
+            // Only include local (path-based) packages
+            if id.starts_with("path+") { Some(id.to_owned()) } else { None }
+        }).collect()
     }).unwrap_or_default()
 }
