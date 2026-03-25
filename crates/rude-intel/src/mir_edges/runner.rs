@@ -10,6 +10,12 @@ use super::workspace::{all_extern_paths_valid, is_args_cache_stale};
 // Embedded mir-callgraph source files for auto-build.
 const MIR_CALLGRAPH_MAIN_RS: &str =
     include_str!("../../../../tools/mir-callgraph/src/main.rs");
+const MIR_CALLGRAPH_EXTRACT_RS: &str =
+    include_str!("../../../../tools/mir-callgraph/src/extract.rs");
+const MIR_CALLGRAPH_OUTPUT_RS: &str =
+    include_str!("../../../../tools/mir-callgraph/src/output.rs");
+const MIR_CALLGRAPH_TYPES_RS: &str =
+    include_str!("../../../../tools/mir-callgraph/src/types.rs");
 const MIR_CALLGRAPH_CARGO_TOML: &str =
     include_str!("../../../../tools/mir-callgraph/Cargo.toml");
 const MIR_CALLGRAPH_RUST_TOOLCHAIN: &str =
@@ -66,6 +72,12 @@ fn extract_mir_callgraph_source(build_dir: &Path) -> Result<()> {
         .context("failed to write rust-toolchain.toml")?;
     std::fs::write(src_dir.join("main.rs"), MIR_CALLGRAPH_MAIN_RS)
         .context("failed to write main.rs")?;
+    std::fs::write(src_dir.join("extract.rs"), MIR_CALLGRAPH_EXTRACT_RS)
+        .context("failed to write extract.rs")?;
+    std::fs::write(src_dir.join("output.rs"), MIR_CALLGRAPH_OUTPUT_RS)
+        .context("failed to write output.rs")?;
+    std::fs::write(src_dir.join("types.rs"), MIR_CALLGRAPH_TYPES_RS)
+        .context("failed to write types.rs")?;
 
     Ok(())
 }

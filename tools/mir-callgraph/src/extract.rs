@@ -64,74 +64,6 @@ fn make_chunk(name: String, file: String, kind: &str, span: &Span) -> MirChunk {
     }
 }
 
-/// Clean MIR signature for display:
-/// - Strip trailing `{`
-/// - Remove `_N: ` parameter names → keep type only
-/// - Simplify module paths: `graph::CallGraph` → `CallGraph`
-fn clean_mir_signature(raw: &str) -> String {
-    let s = raw.trim_end_matches(|c: char| c == '{' || c.is_whitespace());
-
-    // Replace `_N: Type` with just `Type` in parameter list
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    let mut in_params = false;
-
-    while let Some(c) = chars.next() {
-        if c == '(' { in_params = true; result.push(c); continue; }
-        if c == ')' { in_params = false; result.push(c); continue; }
-
-        if in_params && c == '_' {
-            // Check if this is `_N: ` pattern
-            let mut digits = String::new();
-            while chars.peek().is_some_and(|ch| ch.is_ascii_digit()) {
-                digits.push(chars.next().unwrap());
-            }
-            if !digits.is_empty() && chars.peek() == Some(&':') {
-                chars.next(); // skip ':'
-                if chars.peek() == Some(&' ') { chars.next(); } // skip space
-                continue; // skip the `_N: ` prefix
-            }
-            result.push('_');
-            result.push_str(&digits);
-        } else {
-            result.push(c);
-        }
-    }
-
-    // Simplify paths: `module::Type` → `Type` (keep last segment)
-    let simplified = result
-        .split(|c: char| c == '(' || c == ')' || c == ',' || c == '>' || c == '<')
-        .fold(result.clone(), |acc, _| acc);
-
-    // Simpler approach: regex-like replacement of `word::word::Type` → `Type`
-    let mut out = String::new();
-    let mut i = 0;
-    let bytes = result.as_bytes();
-    while i < bytes.len() {
-        // Find sequences of `ident::ident::...::LastIdent` and keep only LastIdent
-        if bytes[i].is_ascii_alphabetic() || bytes[i] == b'_' {
-            let start = i;
-            let mut last_segment_start = i;
-            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
-                i += 1;
-            }
-            // Check for ::
-            while i + 1 < bytes.len() && bytes[i] == b':' && bytes[i + 1] == b':' {
-                i += 2;
-                last_segment_start = i;
-                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
-                    i += 1;
-                }
-            }
-            out.push_str(&result[last_segment_start..i]);
-        } else {
-            out.push(bytes[i] as char);
-            i += 1;
-        }
-    }
-
-    out
-}
 
 /// Build signature for struct/enum from AdtDef API
 fn build_adt_signature(name: &str, adt: &rustc_public::ty::AdtDef) -> String {
@@ -304,23 +236,9 @@ pub fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -
         let filename = span_file(&body.span);
         let (start_line, end_line) = span_lines(&body.span);
 
-        // Extract signature from fn_sig (fallback; source signature is primary)
-        let signature = {
-            use rustc_public::ty::{RigidTy, TyKind};
-            if let TyKind::RigidTy(RigidTy::FnDef(def, _)) = item.ty().kind() {
-                let sig = def.fn_sig().value;
-                let params: Vec<String> = sig.inputs().iter()
-                    .map(|t| clean_mir_signature(&format!("{t:?}")))
-                    .collect();
-                let ret = clean_mir_signature(&format!("{:?}", sig.output()));
-                let short_name = name.rsplit("::").next().unwrap_or(&name);
-                if ret == "()" {
-                    Some(format!("fn {short_name}({})", params.join(", ")))
-                } else {
-                    Some(format!("fn {short_name}({}) -> {ret}", params.join(", ")))
-                }
-            } else { None }
-        };
+        // Source-based signature is extracted in ingest_mir from body text.
+        // MIR fn_sig produces unreadable Ty debug output, so we skip it here.
+        let signature: Option<String> = None;
 
         // Extract call edges
         let mut extractor = CallExtractor {
