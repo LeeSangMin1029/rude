@@ -36,13 +36,6 @@ pub fn normalize_source(path: &Path) -> String {
     strip_unc_prefix(&s).replace('\\', "/")
 }
 
-/// Lightweight path normalization without filesystem syscalls.
-/// Strips UNC prefix and normalizes slashes only. No canonicalize.
-pub fn normalize_source_light(path: &Path) -> String {
-    let s = path.to_string_lossy();
-    strip_unc_prefix(&s).replace('\\', "/")
-}
-
 /// Generate a stable ID from source path and chunk index.
 pub fn generate_id(source: &str, chunk_index: usize) -> u64 {
     use std::collections::hash_map::DefaultHasher;

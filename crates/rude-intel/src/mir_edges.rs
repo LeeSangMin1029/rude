@@ -4,7 +4,6 @@
 //! resolved call edges for accurate graph construction.
 
 use std::collections::HashMap;
-use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -176,17 +175,6 @@ impl MirEdgeMap {
         }).context("failed to query chunks")?;
 
         rows.collect::<std::result::Result<Vec<_>, _>>().context("failed to collect chunks")
-    }
-
-    /// Resolve a call from a specific file and line to its callee names.
-    pub fn resolve_at(&self, file: &str, line: usize) -> Option<&[String]> {
-        let key = (normalize_path(file), line);
-        self.by_location.get(&key).map(|v| v.as_slice())
-    }
-
-    /// Get all callees for a given caller function name.
-    pub fn callees_of(&self, caller: &str) -> Option<&[CalleeInfo]> {
-        self.by_caller.get(caller).map(|v| v.as_slice())
     }
 
     /// Get the set of all unique crate names present in this edge map.

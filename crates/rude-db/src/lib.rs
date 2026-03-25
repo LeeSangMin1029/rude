@@ -16,7 +16,7 @@ pub use file_index::{
 };
 pub use file_utils::{
     content_hash, content_hash_bytes, generate_id, get_file_mtime, home_dir, is_code_ext,
-    lang_for_ext, normalize_source, normalize_source_light, scan_files, should_skip_dir,
+    lang_for_ext, normalize_source, scan_files, should_skip_dir,
     strip_unc_prefix, strip_unc_prefix_path,
 };
 pub use payload::{Payload, PayloadValue};

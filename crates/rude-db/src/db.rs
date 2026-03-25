@@ -195,17 +195,6 @@ impl StorageEngine {
         Ok(())
     }
 
-    /// Remove all chunks associated with a source path.
-    pub fn remove_by_source(&mut self, source: &str) -> Result<Vec<u64>> {
-        let ids = self.points_by_source(source)?;
-        if !ids.is_empty() {
-            self.conn
-                .execute("DELETE FROM chunks WHERE source = ?1", params![source])
-                .context("failed to remove chunks by source")?;
-        }
-        Ok(ids)
-    }
-
     // ------------------------------------------------------------------
     // Read operations
     // ------------------------------------------------------------------
@@ -347,11 +336,6 @@ impl StorageEngine {
             .query_row("SELECT COUNT(*) FROM chunks", [], |row| row.get(0))
             .context("failed to count chunks")?;
         Ok(count as usize)
-    }
-
-    /// Whether the store is empty.
-    pub fn is_empty(&self) -> Result<bool> {
-        Ok(self.len()? == 0)
     }
 
     // ------------------------------------------------------------------

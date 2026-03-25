@@ -90,13 +90,6 @@ impl FileIndex {
         self.files.get(path)
     }
 
-    /// Check if a file has been modified since last index.
-    pub fn is_modified(&self, path: &str, mtime: u64, size: u64) -> bool {
-        match self.files.get(path) {
-            Some(meta) => meta.mtime != mtime || meta.size != size,
-            None => true, // New file
-        }
-    }
 }
 
 impl Default for FileIndex {
