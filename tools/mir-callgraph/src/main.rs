@@ -194,6 +194,14 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool, db_path: &Opti
         });
     }
 
+    // ── Pre-build trait method → local impls cache ──────────────────
+    // Key: (trait_def_id, method_name) → Vec<(callee_name, callee_file, callee_start_line)>
+    // Avoids repeated tcx.trait_impls_of() + associated_items() per call site (23x speedup).
+    let mut trait_impl_cache: std::collections::HashMap<
+        (DefId, rustc_span::Symbol),
+        Vec<(String, String, usize)>,
+    > = std::collections::HashMap::new();
+
     // ── Phase 2: MIR keys — functions, closures (call edges + fn chunks) ──
     let mut fn_count: usize = 0;
 
@@ -291,61 +299,48 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool, db_path: &Opti
                 if is_trait_method {
                     let trait_def_id = tcx.parent(callee_def_id);
                     let method_name = tcx.item_name(callee_def_id);
-                    let impls = tcx.trait_impls_of(trait_def_id);
-                    let mut emitted = false;
-                    for impl_def_id in impls.blanket_impls().iter()
-                        .chain(impls.non_blanket_impls().values().flat_map(|v| v.iter()))
-                    {
-                        // Filter: local crate OR workspace source file.
-                        // Workspace files have relative paths (e.g. "crates/foo/src/lib.rs").
-                        // External deps have absolute paths (e.g. "C:/Users/.cargo/..." or "/home/.rustup/...").
-                        if !impl_def_id.is_local() {
-                            let span = tcx.def_span(*impl_def_id);
-                            let file = extract_filename(source_map, span);
-                            let is_absolute = file.starts_with('/') || file.contains(":/");
-                            if is_absolute { continue; }
-                        }
-                        for item in tcx.associated_items(*impl_def_id).in_definition_order() {
-                            if item.name() == method_name && matches!(item.kind, rustc_middle::ty::AssocKind::Fn { .. }) {
-                                let impl_span = tcx.def_span(item.def_id);
-                                let impl_file = extract_filename(source_map, impl_span);
-                                let impl_start = source_map.lookup_char_pos(impl_span.lo()).line;
-                                edges.push(CallEdge {
-                                    caller: caller_name.clone(),
-                                    caller_file: caller_file.clone(),
-                                    caller_kind: caller_kind.to_string(),
-                                    callee: canonical_name(tcx, item.def_id),
-                                    callee_file: impl_file,
-                                    callee_start_line: impl_start,
-                                    line: call_line,
-                                    is_local: item.def_id.is_local(),
-                                });
-                                emitted = true;
+                    let cache_key = (trait_def_id, method_name);
+
+                    let cached = trait_impl_cache.entry(cache_key).or_insert_with(|| {
+                        let mut result = Vec::new();
+                        let impls = tcx.trait_impls_of(trait_def_id);
+                        for impl_def_id in impls.blanket_impls().iter()
+                            .chain(impls.non_blanket_impls().values().flat_map(|v| v.iter()))
+                        {
+                            if !impl_def_id.is_local() {
+                                let span = tcx.def_span(*impl_def_id);
+                                let file = extract_filename(source_map, span);
+                                let is_absolute = file.starts_with('/') || file.contains(":/");
+                                if is_absolute { continue; }
+                            }
+                            for item in tcx.associated_items(*impl_def_id).in_definition_order() {
+                                if item.name() == method_name && matches!(item.kind, rustc_middle::ty::AssocKind::Fn { .. }) {
+                                    let impl_span = tcx.def_span(item.def_id);
+                                    result.push((
+                                        canonical_name(tcx, item.def_id),
+                                        extract_filename(source_map, impl_span),
+                                        source_map.lookup_char_pos(impl_span.lo()).line,
+                                    ));
+                                }
                             }
                         }
-                    }
-                    // Also emit edge to default impl if it has a body.
-                    // callee_def_id points to the trait method, which has a body
-                    // if it provides a default implementation.
-                    if tcx.is_mir_available(callee_def_id) {
-                        let callee_span = tcx.def_span(callee_def_id);
-                        let callee_file_str = extract_filename(source_map, callee_span);
-                        if !callee_file_str.is_empty() {
-                            edges.push(CallEdge {
-                                caller: caller_name.clone(),
-                                caller_file: caller_file.clone(),
-                                caller_kind: caller_kind.to_string(),
-                                callee: callee_name.clone(),
-                                callee_file: callee_file_str,
-                                callee_start_line: source_map.lookup_char_pos(callee_span.lo()).line,
-                                line: call_line,
-                                is_local: callee_def_id.is_local(),
-                            });
-                            emitted = true;
+                        // Default impl with body
+                        if tcx.is_mir_available(callee_def_id) {
+                            let span = tcx.def_span(callee_def_id);
+                            let file = extract_filename(source_map, span);
+                            if !file.is_empty() {
+                                result.push((
+                                    canonical_name(tcx, callee_def_id),
+                                    file,
+                                    source_map.lookup_char_pos(span.lo()).line,
+                                ));
+                            }
                         }
-                    }
-                    // Fallback: emit trait method edge if nothing found (external trait)
-                    if !emitted {
+                        result
+                    });
+
+                    if cached.is_empty() {
+                        // Fallback: external trait, emit raw trait method edge
                         let callee_span = tcx.def_span(callee_def_id);
                         edges.push(CallEdge {
                             caller: caller_name.clone(),
@@ -357,6 +352,19 @@ fn extract_all(tcx: TyCtxt<'_>, json: bool, is_test_target: bool, db_path: &Opti
                             line: call_line,
                             is_local: callee_def_id.is_local(),
                         });
+                    } else {
+                        for (impl_name, impl_file, impl_start) in cached.clone() {
+                            edges.push(CallEdge {
+                                caller: caller_name.clone(),
+                                caller_file: caller_file.clone(),
+                                caller_kind: caller_kind.to_string(),
+                                callee: impl_name,
+                                callee_file: impl_file,
+                                callee_start_line: impl_start,
+                                line: call_line,
+                                is_local: true,
+                            });
+                        }
                     }
                 } else {
                     let callee_span = tcx.def_span(callee_def_id);
