@@ -274,63 +274,86 @@ where
 }
 
 /// Replace the body of a symbol with new content.
-/// How to splice content relative to a symbol's range.
-enum Splice<'a> { Replace(&'a str), Before(&'a str), After(&'a str), Delete }
+/// Edit operation on a symbol range.
+enum Op<'a> {
+    /// Replace symbol body with new content.
+    Replace(&'a str),
+    /// Insert content before the symbol.
+    Before(&'a str),
+    /// Insert content after the symbol.
+    After(&'a str),
+    /// Delete the symbol (= replace with nothing).
+    Delete,
+}
 
-/// Core: locate symbol → splice → write back. Caller warning on Delete.
-fn edit_symbol(db: &Path, symbol: &str, file: Option<&str>, mode: Splice) -> Result<()> {
-    if matches!(mode, Splice::Delete) {
-        warn_callers(db, &[symbol]);
+/// Core: locate symbols → apply ops in one locked write → no line drift.
+/// All edit commands (replace, insert, delete) funnel through here.
+fn apply_edits(db: &Path, ops: &[(&str, Op)], file: Option<&str>) -> Result<()> {
+    if ops.is_empty() { return Ok(()); }
+
+    // Warn callers for any Delete ops
+    let deletes: Vec<&str> = ops.iter()
+        .filter(|(_, op)| matches!(op, Op::Delete))
+        .map(|(s, _)| *s)
+        .collect();
+    if !deletes.is_empty() {
+        warn_callers(db, &deletes);
     }
-    let loc = locate_symbol(db, symbol, file)?;
 
-    locked_edit(&loc.abs_path, |content| {
-        let lines: Vec<&str> = content.lines().collect();
-        let mut result: Vec<&str> = Vec::with_capacity(lines.len());
+    // Locate all symbols
+    let mut edits: Vec<(usize, usize, &str, &Op)> = Vec::new();
+    for (sym, op) in ops {
+        let loc = locate_symbol(db, sym, file)?;
+        edits.push((loc.start_line, loc.end_line, sym, op));
+    }
+    // Sort back-to-front so line numbers stay valid
+    edits.sort_by(|a, b| b.0.cmp(&a.0));
 
-        match mode {
-            Splice::Replace(body) | Splice::Before(body) | Splice::After(body) => {
-                let body = body.trim_end();
-                let body_lines: Vec<&str> = body.lines().collect();
-                match mode {
-                    Splice::Replace(_) => {
-                        result.extend_from_slice(&lines[..loc.start_line]);
-                        result.extend_from_slice(&body_lines);
-                        if loc.end_line + 1 < lines.len() { result.extend_from_slice(&lines[loc.end_line + 1..]); }
-                        eprintln!("Replaced {symbol} (L{}-{} → L{}-{}) in {}",
-                            loc.start_line + 1, loc.end_line + 1, loc.start_line + 1, loc.start_line + body_lines.len(), loc.rel_path);
-                    }
-                    Splice::After(_) => {
-                        result.extend_from_slice(&lines[..=loc.end_line]);
-                        result.push("");
-                        result.extend_from_slice(&body_lines);
-                        if loc.end_line + 1 < lines.len() { result.extend_from_slice(&lines[loc.end_line + 1..]); }
-                        eprintln!("Inserted after {symbol} (after L{}) in {}", loc.end_line + 1, loc.rel_path);
-                    }
-                    Splice::Before(_) => {
-                        result.extend_from_slice(&lines[..loc.start_line]);
-                        result.extend_from_slice(&body_lines);
-                        result.push("");
-                        result.extend_from_slice(&lines[loc.start_line..]);
-                        eprintln!("Inserted before {symbol} (before L{}) in {}", loc.start_line + 1, loc.rel_path);
-                    }
-                    _ => unreachable!(),
+    let first = locate_symbol(db, ops[0].0, file)?;
+    locked_edit(&first.abs_path, |content| {
+        let mut lines: Vec<&str> = content.lines().collect();
+
+        for &(start, end, sym, op) in &edits {
+            match op {
+                Op::Replace(body) => {
+                    let body = body.trim_end();
+                    let body_lines: Vec<&str> = body.lines().collect();
+                    let remove_end = (end + 1).min(lines.len());
+                    lines.splice(start..remove_end, body_lines.iter().copied());
+                    eprintln!("Replaced {sym} (L{}-{}) in {}", start + 1, end + 1, first.rel_path);
                 }
-                print_numbered_range(&body_lines, loc.start_line + 1);
-            }
-            Splice::Delete => {
-                result.extend_from_slice(&lines[..loc.start_line]);
-                let mut after = loc.end_line + 1;
-                while after < lines.len() && lines[after].trim().is_empty() { after += 1; }
-                if after < lines.len() { result.extend_from_slice(&lines[after..]); }
-                eprintln!("Deleted {symbol} (L{}-{}) from {}", loc.start_line + 1, loc.end_line + 1, loc.rel_path);
+                Op::Before(body) => {
+                    let body = body.trim_end();
+                    let mut insert: Vec<&str> = body.lines().collect();
+                    insert.push("");
+                    for (i, line) in insert.iter().enumerate() {
+                        lines.insert(start + i, line);
+                    }
+                    eprintln!("Inserted before {sym} (before L{}) in {}", start + 1, first.rel_path);
+                }
+                Op::After(body) => {
+                    let body = body.trim_end();
+                    let mut insert: Vec<&str> = vec![""];
+                    insert.extend(body.lines());
+                    let pos = (end + 1).min(lines.len());
+                    for (i, line) in insert.iter().enumerate() {
+                        lines.insert(pos + i, line);
+                    }
+                    eprintln!("Inserted after {sym} (after L{}) in {}", end + 1, first.rel_path);
+                }
+                Op::Delete => {
+                    let remove_end = (end + 1).min(lines.len());
+                    let mut after = remove_end;
+                    while after < lines.len() && lines[after].trim().is_empty() { after += 1; }
+                    lines.drain(start..after);
+                    eprintln!("Deleted {sym} (L{}-{}) from {}", start + 1, end + 1, first.rel_path);
+                }
             }
         }
-        Ok(join_lines(&result, content.ends_with('\n')))
+        Ok(join_lines(&lines, content.ends_with('\n')))
     })
 }
 
-/// Warn about callers before deletion.
 fn warn_callers(db: &Path, symbols: &[&str]) {
     let Ok((graph, _)) = crate::commands::intel::load_or_build_graph_with_chunks(db) else { return };
     for &sym in symbols {
@@ -351,46 +374,27 @@ fn warn_callers(db: &Path, symbols: &[&str]) {
     }
 }
 
+// ── Public API: thin wrappers around apply_edits ────────────────────
+
 pub fn replace(db: PathBuf, symbol: String, file: Option<String>, body: String) -> Result<()> {
-    edit_symbol(&db, &symbol, file.as_deref(), Splice::Replace(&body))
+    apply_edits(&db, &[(&symbol, Op::Replace(&body))], file.as_deref())
 }
 
 pub fn insert_after(db: PathBuf, symbol: String, file: Option<String>, body: String) -> Result<()> {
-    edit_symbol(&db, &symbol, file.as_deref(), Splice::After(&body))
+    apply_edits(&db, &[(&symbol, Op::After(&body))], file.as_deref())
 }
 
 pub fn insert_before(db: PathBuf, symbol: String, file: Option<String>, body: String) -> Result<()> {
-    edit_symbol(&db, &symbol, file.as_deref(), Splice::Before(&body))
+    apply_edits(&db, &[(&symbol, Op::Before(&body))], file.as_deref())
 }
 
 pub fn delete_symbol(db: PathBuf, symbol: String, file: Option<String>) -> Result<()> {
-    edit_symbol(&db, &symbol, file.as_deref(), Splice::Delete)
+    apply_edits(&db, &[(&symbol, Op::Delete)], file.as_deref())
 }
 
-/// Batch delete: multiple symbols in one pass (no line drift).
 pub fn delete_symbols(db: PathBuf, symbols: &[&str], file: Option<&str>) -> Result<()> {
-    if symbols.is_empty() { return Ok(()); }
-    warn_callers(&db, symbols);
-
-    let mut locs: Vec<(usize, usize, String)> = Vec::new();
-    for &sym in symbols {
-        let loc = locate_symbol(&db, sym, file)?;
-        locs.push((loc.start_line, loc.end_line, sym.to_string()));
-    }
-    locs.sort_by(|a, b| b.0.cmp(&a.0));
-
-    let first_loc = locate_symbol(&db, symbols[0], file)?;
-    locked_edit(&first_loc.abs_path, |content| {
-        let mut lines: Vec<&str> = content.lines().collect();
-        for (start, end, name) in &locs {
-            let end = (*end + 1).min(lines.len());
-            let mut after = end;
-            while after < lines.len() && lines[after].trim().is_empty() { after += 1; }
-            lines.drain(*start..after);
-            eprintln!("  Deleted {name} (L{}-{})", start + 1, end);
-        }
-        Ok(join_lines(&lines, content.ends_with('\n')))
-    })
+    let ops: Vec<(&str, Op)> = symbols.iter().map(|&s| (s, Op::Delete)).collect();
+    apply_edits(&db, &ops, file)
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
