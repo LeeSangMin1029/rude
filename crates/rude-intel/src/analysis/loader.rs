@@ -2,8 +2,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
-use rude_db::{PayloadValue, StorageEngine};
+use anyhow::Result;
 
 use crate::data::parse::{self, ParsedChunk};
 
@@ -36,11 +35,8 @@ pub fn load_chunks(path: &Path) -> Result<Vec<ParsedChunk>> {
         }
     }
 
-    // Cache miss — try mir.db direct path first, then text-based fallback
-    let chunks = load_chunks_from_mir_db(path)
-        .ok()
-        .filter(|c| !c.is_empty())
-        .map_or_else(|| load_chunks_from_db(path), Ok)?;
+    // Cache miss — load from mir.db
+    let chunks = load_chunks_from_mir_db(path)?;
     save_chunks_cache(&cache, &chunks);
     Ok(chunks)
 }
@@ -48,30 +44,10 @@ pub fn load_chunks(path: &Path) -> Result<Vec<ParsedChunk>> {
 pub fn load_chunks_from_mir_db(db_path: &Path) -> Result<Vec<ParsedChunk>> {
     let mir_db = crate::mir_edges::mir_db_path(db_path);
     if !mir_db.exists() {
-        return load_chunks_from_db(db_path);
+        anyhow::bail!("mir.db not found at {}", mir_db.display());
     }
     let mir_chunks = crate::mir_edges::MirEdgeMap::load_chunks_from_sqlite(&mir_db, None)?;
     Ok(crate::mir_edges::mir_chunks_to_parsed(&mir_chunks))
-}
-
-pub fn load_chunks_from_db(path: &Path) -> Result<Vec<ParsedChunk>> {
-    let engine = StorageEngine::open(path)
-        .with_context(|| format!("failed to open database at {}", path.display()))?;
-
-    let rows = engine
-        .iter_all()
-        .with_context(|| format!("failed to read chunks from {}", path.display()))?;
-
-    let mut chunks = Vec::with_capacity(rows.len());
-    for (_, payload, text) in &rows {
-        if let Some(mut chunk) = parse::parse_chunk(text) {
-            if let Some(PayloadValue::StringList(imports)) = payload.custom.get("imports") {
-                chunk.imports.clone_from(imports);
-            }
-            chunks.push(chunk);
-        }
-    }
-    Ok(chunks)
 }
 
 pub fn save_chunks_cache(path: &Path, chunks: &[ParsedChunk]) {

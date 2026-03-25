@@ -9,21 +9,7 @@ fn make_chunk(kind: &str, name: &str, file: &str) -> ParsedChunk {
         name: name.to_owned(),
         file: file.to_owned(),
         lines: Some((1, 10)),
-        signature: None,
-        calls: vec![],
-        call_lines: vec![],
-        types: vec![],
-        imports: vec![],
-        string_args: vec![],
-        param_flows: vec![],
-        param_types: vec![],
-        field_types: vec![],
-        local_types: vec![],
-        let_call_bindings: vec![],
-        field_accesses: vec![],
-        return_type: None,
-        enum_variants: vec![],
-        is_test: false,
+        ..Default::default()
     }
 }
 

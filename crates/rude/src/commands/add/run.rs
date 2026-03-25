@@ -230,9 +230,8 @@ fn merge_chunks_cache(
     db_path: &std::path::Path,
     new_entries: &[CodeChunkEntry],
 ) -> Vec<rude_intel::parse::ParsedChunk> {
-    use rude_intel::parse::ParsedChunk;
-    let new_chunks: Vec<ParsedChunk> = new_entries.iter()
-        .map(|e| ParsedChunk::from_code_chunk(&e.chunk, &e.file_path_str, e.chunk.imports.clone()))
+    let new_chunks: Vec<rude_intel::parse::ParsedChunk> = new_entries.iter()
+        .map(|e| e.chunk.clone())
         .collect();
     if let Some(mut existing) = rude_intel::loader::load_chunks_from_cache(db_path) {
         let new_files: std::collections::HashSet<&str> =
@@ -242,8 +241,7 @@ fn merge_chunks_cache(
         existing.sort_by(|a, b| a.file.cmp(&b.file).then_with(|| a.lines.cmp(&b.lines)));
         existing
     } else {
-        let fallback = new_chunks;
-        rude_intel::loader::load_chunks_from_db(db_path).unwrap_or(fallback)
+        new_chunks
     }
 }
 

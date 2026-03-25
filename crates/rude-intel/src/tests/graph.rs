@@ -16,21 +16,9 @@ fn chunk(name: &str, file: &str, calls: &[&str]) -> ParsedChunk {
         name: name.to_owned(),
         file: file.to_owned(),
         lines: Some((1, 10)),
-        signature: None,
         calls: calls.iter().map(|s| s.to_string()).collect(),
         call_lines: calls.iter().enumerate().map(|(i, _)| i as u32 + 1).collect(),
-        types: vec![],
-        imports: vec![],
-        string_args: vec![],
-        param_flows: vec![],
-        param_types: vec![],
-        field_types: vec![],
-        local_types: vec![],
-        let_call_bindings: vec![],
-        return_type: None,
-        field_accesses: vec![],
-        enum_variants: vec![],
-        is_test: false,
+        ..Default::default()
     }
 }
 
@@ -40,21 +28,7 @@ fn struct_chunk(name: &str, file: &str) -> ParsedChunk {
         name: name.to_owned(),
         file: file.to_owned(),
         lines: Some((1, 5)),
-        signature: None,
-        calls: vec![],
-        call_lines: vec![],
-        types: vec![],
-        imports: vec![],
-        string_args: vec![],
-        param_flows: vec![],
-        param_types: vec![],
-        field_types: vec![],
-        local_types: vec![],
-        let_call_bindings: vec![],
-        return_type: None,
-        field_accesses: vec![],
-        enum_variants: vec![],
-        is_test: false,
+        ..Default::default()
     }
 }
 
@@ -237,24 +211,14 @@ fn trait_impls_populated() {
             name: "Search".to_owned(),
             file: "src/lib.rs".to_owned(),
             lines: Some((1, 5)),
-            signature: None,
-            calls: vec![], call_lines: vec![], types: vec![], imports: vec![],
-            string_args: vec![], param_flows: vec![], param_types: vec![],
-            field_types: vec![], local_types: vec![], let_call_bindings: vec![],
-            return_type: None, field_accesses: vec![], enum_variants: vec![],
-            is_test: false,
+            ..Default::default()
         },
         ParsedChunk {
             kind: "impl".to_owned(),
             name: "Search for Engine".to_owned(),
             file: "src/lib.rs".to_owned(),
             lines: Some((6, 10)),
-            signature: None,
-            calls: vec![], call_lines: vec![], types: vec![], imports: vec![],
-            string_args: vec![], param_flows: vec![], param_types: vec![],
-            field_types: vec![], local_types: vec![], let_call_bindings: vec![],
-            return_type: None, field_accesses: vec![], enum_variants: vec![],
-            is_test: false,
+            ..Default::default()
         },
     ];
     let g = CallGraph::build(&chunks);

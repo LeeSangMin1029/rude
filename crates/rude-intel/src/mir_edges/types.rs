@@ -86,6 +86,8 @@ pub fn mir_chunks_to_parsed(mir_chunks: &[MirChunk]) -> Vec<crate::parse::Parsed
                 mc.type_refs.split(", ").map(|s| s.to_string()).collect()
             };
 
+            let visibility = mc.visibility.clone().unwrap_or_default();
+
             crate::parse::ParsedChunk {
                 kind,
                 name: mc.name.clone(),
@@ -95,17 +97,10 @@ pub fn mir_chunks_to_parsed(mir_chunks: &[MirChunk]) -> Vec<crate::parse::Parsed
                 calls,
                 call_lines,
                 types,
-                imports: Vec::new(),
-                string_args: Vec::new(),
-                param_flows: Vec::new(),
-                param_types: Vec::new(),
-                field_types: Vec::new(),
-                local_types: Vec::new(),
-                let_call_bindings: Vec::new(),
-                return_type: None,
-                field_accesses: Vec::new(),
-                enum_variants: Vec::new(),
+                visibility,
+                text: mc.body.clone(),
                 is_test: mc.is_test,
+                ..Default::default()
             }
         })
         .collect()

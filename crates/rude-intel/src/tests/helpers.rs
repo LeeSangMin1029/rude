@@ -103,21 +103,7 @@ fn lines_str_with_lines() {
         name: "test".to_owned(),
         file: "src/lib.rs".to_owned(),
         lines: Some((10, 20)),
-        signature: None,
-        calls: vec![],
-        call_lines: vec![],
-        types: vec![],
-        imports: vec![],
-        string_args: vec![],
-        param_flows: vec![],
-        param_types: vec![],
-        field_types: vec![],
-        local_types: vec![],
-        let_call_bindings: vec![],
-        field_accesses: vec![],
-        return_type: None,
-        enum_variants: vec![],
-        is_test: false,
+        ..Default::default()
     };
     assert_eq!(lines_str(&c), "10-20");
 }
@@ -129,21 +115,7 @@ fn lines_str_no_lines() {
         name: "test".to_owned(),
         file: "src/lib.rs".to_owned(),
         lines: None,
-        signature: None,
-        calls: vec![],
-        call_lines: vec![],
-        types: vec![],
-        imports: vec![],
-        string_args: vec![],
-        param_flows: vec![],
-        param_types: vec![],
-        field_types: vec![],
-        local_types: vec![],
-        let_call_bindings: vec![],
-        field_accesses: vec![],
-        return_type: None,
-        enum_variants: vec![],
-        is_test: false,
+        ..Default::default()
     };
     assert_eq!(lines_str(&c), "");
 }

@@ -2,38 +2,13 @@
 
     fn make_entry(name: &str, calls: &[&str]) -> CodeChunkEntry {
         CodeChunkEntry {
-            chunk: chunk_code::CodeChunk {
+            chunk: rude_intel::parse::ParsedChunk {
                 name: name.to_string(),
-                kind: chunk_code::CodeNodeKind::Function,
-                text: String::new(),
+                kind: "function".to_string(),
                 calls: calls.iter().map(|s| s.to_string()).collect(),
-                call_lines: vec![],
-                type_refs: vec![],
-                signature: None,
-                doc_comment: None,
-                visibility: String::new(),
-                chunk_index: 0,
-                start_line: 0,
-                end_line: 0,
-                start_byte: 0,
-                end_byte: 0,
-                imports: vec![],
-                param_types: vec![],
-                return_type: None,
-                ast_hash: 0,
-                body_hash: 0,
-                sub_blocks: vec![],
-                string_args: vec![],
-                param_flows: vec![],
-                field_types: vec![],
-                local_types: vec![],
-                let_call_bindings: vec![],
-                field_accesses: vec![],
-                enum_variants: vec![],
-                is_test: false,
+                ..Default::default()
             },
             source: "test.rs".to_string(),
-            file_path_str: "test.rs".to_string(),
             mtime: 0,
             lang: "rust",
         }

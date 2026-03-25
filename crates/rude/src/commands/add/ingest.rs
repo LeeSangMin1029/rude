@@ -2,12 +2,11 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::Result;
-use rude_intel::chunk_types as chunk_code;
+use rude_intel::parse::ParsedChunk;
 
 pub(crate) struct CodeChunkEntry {
-    pub chunk: chunk_code::CodeChunk,
+    pub chunk: ParsedChunk,
     pub source: String,
-    pub file_path_str: String,
     pub mtime: u64,
     pub lang: &'static str,
 }
@@ -93,7 +92,7 @@ pub(crate) fn build_payload(
     let is_test = rude_intel::graph::is_test_path(&entry.source) || chunk.name.starts_with("test_");
 
     let mut tags = Vec::with_capacity(5 + called_by_refs.len());
-    tags.push(format!("kind:{}", chunk.kind.as_str()));
+    tags.push(format!("kind:{}", chunk.kind));
     tags.push(format!("lang:{}", entry.lang));
     if include_role_tag {
         tags.push(format!("role:{}", if is_test { "test" } else { "prod" }));
@@ -118,7 +117,7 @@ pub(crate) fn build_payload(
         custom,
     };
 
-    let embed_text = chunk.to_embed_text(&entry.file_path_str, &called_by_strings);
+    let embed_text = chunk.to_embed_text(&called_by_strings);
 
     (id, payload, embed_text)
 }
@@ -284,13 +283,9 @@ pub(crate) fn ingest_mir(
             let (calls, call_lines) = rude_intel::mir_edges::parse_calls_field(&mc.calls);
 
             let kind = match mc.kind.as_str() {
-                "fn" | "method" => chunk_code::CodeNodeKind::Function,
-                "struct" => chunk_code::CodeNodeKind::Struct,
-                "enum" => chunk_code::CodeNodeKind::Enum,
-                "trait" => chunk_code::CodeNodeKind::Trait,
-                "impl" => chunk_code::CodeNodeKind::Impl,
-                _ => chunk_code::CodeNodeKind::Function,
-            };
+                "fn" | "method" => "function",
+                other => other,
+            }.to_owned();
 
             let type_refs: Vec<String> = if mc.type_refs.is_empty() {
                 Vec::new()
@@ -298,30 +293,30 @@ pub(crate) fn ingest_mir(
                 mc.type_refs.split(", ").map(|s| s.to_owned()).collect()
             };
 
-            let chunk_lines: Vec<&str> = body_text.lines().collect();
+            let chunk_lines_vec: Vec<&str> = body_text.lines().collect();
 
             // Fallback to first line of body when MIR signature is absent.
             let signature = mc.signature.clone().or_else(|| {
-                let first = chunk_lines.first()?;
+                let first = chunk_lines_vec.first()?;
                 let sig_line = first.split('{').next()?.trim();
                 if sig_line.is_empty() { None } else { Some(sig_line.to_owned()) }
             });
 
             let param_types = parse_param_types(signature.as_deref());
             let return_type = parse_return_type(signature.as_deref());
-            let field_types = if kind == chunk_code::CodeNodeKind::Struct {
-                parse_field_types(&chunk_lines)
+            let field_types = if kind == "struct" {
+                parse_field_types(&chunk_lines_vec)
             } else {
                 Vec::new()
             };
-            let enum_variants = if kind == chunk_code::CodeNodeKind::Enum {
-                parse_enum_variants(&chunk_lines)
+            let enum_variants = if kind == "enum" {
+                parse_enum_variants(&chunk_lines_vec)
             } else {
                 Vec::new()
             };
 
             let visibility = mc.visibility.clone().unwrap_or_else(|| {
-                let fl = chunk_lines.first().map(|l| l.trim()).unwrap_or("");
+                let fl = chunk_lines_vec.first().map(|l| l.trim()).unwrap_or("");
                 ["pub(crate)", "pub(super)", "pub"].iter()
                     .find(|p| fl.starts_with(**p))
                     .map(|p| (*p).to_owned())
@@ -331,25 +326,33 @@ pub(crate) fn ingest_mir(
             let is_test = mc.is_test
                 || mc.file.contains("/tests/") || mc.file.contains("\\tests\\")
                 || mc.name.contains("::test_") || mc.name.starts_with("test_")
-                || chunk_lines
+                || chunk_lines_vec
                     .first()
                     .is_some_and(|l| l.contains("#[test]") || l.contains("#[cfg(test)]"));
 
-            let code_chunk = chunk_code::CodeChunk {
-                end_byte: body_text.len(),
-                text: body_text.clone(),
-                kind, name: mc.name.clone(), signature, calls, call_lines, type_refs,
-                start_line: mc.start_line.saturating_sub(1),
-                end_line: mc.end_line.saturating_sub(1),
-                chunk_index: idx, visibility, param_types, field_types,
-                return_type, enum_variants, is_test,
+            let parsed_chunk = ParsedChunk {
+                kind,
+                name: mc.name.clone(),
+                file: normalized_file.clone(),
+                lines: Some((mc.start_line, mc.end_line)),
+                signature,
+                calls,
+                call_lines,
+                types: type_refs,
+                visibility,
+                text: body_text,
+                chunk_index: idx,
+                param_types,
+                field_types,
+                return_type,
+                enum_variants,
+                is_test,
                 ..Default::default()
             };
 
             entries.push(CodeChunkEntry {
-                chunk: code_chunk,
+                chunk: parsed_chunk,
                 source: source.clone(),
-                file_path_str: normalized_file.clone(),
                 mtime,
                 lang,
             });

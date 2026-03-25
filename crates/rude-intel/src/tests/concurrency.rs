@@ -23,18 +23,7 @@ fn test_chunk(name: &str, file: &str, calls: &[&str]) -> ParsedChunk {
         signature: Some(format!("fn {name}()")),
         calls: calls.iter().map(|s| s.to_string()).collect(),
         call_lines: calls.iter().enumerate().map(|(i, _)| i as u32 + 1).collect(),
-        types: vec![],
-        imports: vec![],
-        string_args: vec![],
-        param_flows: vec![],
-        param_types: vec![],
-        field_types: vec![],
-        local_types: vec![],
-        let_call_bindings: vec![],
-        return_type: None,
-        field_accesses: vec![],
-        enum_variants: vec![],
-        is_test: false,
+        ..Default::default()
     }
 }
 

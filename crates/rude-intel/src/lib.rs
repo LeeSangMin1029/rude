@@ -3,7 +3,6 @@ pub mod graph;
 pub mod analysis;
 pub mod mir_edges;
 
-pub use data::chunk_types;
 pub use data::minhash;
 pub use data::parse;
 
