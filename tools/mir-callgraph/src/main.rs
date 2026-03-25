@@ -1,5 +1,6 @@
+// rustc_private + extern crates required by rustc_public::run!() macro.
+// Will be removable when rustc_public is published to crates.io.
 #![feature(rustc_private)]
-
 extern crate rustc_driver;
 extern crate rustc_interface;
 extern crate rustc_middle;
