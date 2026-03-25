@@ -174,8 +174,9 @@ pub fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -
         };
         extractor.visit_body(&body);
 
+        let kind = "fn";
         chunks.push(MirChunk {
-            name, file: filename.clone(), kind: "fn".to_string(),
+            name, file: filename.clone(), kind: kind.to_string(),
             start_line, end_line, signature: None, visibility: String::new(),
             is_test: is_test_fn(&filename, &chunks.last().map(|c| c.name.as_str()).unwrap_or(""), is_test_target),
             body: String::new(), calls: String::new(), type_refs: String::new(),
