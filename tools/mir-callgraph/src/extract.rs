@@ -280,25 +280,33 @@ pub fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -
     let mut seen_types = collect_type_chunks(&krate, &mut chunks);
 
     // Phase 2: function chunks + call edges
-    for item in rustc_public::all_local_items() {
-        let kind_debug = format!("{:?}", item.kind());
-        let name_str = item.name().to_string();
-        // Skip: non-fn, closures, no body
-        if kind_debug != "Fn" || name_str.contains("{closure") || !item.has_body() {
-            continue;
-        }
+    for fn_def in krate.fn_defs() {
+        let name_str = fn_def.name().to_string();
+        if name_str.contains("{closure") { continue; }
+        let item = rustc_public::CrateItem(fn_def.def_id());
+        if !item.has_body() { continue; }
         fn_count += 1;
         let body = item.body().unwrap();
         let name = strip_crate_prefix(&item.name());
         let filename = span_file(&body.span);
         let (start_line, end_line) = span_lines(&body.span);
 
-        // Extract signature from MIR dump (first line), then clean up
+        // Extract signature from fn_sig (fallback; source signature is primary)
         let signature = {
-            let mut buf = Vec::new();
-            item.emit_mir(&mut buf).ok()
-                .and_then(|_| String::from_utf8(buf).ok())
-                .and_then(|s| s.lines().next().map(|l| clean_mir_signature(l.trim())))
+            use rustc_public::ty::{RigidTy, TyKind};
+            if let TyKind::RigidTy(RigidTy::FnDef(def, _)) = item.ty().kind() {
+                let sig = def.fn_sig().value;
+                let params: Vec<String> = sig.inputs().iter()
+                    .map(|t| clean_mir_signature(&format!("{t:?}")))
+                    .collect();
+                let ret = clean_mir_signature(&format!("{:?}", sig.output()));
+                let short_name = name.rsplit("::").next().unwrap_or(&name);
+                if ret == "()" {
+                    Some(format!("fn {short_name}({})", params.join(", ")))
+                } else {
+                    Some(format!("fn {short_name}({}) -> {ret}", params.join(", ")))
+                }
+            } else { None }
         };
 
         // Extract call edges
@@ -354,7 +362,8 @@ fn collect_type_chunks(krate: &rustc_public::Crate, chunks: &mut Vec<MirChunk>) 
     }
 
     // Scan all local items' types for additional ADTs (structs without trait impls)
-    for item in rustc_public::all_local_items() {
+    for fn_def in krate.fn_defs() {
+        let item = rustc_public::CrateItem(fn_def.def_id());
         let ty = item.ty();
         // Direct ADT (e.g. Ctor returns the struct type)
         try_add_adt(&ty, &mut seen_types, chunks);
