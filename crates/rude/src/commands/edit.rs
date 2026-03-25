@@ -274,99 +274,62 @@ where
 }
 
 /// Replace the body of a symbol with new content.
+/// How to splice new content relative to a symbol's range.
+enum Splice { Replace, Before, After }
+
+/// Core: locate symbol → splice content → write back.
+fn edit_symbol(db: &Path, symbol: &str, file: Option<&str>, body: &str, mode: Splice) -> Result<()> {
+    let loc = locate_symbol(db, symbol, file)?;
+    let body = body.trim_end();
+
+    locked_edit(&loc.abs_path, |content| {
+        let lines: Vec<&str> = content.lines().collect();
+        let body_lines: Vec<&str> = body.lines().collect();
+        let cap = lines.len() + body_lines.len() + 1;
+        let mut result: Vec<&str> = Vec::with_capacity(cap);
+
+        let print_start = match mode {
+            Splice::Replace => {
+                result.extend_from_slice(&lines[..loc.start_line]);
+                result.extend_from_slice(&body_lines);
+                if loc.end_line + 1 < lines.len() { result.extend_from_slice(&lines[loc.end_line + 1..]); }
+                let new_end = loc.start_line + body_lines.len();
+                eprintln!("Replaced {symbol} (L{}-{} → L{}-{}) in {}",
+                    loc.start_line + 1, loc.end_line + 1, loc.start_line + 1, new_end, loc.rel_path);
+                loc.start_line + 1
+            }
+            Splice::After => {
+                result.extend_from_slice(&lines[..=loc.end_line]);
+                result.push("");
+                result.extend_from_slice(&body_lines);
+                if loc.end_line + 1 < lines.len() { result.extend_from_slice(&lines[loc.end_line + 1..]); }
+                eprintln!("Inserted after {symbol} (after L{}) in {}", loc.end_line + 1, loc.rel_path);
+                loc.end_line + 2
+            }
+            Splice::Before => {
+                result.extend_from_slice(&lines[..loc.start_line]);
+                result.extend_from_slice(&body_lines);
+                result.push("");
+                result.extend_from_slice(&lines[loc.start_line..]);
+                eprintln!("Inserted before {symbol} (before L{}) in {}", loc.start_line + 1, loc.rel_path);
+                loc.start_line + 1
+            }
+        };
+        print_numbered_range(&body_lines, print_start);
+        Ok(join_lines(&result, content.ends_with('\n')))
+    })
+}
+
 pub fn replace(db: PathBuf, symbol: String, file: Option<String>, body: String) -> Result<()> {
-    let loc = locate_symbol(&db, &symbol, file.as_deref())?;
-    let body = body.trim_end().to_owned();
-
-    locked_edit(&loc.abs_path, |content| {
-        let lines: Vec<&str> = content.lines().collect();
-        let body_lines: Vec<&str> = body.lines().collect();
-
-        let mut result: Vec<&str> = Vec::with_capacity(lines.len());
-        result.extend_from_slice(&lines[..loc.start_line]);
-        result.extend_from_slice(&body_lines);
-        if loc.end_line + 1 < lines.len() {
-            result.extend_from_slice(&lines[loc.end_line + 1..]);
-        }
-
-        let new_end = loc.start_line + body_lines.len();
-        eprintln!(
-            "Replaced {} (L{}-{} → L{}-{}) in {}",
-            symbol,
-            loc.start_line + 1,
-            loc.end_line + 1,
-            loc.start_line + 1,
-            new_end,
-            loc.rel_path
-        );
-        print_numbered_range(&body_lines, loc.start_line + 1);
-        Ok(join_lines(&result, content.ends_with('\n')))
-    })
+    edit_symbol(&db, &symbol, file.as_deref(), &body, Splice::Replace)
 }
 
-/// Insert content after a symbol.
-pub fn insert_after(
-    db: PathBuf,
-    symbol: String,
-    file: Option<String>,
-    body: String,
-) -> Result<()> {
-    let loc = locate_symbol(&db, &symbol, file.as_deref())?;
-    let body = body.trim_end().to_owned();
-
-    locked_edit(&loc.abs_path, |content| {
-        let lines: Vec<&str> = content.lines().collect();
-        let body_lines: Vec<&str> = body.lines().collect();
-
-        let mut result: Vec<&str> = Vec::with_capacity(lines.len() + body_lines.len() + 1);
-        result.extend_from_slice(&lines[..=loc.end_line]);
-        result.push("");
-        result.extend_from_slice(&body_lines);
-        if loc.end_line + 1 < lines.len() {
-            result.extend_from_slice(&lines[loc.end_line + 1..]);
-        }
-
-        let insert_start = loc.end_line + 2;
-        eprintln!(
-            "Inserted after {} (after L{}) in {}",
-            symbol,
-            loc.end_line + 1,
-            loc.rel_path
-        );
-        print_numbered_range(&body_lines, insert_start);
-        Ok(join_lines(&result, content.ends_with('\n')))
-    })
+pub fn insert_after(db: PathBuf, symbol: String, file: Option<String>, body: String) -> Result<()> {
+    edit_symbol(&db, &symbol, file.as_deref(), &body, Splice::After)
 }
 
-/// Insert content before a symbol.
-pub fn insert_before(
-    db: PathBuf,
-    symbol: String,
-    file: Option<String>,
-    body: String,
-) -> Result<()> {
-    let loc = locate_symbol(&db, &symbol, file.as_deref())?;
-    let body = body.trim_end().to_owned();
-
-    locked_edit(&loc.abs_path, |content| {
-        let lines: Vec<&str> = content.lines().collect();
-        let body_lines: Vec<&str> = body.lines().collect();
-
-        let mut result: Vec<&str> = Vec::with_capacity(lines.len() + body_lines.len() + 1);
-        result.extend_from_slice(&lines[..loc.start_line]);
-        result.extend_from_slice(&body_lines);
-        result.push("");
-        result.extend_from_slice(&lines[loc.start_line..]);
-
-        eprintln!(
-            "Inserted before {} (before L{}) in {}",
-            symbol,
-            loc.start_line + 1,
-            loc.rel_path
-        );
-        print_numbered_range(&body_lines, loc.start_line + 1);
-        Ok(join_lines(&result, content.ends_with('\n')))
-    })
+pub fn insert_before(db: PathBuf, symbol: String, file: Option<String>, body: String) -> Result<()> {
+    edit_symbol(&db, &symbol, file.as_deref(), &body, Splice::Before)
 }
 
 /// Delete a symbol from the source file.
