@@ -2,6 +2,7 @@
 
 mod cli;
 use rude_cli::commands;
+use commands::edit::{apply_edits, Op};
 
 use anyhow::Context as _;
 use clap::Parser;
@@ -64,18 +65,18 @@ fn run() -> anyhow::Result<()> {
         Commands::Add { db, input, exclude } => commands::add::run(db, input, &exclude),
         Commands::Replace { db, symbol, file, body, body_file } => {
             let body = read_body(body, body_file)?;
-            commands::edit::apply_edits(&db, &[(&symbol, commands::edit::Op::Replace(&body))], file.as_deref())
+            apply_edits(&db, &[(&symbol, Op::Replace(&body))], file.as_deref())
         }
         Commands::InsertAfter { db, symbol, file, body, body_file } => {
             let body = read_body(body, body_file)?;
-            commands::edit::apply_edits(&db, &[(&symbol, commands::edit::Op::After(&body))], file.as_deref())
+            apply_edits(&db, &[(&symbol, Op::After(&body))], file.as_deref())
         }
         Commands::InsertBefore { db, symbol, file, body, body_file } => {
             let body = read_body(body, body_file)?;
-            commands::edit::apply_edits(&db, &[(&symbol, commands::edit::Op::Before(&body))], file.as_deref())
+            apply_edits(&db, &[(&symbol, Op::Before(&body))], file.as_deref())
         }
         Commands::DeleteSymbol { db, symbol, file } => {
-            commands::edit::apply_edits(&db, &[(&symbol, commands::edit::Op::Delete)], file.as_deref())
+            apply_edits(&db, &[(&symbol, Op::Delete)], file.as_deref())
         }
         Commands::InsertAt { db, file, line, body, body_file } => {
             let body = read_body(body, body_file)?;
