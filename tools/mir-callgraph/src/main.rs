@@ -81,6 +81,43 @@ fn span_lines(span: &rustc_public::ty::Span) -> (usize, usize) {
     (info.start_line, info.end_line)
 }
 
+// ── Helpers ─────────────────────────────────────────────────────────
+
+fn is_local_file(file: &str) -> bool {
+    !file.starts_with('/') && !file.contains(":/")
+}
+
+fn make_chunk(name: String, file: String, kind: &str, span: &rustc_public::ty::Span) -> MirChunk {
+    let (start, end) = span_lines(span);
+    MirChunk {
+        name, file, kind: kind.to_string(),
+        start_line: start, end_line: end,
+        signature: None, visibility: String::new(),
+        is_test: false, body: String::new(),
+        calls: String::new(), type_refs: String::new(),
+    }
+}
+
+fn adt_kind_str(kind: rustc_public::ty::AdtKind) -> &'static str {
+    match kind {
+        rustc_public::ty::AdtKind::Enum => "enum",
+        rustc_public::ty::AdtKind::Struct | rustc_public::ty::AdtKind::Union => "struct",
+    }
+}
+
+/// Extract Self type from a trait impl.
+fn impl_self_ty(imp: &rustc_public::ty::ImplDef) -> Option<rustc_public::ty::Ty> {
+    imp.trait_impl()
+        .value
+        .args()
+        .0
+        .first()
+        .and_then(|arg| match arg {
+            rustc_public::ty::GenericArgKind::Type(ty) => Some(*ty),
+            _ => None,
+        })
+}
+
 // ── Extraction ──────────────────────────────────────────────────────
 
 fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -> ControlFlow<()> {
@@ -88,7 +125,6 @@ fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -> Co
     use rustc_public::mir::{MirVisitor, Terminator, TerminatorKind};
     use rustc_public::mir::visit::Location;
     use rustc_public::ty::{RigidTy, TyKind};
-
 
     let _span = tracing::info_span!("extract_all").entered();
     let krate = rustc_public::local_crate();
@@ -99,69 +135,32 @@ fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -> Co
     let mut fn_count: usize = 0;
     let mut name_cache: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
-    // ── Phase 1: trait decls + trait impls → struct/enum/trait/impl chunks ──
+    // ── Phase 1: trait/impl/struct/enum chunks via Crate API ────────
     {
-        let _phase = tracing::info_span!("trait_decl_impl_chunks").entered();
+        let _phase = tracing::info_span!("type_chunks").entered();
+        let mut seen_types: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-        // Trait declarations → trait chunks
-        for t in rustc_public::all_trait_decls() {
+        // Trait declarations (local crate only)
+        for t in krate.trait_decls() {
             let file = span_file(&t.span());
-            // Skip external traits (absolute paths)
-            if file.starts_with('/') || file.contains(":/") { continue; }
-            let (start, end) = span_lines(&t.span());
-            chunks.push(MirChunk {
-                name: strip_crate_prefix(&t.name().to_string()),
-                file, kind: "trait".to_string(),
-                start_line: start, end_line: end,
-                signature: None, visibility: String::new(),
-                is_test: false, body: String::new(),
-                calls: String::new(), type_refs: String::new(),
-            });
+            if !is_local_file(&file) { continue; }
+            chunks.push(make_chunk(strip_crate_prefix(&t.name()), file, "trait", &t.span()));
         }
 
-        // Trait impls → impl chunks + struct/enum detection via AdtKind
-        let mut seen_types: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for i in rustc_public::all_trait_impls() {
-            let file = span_file(&i.span());
-            if file.starts_with('/') || file.contains(":/") { continue; }
-            let (start, end) = span_lines(&i.span());
-            let impl_name = strip_crate_prefix(&i.name().to_string());
-            chunks.push(MirChunk {
-                name: impl_name.clone(), file: file.clone(),
-                kind: "impl".to_string(),
-                start_line: start, end_line: end,
-                signature: None, visibility: String::new(),
-                is_test: false, body: String::new(),
-                calls: String::new(), type_refs: String::new(),
-            });
+        // Trait impls → impl chunks + associated items + struct/enum via AdtKind
+        for imp in krate.trait_impls() {
+            let file = span_file(&imp.span());
+            if !is_local_file(&file) { continue; }
+            chunks.push(make_chunk(strip_crate_prefix(&imp.name()), file, "impl", &imp.span()));
 
-            // Detect struct/enum/union via self type's AdtKind
-            let tr = i.trait_impl().value;
-            for arg in &tr.args().0 {
-                if let rustc_public::ty::GenericArgKind::Type(ty) = arg {
-                    if let TyKind::RigidTy(RigidTy::Adt(adt_def, _)) = ty.kind() {
-                        let type_name = strip_crate_prefix(&adt_def.name().to_string());
-                        if !type_name.is_empty() && seen_types.insert(type_name.clone()) {
-                            let kind_str = match adt_def.kind() {
-                                rustc_public::ty::AdtKind::Enum => "enum",
-                                rustc_public::ty::AdtKind::Union => "struct",
-                                rustc_public::ty::AdtKind::Struct => "struct",
-                            };
-                            let adt_span = adt_def.span();
-                            let adt_file = span_file(&adt_span);
-                            if adt_file.starts_with('/') || adt_file.contains(":/") { break; }
-                            let (adt_start, adt_end) = span_lines(&adt_span);
-                            chunks.push(MirChunk {
-                                name: type_name, file: adt_file,
-                                kind: kind_str.to_string(),
-                                start_line: adt_start, end_line: adt_end,
-                                signature: None, visibility: String::new(),
-                                is_test: false, body: String::new(),
-                                calls: String::new(), type_refs: String::new(),
-                            });
-                        }
+            // Extract self type → struct/enum chunk
+            if let Some(ty) = impl_self_ty(&imp) {
+                if let TyKind::RigidTy(RigidTy::Adt(adt_def, _)) = ty.kind() {
+                    let type_name = strip_crate_prefix(&adt_def.name());
+                    let adt_file = span_file(&adt_def.span());
+                    if is_local_file(&adt_file) && seen_types.insert(type_name.clone()) {
+                        chunks.push(make_chunk(type_name, adt_file, adt_kind_str(adt_def.kind()), &adt_def.span()));
                     }
-                    break; // first type arg is self type
                 }
             }
         }
