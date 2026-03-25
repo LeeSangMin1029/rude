@@ -7,19 +7,7 @@ use super::sqlite::mir_db_path;
 use super::types::MirEdgeMap;
 use super::workspace::{all_extern_paths_valid, is_args_cache_stale};
 
-// Embedded mir-callgraph source files for auto-build.
-const MIR_CALLGRAPH_MAIN_RS: &str =
-    include_str!("../../../../tools/mir-callgraph/src/main.rs");
-const MIR_CALLGRAPH_EXTRACT_RS: &str =
-    include_str!("../../../../tools/mir-callgraph/src/extract.rs");
-const MIR_CALLGRAPH_OUTPUT_RS: &str =
-    include_str!("../../../../tools/mir-callgraph/src/output.rs");
-const MIR_CALLGRAPH_TYPES_RS: &str =
-    include_str!("../../../../tools/mir-callgraph/src/types.rs");
-const MIR_CALLGRAPH_CARGO_TOML: &str =
-    include_str!("../../../../tools/mir-callgraph/Cargo.toml");
-const MIR_CALLGRAPH_RUST_TOOLCHAIN: &str =
-    include_str!("../../../../tools/mir-callgraph/rust-toolchain.toml");
+const REPO_URL: &str = "https://github.com/LeeSangMin1029/rude";
 
 fn mir_callgraph_bin_name() -> &'static str {
     if cfg!(windows) { "mir-callgraph.exe" } else { "mir-callgraph" }
@@ -61,28 +49,7 @@ pub(super) fn add_nightly_path(cmd: &mut Command) {
     }
 }
 
-fn extract_mir_callgraph_source(build_dir: &Path) -> Result<()> {
-    let src_dir = build_dir.join("src");
-    std::fs::create_dir_all(&src_dir)
-        .with_context(|| format!("failed to create build dir: {}", src_dir.display()))?;
-
-    std::fs::write(build_dir.join("Cargo.toml"), MIR_CALLGRAPH_CARGO_TOML)
-        .context("failed to write Cargo.toml")?;
-    std::fs::write(build_dir.join("rust-toolchain.toml"), MIR_CALLGRAPH_RUST_TOOLCHAIN)
-        .context("failed to write rust-toolchain.toml")?;
-    std::fs::write(src_dir.join("main.rs"), MIR_CALLGRAPH_MAIN_RS)
-        .context("failed to write main.rs")?;
-    std::fs::write(src_dir.join("extract.rs"), MIR_CALLGRAPH_EXTRACT_RS)
-        .context("failed to write extract.rs")?;
-    std::fs::write(src_dir.join("output.rs"), MIR_CALLGRAPH_OUTPUT_RS)
-        .context("failed to write output.rs")?;
-    std::fs::write(src_dir.join("types.rs"), MIR_CALLGRAPH_TYPES_RS)
-        .context("failed to write types.rs")?;
-
-    Ok(())
-}
-
-fn build_mir_callgraph(base: &Path) -> Result<PathBuf> {
+fn install_mir_callgraph() -> Result<PathBuf> {
     let nightly_ver = nightly_rustc_version().ok_or_else(|| {
         anyhow::anyhow!(
             "nightly Rust toolchain required for rude add.\n\
@@ -90,59 +57,34 @@ fn build_mir_callgraph(base: &Path) -> Result<PathBuf> {
         )
     })?;
 
+    let base = rude_home()?;
     let bin_dir = base.join("bin");
     let cached_bin = bin_dir.join(mir_callgraph_bin_name());
     let version_file = bin_dir.join(".nightly-version");
 
-    // Check if cached binary exists and nightly version matches
     if cached_bin.exists() {
         if let Ok(saved_ver) = std::fs::read_to_string(&version_file) {
             if saved_ver.trim() == nightly_ver {
                 return Ok(cached_bin);
             }
-            eprintln!("  [mir] nightly version changed, rebuilding mir-callgraph...");
+            eprintln!("  [mir] nightly version changed, reinstalling mir-callgraph...");
         }
     } else {
-        eprintln!("  [mir] building mir-callgraph (first run)...");
+        eprintln!("  [mir] installing mir-callgraph (first run)...");
     }
 
-    // Extract source
-    let build_dir = base.join("build").join("mir-callgraph");
-    extract_mir_callgraph_source(&build_dir)?;
-
-    // Build with nightly
-    eprintln!("  [mir] cargo +nightly build --release (this may take a minute)...");
+    std::fs::create_dir_all(&bin_dir)?;
     let status = Command::new("cargo")
-        .args(["+nightly", "build", "--release"])
-        .current_dir(&build_dir)
+        .args(["+nightly", "install", "--git", REPO_URL,
+               "--bin", "mir-callgraph", "--root", &base.to_string_lossy(), "--force"])
         .status()
-        .context("failed to run cargo +nightly build")?;
+        .context("failed to run cargo +nightly install")?;
 
     if !status.success() {
-        bail!("mir-callgraph build failed (exit code: {status})");
+        bail!("mir-callgraph install failed (exit code: {status})");
     }
 
-    // Copy built binary to bin/
-    std::fs::create_dir_all(&bin_dir)
-        .with_context(|| format!("failed to create bin dir: {}", bin_dir.display()))?;
-
-    let built_bin = build_dir
-        .join("target")
-        .join("release")
-        .join(mir_callgraph_bin_name());
-
-    std::fs::copy(&built_bin, &cached_bin).with_context(|| {
-        format!(
-            "failed to copy built binary from {} to {}",
-            built_bin.display(),
-            cached_bin.display()
-        )
-    })?;
-
-    // Save nightly version
-    std::fs::write(&version_file, &nightly_ver)
-        .context("failed to save nightly version")?;
-
+    std::fs::write(&version_file, &nightly_ver)?;
     eprintln!("  [mir] mir-callgraph ready: {}", cached_bin.display());
     Ok(cached_bin)
 }
@@ -161,9 +103,8 @@ fn find_mir_callgraph_bin(override_path: Option<&Path>) -> Result<PathBuf> {
         }
     }
 
-    // 3 & 4. Cached build or auto-build
-    let base = rude_home()?;
-    build_mir_callgraph(&base)
+    // 3. Auto-install via cargo install --git
+    install_mir_callgraph()
 }
 
 pub fn run_mir_callgraph(project_root: &Path, mir_callgraph_bin: Option<&Path>) -> Result<MirEdgeMap> {
