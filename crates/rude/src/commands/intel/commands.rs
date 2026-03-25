@@ -3,14 +3,25 @@
 //! Each `run_*` function corresponds to a CLI subcommand (stats, symbols,
 //! context, blast, trace, etc.). Pure analysis logic lives in `rude-intel`.
 
+use std::collections::BTreeMap;
+
 use anyhow::Result;
 
-use super::print_grouped;
-use super::{
-    build_stats, load_chunks, load_or_build_graph,
-    format_lines_opt,
-    graph, impact, trace, ParsedChunk,
-};
+use rude_intel::graph;
+use rude_intel::helpers::{apply_alias, build_path_aliases, extract_crate_name, format_lines_opt, relative_path};
+use rude_intel::impact;
+use rude_intel::loader::load_chunks;
+use rude_intel::parse::ParsedChunk;
+use rude_intel::stats::build_stats;
+use rude_intel::trace;
+
+pub(crate) fn load_or_build_graph() -> Result<graph::CallGraph> {
+    rude_intel::loader::load_or_build_graph(crate::db())
+}
+
+pub(crate) fn load_or_build_graph_with_chunks() -> Result<(graph::CallGraph, Option<Vec<ParsedChunk>>)> {
+    rude_intel::loader::load_or_build_graph_with_chunks(crate::db())
+}
 
 // ── Commands ─────────────────────────────────────────────────────────────
 
@@ -135,7 +146,7 @@ fn print_trait_impls_if_relevant(name: Option<&str>) -> Result<()> {
         println!("  implementations of {}:", graph.names[i]);
         for &impl_idx in impls {
             let ii = impl_idx as usize;
-            let file = super::relative_path(&graph.files[ii]);
+            let file = relative_path(&graph.files[ii]);
             let lines = format_lines_opt(graph.lines[ii]);
             println!("    {file}{lines}  [{}] {}", graph.kinds[ii], graph.names[ii]);
         }
@@ -412,8 +423,8 @@ fn run_chunk_query(
 ) -> Result<()> {
     let chunks = load_chunks(crate::db())?;
     // Compute aliases from ALL chunks (not just filtered) for global consistency.
-    let all_files: Vec<&str> = chunks.iter().map(|c| rude_intel::helpers::relative_path(&c.file)).collect();
-    let (alias_map, _legend) = rude_intel::helpers::build_path_aliases(&all_files);
+    let all_files: Vec<&str> = chunks.iter().map(|c| relative_path(&c.file)).collect();
+    let (alias_map, _legend) = build_path_aliases(&all_files);
 
     let filtered: Vec<&ParsedChunk> = chunks.iter().filter(|c| filter(c)).collect();
     let total = filtered.len();
@@ -451,7 +462,6 @@ fn print_file_grouped(
     alias_map: &std::collections::BTreeMap<String, String>,
 ) {
     use std::collections::BTreeMap;
-    use rude_intel::helpers::apply_alias;
 
     if entries.is_empty() {
         return;
@@ -480,7 +490,7 @@ fn print_file_grouped(
 
     let files: Vec<&str> = deduped
         .iter()
-        .map(|e| super::relative_path(&graph.files[e.idx as usize]))
+        .map(|e| relative_path(&graph.files[e.idx as usize]))
         .collect();
     let mut groups: BTreeMap<&str, Vec<&TaggedEntry>> = BTreeMap::new();
     for (entry, file) in deduped.iter().zip(files.iter()) {
@@ -539,11 +549,10 @@ fn print_trace_path(
     path: &[u32],
     alias_map: &std::collections::BTreeMap<String, String>,
 ) {
-    use rude_intel::helpers::apply_alias;
 
     for (step, &idx) in path.iter().enumerate() {
         let i = idx as usize;
-        let file = super::relative_path(&graph.files[i]);
+        let file = relative_path(&graph.files[i]);
         let short_file = apply_alias(file, alias_map);
         let name = &graph.names[i];
         let lines = format_lines_opt(graph.lines[i]);
@@ -562,7 +571,6 @@ pub fn run_dead(
     include_pub: bool,
     file_filter: Option<String>,
 ) -> Result<()> {
-    use rude_intel::helpers::extract_crate_name;
 
     let graph = load_or_build_graph()?;
     let n = graph.names.len();
@@ -626,8 +634,8 @@ pub fn run_dead(
         println!("[{}] {} dead:", crate_name, indices.len());
         for &i in indices {
             let loc = format_lines_opt(graph.lines[i]);
-            let rel = super::relative_path(&graph.files[i]);
-            let short = rude_intel::helpers::apply_alias(rel, &alias_map);
+            let rel = relative_path(&graph.files[i]);
+            let short = apply_alias(rel, &alias_map);
             println!("  {short}{loc}  {}", graph.names[i]);
         }
         println!();
@@ -642,7 +650,6 @@ pub fn run_coverage(
     refresh: bool,
 ) -> Result<()> {
     use std::collections::BTreeMap;
-    use rude_intel::helpers::extract_crate_name;
 
     let llvm_cov_result = run_llvm_cov(refresh);
 
@@ -801,4 +808,36 @@ fn is_derive_generated(name: &str) -> bool {
     || name.contains("as bincode::Decode<")
     || name.contains("as bincode::BorrowDecode<")
     || name.contains("as clap::")
+}
+
+/// Print chunks grouped by file with path aliases.
+fn print_grouped(
+    chunks: &[&ParsedChunk],
+    compact: bool,
+    alias_map: &BTreeMap<String, String>,
+) {
+    let files: Vec<&str> = chunks.iter().map(|c| relative_path(&c.file)).collect();
+
+    let mut groups: BTreeMap<&str, Vec<&ParsedChunk>> = BTreeMap::new();
+    for (c, file) in chunks.iter().zip(files.iter()) {
+        groups.entry(file).or_default().push(c);
+    }
+
+    for (file, items) in &groups {
+        let short = apply_alias(file, alias_map);
+        println!("@ {short}");
+        for c in items {
+            let lines = format_lines_opt(c.lines);
+            let test_marker = if graph::is_test_chunk(c) { " [test]" } else { "" };
+            let kind_tag = if c.kind == "function" { String::new() } else { format!("[{}] ", c.kind) };
+            println!("  {lines} {kind_tag}{name}{test_marker}", name = c.name);
+            if !compact {
+                let sig = c.signature.as_deref().unwrap_or("");
+                if !sig.is_empty() {
+                    println!("    {sig}");
+                }
+            }
+        }
+        if !compact { println!(); }
+    }
 }
