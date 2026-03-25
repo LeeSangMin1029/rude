@@ -57,14 +57,22 @@ fn locate_symbol(db: &Path, symbol: &str, file_hint: Option<&str>) -> Result<Sym
         }
     }
 
-    // O(1) lookup by symbol name
-    let candidate_indices = name_index.get(symbol).cloned().unwrap_or_default();
+    // O(1) lookup by exact name or last segment
+    let mut candidate_indices = name_index.get(symbol).cloned().unwrap_or_default();
+
+    // Fallback: linear scan for intermediate paths (e.g. "MirEdgeMap::from_dir")
+    if candidate_indices.is_empty() && symbol.contains("::") {
+        for (i, c) in chunks.iter().enumerate() {
+            if c.name.ends_with(&format!("::{symbol}")) || c.name == symbol {
+                candidate_indices.push(i);
+            }
+        }
+    }
 
     let candidates: Vec<&ParsedChunk> = candidate_indices
         .into_iter()
         .map(|i| &chunks[i])
         .filter(|c| {
-            // Verify the match is exact or ::suffix (index may have collisions from last-segment)
             let name_match = c.name == symbol || c.name.ends_with(&format!("::{symbol}"));
             let file_match = file_hint.is_none_or(|f| c.file.ends_with(f));
             name_match && file_match
