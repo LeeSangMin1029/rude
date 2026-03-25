@@ -164,33 +164,24 @@ fn build_adt_signature(name: &str, adt: &rustc_public::ty::AdtDef) -> String {
 
 /// Simplify Ty debug output to readable type name
 fn clean_ty_name(ty: &rustc_public::ty::Ty) -> String {
-    let raw = format!("{ty:?}");
-    // Extract kind from `Ty { id: N, kind: ... }`
-    if let Some(start) = raw.find("kind: ") {
-        let rest = &raw[start + 6..];
-        // Quick heuristic: use the type's debug but strip Ty{} wrapper
-        if rest.contains("Adt(AdtDef(DefId") {
-            // Extract name from AdtDef
-            if let Some(name_start) = rest.find("name: \"") {
-                let after = &rest[name_start + 7..];
-                if let Some(name_end) = after.find('"') {
-                    let full_name = &after[..name_end];
-                    return full_name.rsplit("::").next().unwrap_or(full_name).to_string();
-                }
-            }
+    match ty.kind() {
+        TyKind::RigidTy(RigidTy::Adt(def, _)) => {
+            def.name().rsplit("::").next().unwrap_or(&def.name()).to_string()
         }
-        if rest.starts_with("RigidTy(Str)") { return "String".into(); }
-        if rest.starts_with("RigidTy(Bool)") { return "bool".into(); }
-        if rest.contains("Uint(Usize)") { return "usize".into(); }
-        if rest.contains("Uint(U64)") { return "u64".into(); }
-        if rest.contains("Uint(U32)") { return "u32".into(); }
-        if rest.contains("Uint(U8)") { return "u8".into(); }
-        if rest.contains("Int(Isize)") { return "isize".into(); }
-        if rest.contains("Int(I64)") { return "i64".into(); }
-        if rest.contains("Int(I32)") { return "i32".into(); }
-        if rest.contains("Ref(") { return "&...".into(); }
+        TyKind::RigidTy(RigidTy::Str) => "str".into(),
+        TyKind::RigidTy(RigidTy::Bool) => "bool".into(),
+        TyKind::RigidTy(RigidTy::Char) => "char".into(),
+        TyKind::RigidTy(RigidTy::Int(i)) => format!("{i:?}").to_lowercase(),
+        TyKind::RigidTy(RigidTy::Uint(u)) => format!("{u:?}").to_lowercase(),
+        TyKind::RigidTy(RigidTy::Float(f)) => format!("{f:?}").to_lowercase(),
+        TyKind::RigidTy(RigidTy::Ref(_, inner, _)) => format!("&{}", clean_ty_name(&inner)),
+        TyKind::RigidTy(RigidTy::Slice(inner)) => format!("[{}]", clean_ty_name(&inner)),
+        TyKind::RigidTy(RigidTy::Tuple(ts)) if ts.is_empty() => "()".into(),
+        TyKind::RigidTy(RigidTy::Tuple(ts)) => {
+            format!("({})", ts.iter().map(|t| clean_ty_name(t)).collect::<Vec<_>>().join(", "))
+        }
+        _ => "_".into(),
     }
-    "...".into()
 }
 
 fn is_test_fn(filename: &str, name: &str, is_test_target: bool) -> bool {

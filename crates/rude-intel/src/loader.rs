@@ -39,11 +39,23 @@ pub fn load_chunks(path: &Path) -> Result<Vec<ParsedChunk>> {
         }
     }
 
-    // Cache miss — load from DB and save
-    eprintln!("  chunks.bin cache miss — loading from DB");
-    let chunks = load_chunks_from_db(path)?;
+    // Cache miss — try mir.db direct path first, then text-based fallback
+    let chunks = load_chunks_from_mir_db(path)
+        .ok()
+        .filter(|c| !c.is_empty())
+        .map_or_else(|| load_chunks_from_db(path), Ok)?;
     save_chunks_cache(&cache, &chunks);
     Ok(chunks)
+}
+
+/// Load chunks directly from mir.db, bypassing text format.
+pub fn load_chunks_from_mir_db(db_path: &Path) -> Result<Vec<ParsedChunk>> {
+    let mir_db = crate::mir_edges::mir_db_path(db_path);
+    if !mir_db.exists() {
+        return load_chunks_from_db(db_path);
+    }
+    let mir_chunks = crate::mir_edges::MirEdgeMap::load_chunks_from_sqlite(&mir_db, None)?;
+    Ok(crate::mir_edges::mir_chunks_to_parsed(&mir_chunks))
 }
 
 /// Load chunks directly from the database (no cache).
