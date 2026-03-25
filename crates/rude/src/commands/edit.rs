@@ -37,7 +37,7 @@ pub fn apply_edits(db: &Path, ops: &[(&str, Op)], file: Option<&str>) -> Result<
     edits.sort_by(|a, b| b.0.cmp(&a.0));
 
     let first = locate_symbol(db, ops[0].0, file)?;
-    splice_file(&first.abs_path, &first.rel_path, |lines| {
+    splice_file(&first.abs_path, |lines| {
         for &(start, end, sym, op) in &edits {
             let (drain, repl) = op_to_splice(start, end, op, lines.len());
             let owned: Vec<String> = repl.into_iter().map(String::from).collect();
@@ -53,7 +53,7 @@ pub fn apply_edits(db: &Path, ops: &[(&str, Op)], file: Option<&str>) -> Result<
 pub fn insert_at(db: PathBuf, file: String, line: usize, body: String) -> Result<()> {
     check_line(line)?;
     let (abs, rel) = resolve_path(&db, &file)?;
-    splice_file(&abs, &rel, |lines| {
+    splice_file(&abs, |lines| {
         let idx = (line - 1).min(lines.len());
         let bl: Vec<String> = body.trim_end().lines().map(String::from).collect();
         let n = bl.len();
@@ -66,7 +66,7 @@ pub fn insert_at(db: PathBuf, file: String, line: usize, body: String) -> Result
 pub fn delete_lines(db: PathBuf, file: String, start: usize, end: usize) -> Result<()> {
     check_range(start, end)?;
     let (abs, rel) = resolve_path(&db, &file)?;
-    splice_file(&abs, &rel, |lines| {
+    splice_file(&abs, |lines| {
         let mut after = end.min(lines.len());
         while after < lines.len() && lines[after].trim().is_empty() { after += 1; }
         lines.splice((start - 1)..after, Vec::<String>::new());
@@ -78,7 +78,7 @@ pub fn delete_lines(db: PathBuf, file: String, start: usize, end: usize) -> Resu
 pub fn replace_lines(db: PathBuf, file: String, start: usize, end: usize, body: String) -> Result<()> {
     check_range(start, end)?;
     let (abs, rel) = resolve_path(&db, &file)?;
-    splice_file(&abs, &rel, |lines| {
+    splice_file(&abs, |lines| {
         let bl: Vec<String> = body.trim_end().lines().map(String::from).collect();
         lines.splice((start - 1)..end.min(lines.len()), bl);
         eprintln!("  Replaced L{start}-{end} in {rel}");
@@ -99,8 +99,8 @@ pub fn create_file(db: PathBuf, file: String, body: String) -> Result<()> {
 
 // ── Splice engine ───────────────────────────────────────────────────
 
-/// Locked read-modify-write via splice callback.
-fn splice_file(path: &Path, _rel: &str, f: impl FnOnce(&mut Vec<String>)) -> Result<()> {
+/// Locked read-modify-write. Returns lines for splicing.
+fn splice_file(path: &Path, f: impl FnOnce(&mut Vec<String>)) -> Result<()> {
     locked_edit(path, |content| {
         let mut lines: Vec<String> = content.lines().map(String::from).collect();
         let trailing = content.ends_with('\n');
