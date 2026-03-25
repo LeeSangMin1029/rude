@@ -86,10 +86,11 @@ struct LlvmFileCov {
 
 fn run_llvm_cov(refresh: bool) -> Option<LlvmCovResult> {
     let db = crate::db();
+    let engine = rude_db::StorageEngine::open(db).ok();
 
     if !refresh {
-        if let Ok(engine) = rude_db::StorageEngine::open(db) {
-            if let Ok(Some(bytes)) = engine.get_cache("llvm_cov") {
+        if let Some(ref eng) = engine {
+            if let Ok(Some(bytes)) = eng.get_cache("llvm_cov") {
                 eprintln!("  [coverage] using cached");
                 let json: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
                 return parse_llvm_cov_json(&json);
@@ -106,8 +107,8 @@ fn run_llvm_cov(refresh: bool) -> Option<LlvmCovResult> {
         .ok()?;
     if !output.status.success() { return None; }
 
-    if let Ok(engine) = rude_db::StorageEngine::open(db) {
-        engine.set_cache("llvm_cov", &output.stdout);
+    if let Some(ref eng) = engine {
+        let _ = eng.set_cache("llvm_cov", &output.stdout);
     }
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;

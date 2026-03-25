@@ -8,7 +8,6 @@ use crate::payload_store::PayloadStore;
 
 pub struct StorageEngine {
     conn: Connection,
-    dir: PathBuf,
 }
 
 impl StorageEngine {
@@ -36,7 +35,7 @@ impl StorageEngine {
         if init_schema {
             Self::ensure_schema(&conn)?;
         }
-        Ok(Self { conn, dir })
+        Ok(Self { conn })
     }
 
     fn apply_pragmas(conn: &Connection) -> Result<()> {

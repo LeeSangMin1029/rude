@@ -180,16 +180,24 @@ impl CallGraph {
     }
 
     pub fn save(&self, db: &Path) -> Result<()> {
-        let bytes = bincode::encode_to_vec(self, bincode::config::standard())
-            .context("failed to encode call graph")?;
         let engine = rude_db::StorageEngine::open(db)
             .context("failed to open db for graph cache")?;
+        self.save_with_engine(&engine)
+    }
+
+    pub fn save_with_engine(&self, engine: &rude_db::StorageEngine) -> Result<()> {
+        let bytes = bincode::encode_to_vec(self, bincode::config::standard())
+            .context("failed to encode call graph")?;
         engine.set_cache("graph", &bytes)
             .context("failed to write graph cache")
     }
 
     pub fn load(db: &Path) -> Option<Self> {
         let engine = rude_db::StorageEngine::open(db).ok()?;
+        Self::load_with_engine(&engine)
+    }
+
+    pub fn load_with_engine(engine: &rude_db::StorageEngine) -> Option<Self> {
         let bytes = engine.get_cache("graph").ok()??;
         let (graph, _): (Self, _) = bincode::decode_from_slice(&bytes, bincode::config::standard()).ok()?;
         if graph.version != GRAPH_SOURCE_HASH { return None; }

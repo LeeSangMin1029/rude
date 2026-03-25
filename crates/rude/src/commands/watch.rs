@@ -172,10 +172,10 @@ fn update_db(
     let mut engine = rude_db::StorageEngine::open_exclusive(db_path)
         .context("failed to open DB for writing")?;
 
-    let mut file_idx = file_index::load_file_index(db_path)?;
+    let mut file_idx = file_index::load_file_index(&engine)?;
     super::add::write_chunks(entries, &mut engine, file_metadata_map, &mut file_idx, false)?;
     engine.checkpoint()?;
-    file_index::save_file_index(db_path, &file_idx)?;
+    file_index::save_file_index(&engine, &file_idx)?;
 
     Ok(())
 }

@@ -33,7 +33,17 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     let current_sources: std::collections::HashSet<String> =
         all_files.iter().map(|f| rude_db::file_utils::normalize_source(f)).collect();
 
-    let mut file_idx = file_index::load_file_index(&db_path)?;
+    let file_idx_engine = if db_path.join("store.db").exists() {
+        Some(StorageEngine::open(&db_path)
+            .with_context(|| "failed to open store.db for file_index")?)
+    } else {
+        None
+    };
+    let mut file_idx = match &file_idx_engine {
+        Some(e) => file_index::load_file_index(e)?,
+        None => file_index::FileIndex::new(),
+    };
+    drop(file_idx_engine);
     let code_files: Vec<_> = all_files.iter().filter(|f| {
         let source = rude_db::file_utils::normalize_source(f);
         match file_idx.get_file(&source) {
@@ -68,18 +78,18 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
         let engine = StorageEngine::open_exclusive(&db_path)
             .with_context(|| format!("Failed to create database at {}", db_path.display()))?;
         DbConfig { code: true, embedded: false, embed_model: Some(TEXT_ONLY_MODEL.to_owned()), ..DbConfig::default() }
-            .save(&db_path)?;
+            .save(&engine)?;
         engine
     };
 
-    if let Ok(mut config) = DbConfig::load(&db_path) {
+    if let Ok(mut config) = DbConfig::load(&engine) {
         config.code = true;
         config.embedded = false;
         if let Ok(canonical) = input_path.canonicalize() {
             let path_str = canonical.to_string_lossy();
             config.input_path = Some(rude_db::strip_unc_prefix(&path_str).to_owned());
         }
-        let _ = config.save(&db_path);
+        let _ = config.save(&engine);
     }
 
     let t0 = std::time::Instant::now();
@@ -122,7 +132,7 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
             }
         }
     }
-    file_index::save_file_index(&db_path, &file_idx)?;
+    file_index::save_file_index(&engine, &file_idx)?;
 
     let deleted: Vec<String> = file_idx.files.keys()
         .filter(|p| !current_sources.contains(p.as_str()))
@@ -137,7 +147,7 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
         }
         if del_count > 0 {
             engine.checkpoint().ok();
-            file_index::save_file_index(&db_path, &file_idx)?;
+            file_index::save_file_index(&engine, &file_idx)?;
             eprintln!("Removed {del_count} chunks from {} deleted file(s)", deleted.len());
         }
     }

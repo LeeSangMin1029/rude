@@ -8,13 +8,17 @@ use crate::data::parse::{self, ParsedChunk};
 const CHUNKS_CACHE_VERSION: u8 = 1;
 
 pub fn load_chunks(path: &Path) -> Result<Vec<ParsedChunk>> {
-    // Ensure project root is set for path normalization (idempotent).
-    ensure_project_root(path);
+    if let Ok(engine) = rude_db::StorageEngine::open(path) {
+        // Ensure project root is set for path normalization (idempotent).
+        ensure_project_root_with_engine(&engine);
 
-    // Try cache hit from sqlite kv_cache.
-    if let Some(chunks) = load_chunks_from_cache(path) {
-        eprintln!("  chunks cache hit: {} chunks", chunks.len());
-        return Ok(chunks);
+        // Try cache hit from sqlite kv_cache.
+        if let Some(chunks) = load_chunks_from_cache_with_engine(&engine) {
+            eprintln!("  chunks cache hit: {} chunks", chunks.len());
+            return Ok(chunks);
+        }
+    } else {
+        ensure_project_root(path);
     }
 
     // Cache miss — load from mir.db
@@ -45,6 +49,10 @@ pub fn save_chunks_cache(db: &Path, chunks: &[ParsedChunk]) {
 
 pub fn load_chunks_from_cache(db: &Path) -> Option<Vec<ParsedChunk>> {
     let engine = rude_db::StorageEngine::open(db).ok()?;
+    load_chunks_from_cache_with_engine(&engine)
+}
+
+pub fn load_chunks_from_cache_with_engine(engine: &rude_db::StorageEngine) -> Option<Vec<ParsedChunk>> {
     let bytes = engine.get_cache("chunks").ok()??;
     if bytes.first() != Some(&CHUNKS_CACHE_VERSION) {
         return None;
@@ -55,8 +63,14 @@ pub fn load_chunks_from_cache(db: &Path) -> Option<Vec<ParsedChunk>> {
 }
 
 fn ensure_project_root(db: &Path) {
+    if let Ok(engine) = rude_db::StorageEngine::open(db) {
+        ensure_project_root_with_engine(&engine);
+    }
+}
+
+fn ensure_project_root_with_engine(engine: &rude_db::StorageEngine) {
     use rude_db::DbConfig;
-    if let Ok(config) = DbConfig::load(db) {
+    if let Ok(config) = DbConfig::load(engine) {
         if let Some(ref input_path) = config.input_path {
             parse::set_project_root(std::path::Path::new(input_path));
         }

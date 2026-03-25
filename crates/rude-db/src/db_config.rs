@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
@@ -41,16 +39,7 @@ impl Default for DbConfig {
 impl DbConfig {
     pub const CURRENT_VERSION: u32 = 1;
 
-    pub fn load(path: &Path) -> Result<Self> {
-        let store_db = path.join("store.db");
-
-        if !store_db.exists() {
-            return Ok(Self::default());
-        }
-
-        let engine = StorageEngine::open(path)
-            .with_context(|| "failed to open store.db for config")?;
-
+    pub fn load(engine: &StorageEngine) -> Result<Self> {
         match engine.get_cache("config")? {
             Some(blob) => {
                 let config: Self = serde_json::from_slice(&blob)
@@ -61,10 +50,7 @@ impl DbConfig {
         }
     }
 
-    pub fn save(&self, path: &Path) -> Result<()> {
-        let engine = StorageEngine::open(path)
-            .with_context(|| "failed to open store.db for saving config")?;
-
+    pub fn save(&self, engine: &StorageEngine) -> Result<()> {
         let blob = serde_json::to_vec(self).context("failed to serialize config")?;
         engine.set_cache("config", &blob)?;
         Ok(())

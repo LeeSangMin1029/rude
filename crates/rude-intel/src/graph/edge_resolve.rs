@@ -100,9 +100,8 @@ fn compute_chunks_hash(chunks: &[ParsedChunk]) -> u64 {
     hasher.finish()
 }
 
-fn save_edge_bundle(db_path: &Path, bundle: &EdgeCacheBundle) -> Result<()> {
+fn save_edge_bundle(engine: &rude_db::StorageEngine, bundle: &EdgeCacheBundle) -> Result<()> {
     let bytes = bincode::encode_to_vec(bundle, bincode::config::standard()).context("encode edge cache")?;
-    let engine = rude_db::StorageEngine::open(db_path).context("open db for edge cache")?;
     engine.set_cache("edges", &bytes).context("write edge cache")
 }
 
@@ -128,8 +127,7 @@ fn merge_crate_caches(
     final_crates
 }
 
-fn load_edge_bundle(db_path: &Path) -> Option<EdgeCacheBundle> {
-    let engine = rude_db::StorageEngine::open(db_path).ok()?;
+fn load_edge_bundle(engine: &rude_db::StorageEngine) -> Option<EdgeCacheBundle> {
     let bytes = engine.get_cache("edges").ok()??;
     bincode::decode_from_slice::<EdgeCacheBundle, _>(&bytes, bincode::config::standard()).ok().map(|(b, _)| b)
 }
@@ -229,7 +227,8 @@ pub(crate) fn resolve_incremental(
         build_mir_indexes(chunks);
 
     let chunks_hash = compute_chunks_hash(chunks);
-    let bundle = load_edge_bundle(db_path);
+    let edge_engine = rude_db::StorageEngine::open(db_path).ok();
+    let bundle = edge_engine.as_ref().and_then(load_edge_bundle);
     let bundle_mtime = std::fs::metadata(db_path.join("store.db")).and_then(|m| m.modified()).ok();
     let hash_matches = bundle.as_ref().is_some_and(|b| b.chunks_hash == chunks_hash);
     let cached: HashMap<&str, &CrateEdgeCache> = if hash_matches {
@@ -261,7 +260,9 @@ pub(crate) fn resolve_incremental(
     }
 
     let final_crates = merge_crate_caches(bundle, hash_matches, new_crates, &all_crate_names);
-    let _ = save_edge_bundle(db_path, &EdgeCacheBundle { chunks_hash, crates: final_crates });
+    if let Some(ref eng) = edge_engine {
+        let _ = save_edge_bundle(eng, &EdgeCacheBundle { chunks_hash, crates: final_crates });
+    }
     for (src, chunk) in chunks.iter().enumerate() { resolve_type_refs(src, chunk, index, &mut adj); }
     adj.dedup();
     eprintln!("      [edge-resolve] incremental: resolved={mir_resolved} cached={cache_loaded} re-resolved_crates={re_resolved_crates}/{}", all_crate_names.len());

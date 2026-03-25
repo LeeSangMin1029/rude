@@ -65,16 +65,7 @@ impl Default for FileIndex {
     }
 }
 
-pub fn load_file_index(db_path: &Path) -> Result<FileIndex> {
-    let store_db = db_path.join("store.db");
-
-    if !store_db.exists() {
-        return Ok(FileIndex::new());
-    }
-
-    let engine = StorageEngine::open(db_path)
-        .with_context(|| "failed to open store.db for file_index")?;
-
+pub fn load_file_index(engine: &StorageEngine) -> Result<FileIndex> {
     match engine.get_cache("file_index")? {
         Some(blob) => {
             let index: FileIndex = serde_json::from_slice(&blob)
@@ -85,10 +76,7 @@ pub fn load_file_index(db_path: &Path) -> Result<FileIndex> {
     }
 }
 
-pub fn save_file_index(db_path: &Path, index: &FileIndex) -> Result<()> {
-    let engine = StorageEngine::open(db_path)
-        .with_context(|| "failed to open store.db for saving file_index")?;
-
+pub fn save_file_index(engine: &StorageEngine, index: &FileIndex) -> Result<()> {
     let blob = serde_json::to_vec(index).context("failed to serialize file_index")?;
     engine.set_cache("file_index", &blob)?;
     Ok(())
