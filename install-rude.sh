@@ -20,6 +20,11 @@ fi
 
 echo "Installing nightly toolchain..."
 rustup toolchain install nightly 2>&1 | tail -1
+# rustc-dev is only needed if analyzing rustc_private projects (like mir-callgraph itself)
+# Install it if we're in the rude repo (has tools/mir-callgraph)
+if [ -f "tools/mir-callgraph/Cargo.toml" ]; then
+    rustup component add rust-src rustc-dev llvm-tools-preview --toolchain nightly 2>&1 | tail -1
+fi
 
 # --- Download helper ---
 download() {
@@ -52,8 +57,7 @@ MIR_DEST="$RUDE_HOME/bin/mir-callgraph${EXT}"
 if download "mir-callgraph${EXT}" "$MIR_DEST"; then
     echo "mir-callgraph: downloaded"
 elif [ -f "tools/mir-callgraph/Cargo.toml" ]; then
-    echo "mir-callgraph: building from source (installing rustc-dev)..."
-    rustup component add rust-src rustc-dev llvm-tools-preview --toolchain nightly 2>&1 | tail -1
+    echo "mir-callgraph: building from source..."
     (cd tools/mir-callgraph && RUSTUP_TOOLCHAIN=nightly cargo build --release 2>&1 | tail -1)
     cp "tools/mir-callgraph/target/release/mir-callgraph${EXT}" "$MIR_DEST"
 else
