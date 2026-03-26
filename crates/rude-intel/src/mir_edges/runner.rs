@@ -252,7 +252,7 @@ pub fn run_mir_direct(
     };
     kill_previous_test_bg(&out_dir);
 
-    let mut all_files = lib_files;
+    let all_files = lib_files;
     if let Some(()) = try_daemon_all(project_root, &all_files, &out_dir, &mir_db) {
         return Ok(());
     }
