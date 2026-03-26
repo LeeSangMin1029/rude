@@ -356,10 +356,16 @@ fn resolve_all_callers(
         .or_else(|| lower.split_once("::").and_then(|(_, r)| name_to_all.get(r)));
     if let Some(cands) = candidates {
         if cands.len() > 1 {
-            // Multiple chunks with same name — return all non-synthetic candidates
             let real: Vec<u32> = cands.iter().copied()
                 .filter(|&idx| chunks[idx as usize].lines != Some((0, 0)))
                 .collect();
+            // If caller_files known, narrow to matching files
+            if let Some(files) = caller_files {
+                let matched: Vec<u32> = real.iter().copied()
+                    .filter(|&idx| files.iter().any(|f| chunks[idx as usize].file == *f))
+                    .collect();
+                if !matched.is_empty() { return matched; }
+            }
             if !real.is_empty() { return real; }
         }
     }

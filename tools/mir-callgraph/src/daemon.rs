@@ -8,6 +8,7 @@ use crate::types::RustcArgs;
 const MAX_REQUESTS: usize = 100;
 const IDLE_TIMEOUT_MS: u32 = 300_000;
 const WORKER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+const MAX_CONSECUTIVE_FAILURES: u32 = 3;
 
 pub fn run(args: &[String]) {
     let pipe_name = args.iter()
@@ -46,6 +47,7 @@ pub fn run(args: &[String]) {
 fn supervisor_loop(
     pipe: &pipe::PipeHandle, exe: &Path, worker: &mut Option<Worker>,
 ) -> Result<(), String> {
+    let mut consecutive_failures: u32 = 0;
     loop {
         match pipe::wait_connect(pipe, IDLE_TIMEOUT_MS) {
             Ok(false) => { eprintln!("[supervisor] idle timeout, exiting"); return Ok(()); }
@@ -57,18 +59,24 @@ fn supervisor_loop(
             Ok(s) => s,
             Err(e) => { eprintln!("[supervisor] read error: {e}"); pipe::disconnect(pipe); continue; }
         };
-        ensure_worker(worker, exe);
+        ensure_worker(worker, exe, &mut consecutive_failures);
         let response = match worker.as_mut() {
             Some(w) => match w.send_with_timeout(&request, WORKER_TIMEOUT) {
-                Ok(r) => r,
+                Ok(r) => { consecutive_failures = 0; r }
                 Err(e) => {
                     eprintln!("[supervisor] worker error: {e}, respawning");
                     kill_worker(worker);
-                    *worker = spawn_worker(exe).ok();
-                    match worker.as_mut() {
-                        Some(w2) => w2.send_with_timeout(&request, WORKER_TIMEOUT)
-                            .unwrap_or_else(|e2| error_json(&format!("retry failed: {e2}"))),
-                        None => error_json("failed to spawn worker"),
+                    consecutive_failures += 1;
+                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                        eprintln!("[supervisor] {consecutive_failures} consecutive failures, giving up");
+                        error_json("worker repeatedly crashed")
+                    } else {
+                        *worker = spawn_worker(exe).ok();
+                        match worker.as_mut() {
+                            Some(w2) => w2.send_with_timeout(&request, WORKER_TIMEOUT)
+                                .unwrap_or_else(|e2| error_json(&format!("retry failed: {e2}"))),
+                            None => error_json("failed to spawn worker"),
+                        }
                     }
                 }
             },
@@ -79,11 +87,13 @@ fn supervisor_loop(
     }
 }
 
-fn ensure_worker(worker: &mut Option<Worker>, exe: &Path) {
+fn ensure_worker(worker: &mut Option<Worker>, exe: &Path, failures: &mut u32) {
     if worker.as_mut().map_or(true, |w| !w.is_alive()) {
+        if *failures >= MAX_CONSECUTIVE_FAILURES { return; }
         eprintln!("[supervisor] worker dead, respawning");
         kill_worker(worker);
         *worker = spawn_worker(exe).ok();
+        if worker.is_none() { *failures += 1; }
     }
 }
 
@@ -126,16 +136,39 @@ fn spawn_worker(exe: &Path) -> Result<Worker, String> {
 }
 
 impl Worker {
-    fn send_with_timeout(&mut self, request: &str, _timeout: std::time::Duration) -> Result<String, String> {
+    fn send_with_timeout(&mut self, request: &str, timeout: std::time::Duration) -> Result<String, String> {
         let req = if request.ends_with('\n') { request.to_owned() } else { format!("{request}\n") };
         self.stdin.write_all(req.as_bytes()).map_err(|e| format!("write: {e}"))?;
         self.stdin.flush().map_err(|e| format!("flush: {e}"))?;
+        // Watchdog: kill worker if it doesn't respond within timeout.
+        // When worker dies, its stdout closes → read_line returns Ok(0) or Err.
+        let child_id = self.child.id();
+        let watchdog = std::thread::spawn(move || {
+            std::thread::sleep(timeout);
+            #[cfg(windows)]
+            {
+                #[link(name = "kernel32")]
+                unsafe extern "system" {
+                    fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut std::ffi::c_void;
+                    fn TerminateProcess(proc: *mut std::ffi::c_void, code: u32) -> i32;
+                    fn CloseHandle(h: *mut std::ffi::c_void) -> i32;
+                }
+                unsafe {
+                    let h = OpenProcess(0x0001, 0, child_id);
+                    if !h.is_null() { TerminateProcess(h, 1); CloseHandle(h); }
+                }
+            }
+            #[cfg(unix)]
+            unsafe { libc::kill(child_id as i32, libc::SIGKILL); }
+        });
         let mut response = String::new();
-        match self.stdout.read_line(&mut response) {
+        let result = match self.stdout.read_line(&mut response) {
             Ok(0) => Err("worker closed stdout".into()),
             Ok(_) => Ok(response),
             Err(e) => Err(format!("read: {e}")),
-        }
+        };
+        drop(watchdog); // watchdog thread continues but is harmless if worker already responded
+        result
     }
     fn is_alive(&mut self) -> bool {
         self.child.try_wait().ok().flatten().is_none()

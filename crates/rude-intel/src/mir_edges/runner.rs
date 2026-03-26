@@ -342,85 +342,129 @@ fn daemon_pipe_name(project_root: &Path) -> String {
     { format!("/tmp/rude-mir-{hash:016x}.sock") }
 }
 
+const DAEMON_RPC_TIMEOUT_MS: u32 = 180_000; // 3 minutes per request
+
 fn try_daemon(
     project_root: &Path, args_file: &Path, out_dir: &Path, mir_db: &Path,
 ) -> Option<()> {
     let pipe_name = daemon_pipe_name(project_root);
-    let request = format!(
-        "{{\"args_file\":\"{}\",\"out_dir\":\"{}\",\"db\":\"{}\"}}\n",
-        args_file.to_string_lossy().replace('\\', "\\\\"),
-        out_dir.to_string_lossy().replace('\\', "\\\\"),
-        mir_db.to_string_lossy().replace('\\', "\\\\"),
-    );
+    #[derive(serde::Serialize)]
+    struct Req<'a> { args_file: &'a str, out_dir: &'a str, db: &'a str }
+    let req = Req {
+        args_file: &args_file.to_string_lossy(),
+        out_dir: &out_dir.to_string_lossy(),
+        db: &mir_db.to_string_lossy(),
+    };
+    let mut request = serde_json::to_string(&req).ok()?;
+    request.push('\n');
 
-    #[cfg(windows)]
-    {
-        #[link(name = "kernel32")]
-        unsafe extern "system" {
-            fn CreateFileW(
-                name: *const u16, access: u32, share: u32, attrs: *const std::ffi::c_void,
-                disposition: u32, flags: u32, template: *const std::ffi::c_void,
-            ) -> *mut std::ffi::c_void;
-            fn ReadFile(
-                file: *mut std::ffi::c_void, buf: *mut u8, len: u32,
-                read: *mut u32, overlapped: *const std::ffi::c_void,
-            ) -> i32;
-            fn WriteFile(
-                file: *mut std::ffi::c_void, buf: *const u8, len: u32,
-                written: *mut u32, overlapped: *const std::ffi::c_void,
-            ) -> i32;
-            fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
-        }
-        const GENERIC_READ: u32 = 0x80000000;
-        const GENERIC_WRITE: u32 = 0x40000000;
-        const OPEN_EXISTING: u32 = 3;
-        const INVALID_HANDLE: *mut std::ffi::c_void = -1isize as *mut _;
-
-        let wide: Vec<u16> = pipe_name.encode_utf16().chain(std::iter::once(0)).collect();
-        let handle = unsafe {
-            CreateFileW(wide.as_ptr(), GENERIC_READ | GENERIC_WRITE, 0, std::ptr::null(), OPEN_EXISTING, 0, std::ptr::null())
-        };
-        if handle == INVALID_HANDLE { return None; } // daemon not running
-
-        let _span = tracing::info_span!("daemon_rpc").entered();
-        let bytes = request.as_bytes();
-        let mut written = 0u32;
-        let ok = unsafe { WriteFile(handle, bytes.as_ptr(), bytes.len() as u32, &mut written, std::ptr::null()) };
-        if ok == 0 { unsafe { CloseHandle(handle); } return None; }
-
-        let mut buf = vec![0u8; 65536];
-        let mut read = 0u32;
-        unsafe { ReadFile(handle, buf.as_mut_ptr(), buf.len() as u32, &mut read, std::ptr::null()); }
-        unsafe { CloseHandle(handle); }
-
-        let response = String::from_utf8_lossy(&buf[..read as usize]);
-        if response.contains("\"ok\":true") {
-            eprintln!("  [mir] daemon: {}", response.trim());
-            return Some(());
-        }
+    let response = daemon_rpc(&pipe_name, &request)?;
+    if response.contains("\"ok\":true") {
+        eprintln!("  [mir] daemon: {}", response.trim());
+        Some(())
+    } else {
         eprintln!("  [mir] daemon error: {}", response.trim());
+        None
     }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::net::UnixStream;
-        use std::io::{Read, Write, BufRead, BufReader};
-        let mut stream = match UnixStream::connect(&pipe_name) {
-            Ok(s) => s,
-            Err(_) => return None,
-        };
-        let _span = tracing::info_span!("daemon_rpc").entered();
-        if stream.write_all(request.as_bytes()).is_err() { return None; }
-        let mut response = String::new();
-        if BufReader::new(&stream).read_line(&mut response).is_err() { return None; }
-        if response.contains("\"ok\":true") {
-            eprintln!("  [mir] daemon: {}", response.trim());
-            return Some(());
-        }
-        eprintln!("  [mir] daemon error: {}", response.trim());
-    }
-    None
 }
+
+#[cfg(windows)]
+fn daemon_rpc(pipe_name: &str, request: &str) -> Option<String> {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CreateFileW(
+            name: *const u16, access: u32, share: u32, attrs: *const std::ffi::c_void,
+            disposition: u32, flags: u32, template: *const std::ffi::c_void,
+        ) -> *mut std::ffi::c_void;
+        fn CreateEventW(attrs: *const std::ffi::c_void, manual: i32, initial: i32, name: *const u16) -> *mut std::ffi::c_void;
+        fn ReadFile(
+            file: *mut std::ffi::c_void, buf: *mut u8, len: u32,
+            read: *mut u32, overlapped: *mut std::ffi::c_void,
+        ) -> i32;
+        fn WriteFile(
+            file: *mut std::ffi::c_void, buf: *const u8, len: u32,
+            written: *mut u32, overlapped: *const std::ffi::c_void,
+        ) -> i32;
+        fn GetOverlappedResult(
+            file: *mut std::ffi::c_void, overlapped: *mut std::ffi::c_void,
+            transferred: *mut u32, wait: i32,
+        ) -> i32;
+        fn WaitForSingleObject(handle: *mut std::ffi::c_void, ms: u32) -> u32;
+        fn CancelIo(handle: *mut std::ffi::c_void) -> i32;
+        fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+        fn GetLastError() -> u32;
+    }
+    const GENERIC_RW: u32 = 0xC0000000;
+    const OPEN_EXISTING: u32 = 3;
+    const FILE_FLAG_OVERLAPPED: u32 = 0x40000000;
+    const INVALID_HANDLE: *mut std::ffi::c_void = -1isize as *mut _;
+
+    let wide: Vec<u16> = pipe_name.encode_utf16().chain(std::iter::once(0)).collect();
+    let handle = unsafe {
+        CreateFileW(wide.as_ptr(), GENERIC_RW, 0, std::ptr::null(), OPEN_EXISTING, FILE_FLAG_OVERLAPPED, std::ptr::null())
+    };
+    if handle == INVALID_HANDLE { return None; }
+    let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+    if event.is_null() { unsafe { CloseHandle(handle); } return None; }
+
+    let _span = tracing::info_span!("daemon_rpc").entered();
+
+    #[repr(C)]
+    struct Ov { internal: usize, internal_high: usize, offset: u32, offset_high: u32, event: *mut std::ffi::c_void }
+
+    // Write request (with timeout)
+    let bytes = request.as_bytes();
+    let mut written = 0u32;
+    let mut ov = Ov { internal: 0, internal_high: 0, offset: 0, offset_high: 0, event };
+    let ok = unsafe { WriteFile(handle, bytes.as_ptr(), bytes.len() as u32, &mut written, &mut ov as *mut Ov as *mut _) };
+    if ok == 0 && unsafe { GetLastError() } == 997 {
+        if unsafe { WaitForSingleObject(event, 10_000) } != 0 {
+            unsafe { CancelIo(handle); CloseHandle(event); CloseHandle(handle); }
+            return None;
+        }
+    } else if ok == 0 {
+        unsafe { CloseHandle(event); CloseHandle(handle); }
+        return None;
+    }
+
+    // Read response (with timeout)
+    unsafe { ResetEvent(event); }
+    let mut buf = vec![0u8; 65536];
+    let mut read = 0u32;
+    let mut ov2 = Ov { internal: 0, internal_high: 0, offset: 0, offset_high: 0, event };
+    let ok = unsafe { ReadFile(handle, buf.as_mut_ptr(), buf.len() as u32, &mut read, &mut ov2 as *mut Ov as *mut _) };
+    if ok == 0 && unsafe { GetLastError() } == 997 {
+        let wait = unsafe { WaitForSingleObject(event, DAEMON_RPC_TIMEOUT_MS) };
+        if wait != 0 {
+            eprintln!("  [mir] daemon timeout after {}s", DAEMON_RPC_TIMEOUT_MS / 1000);
+            unsafe { CancelIo(handle); CloseHandle(event); CloseHandle(handle); }
+            return None;
+        }
+        unsafe { GetOverlappedResult(handle, &mut ov2 as *mut Ov as *mut _, &mut read, 0); }
+    }
+    unsafe { CloseHandle(event); CloseHandle(handle); }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" { fn ResetEvent(handle: *mut std::ffi::c_void) -> i32; }
+
+    Some(String::from_utf8_lossy(&buf[..read as usize]).into_owned())
+}
+
+#[cfg(unix)]
+fn daemon_rpc(pipe_name: &str, request: &str) -> Option<String> {
+    use std::os::unix::net::UnixStream;
+    use std::io::{Write, BufRead, BufReader};
+    let mut stream = UnixStream::connect(pipe_name).ok()?;
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(180))).ok();
+    let _span = tracing::info_span!("daemon_rpc").entered();
+    stream.write_all(request.as_bytes()).ok()?;
+    let mut response = String::new();
+    BufReader::new(&stream).read_line(&mut response).ok()?;
+    Some(response)
+}
+
+#[cfg(not(any(windows, unix)))]
+fn daemon_rpc(_: &str, _: &str) -> Option<String> { None }
 
 pub fn start_daemon(project_root: &Path, mir_callgraph_bin: Option<&Path>) -> Result<()> {
     let bin = find_mir_callgraph_bin(mir_callgraph_bin)?;

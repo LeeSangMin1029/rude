@@ -197,7 +197,6 @@ fn strip_unc(p: PathBuf) -> PathBuf {
 fn run_mir_cargo_wrapper(ws: &std::path::Path) -> Result<()> {
     let bin = rude_intel::mir_edges::find_mir_callgraph_bin(None)?;
     let out_dir = ws.join("target").join("mir-edges");
-    let mir_db = rude_intel::mir_edges::mir_db_path(ws);
     std::fs::create_dir_all(&out_dir).ok();
     // Clean mir-check to force cargo to re-invoke RUSTC_WRAPPER
     let mir_check_dir = ws.join("target").join("mir-check");
@@ -325,7 +324,7 @@ fn merge_chunks_cache(
 fn prebuild_caches(
     db_path: &std::path::Path,
     new_entries: &[CodeChunkEntry],
-    mir_edge_dir: &std::path::Path,
+    _mir_edge_dir: &std::path::Path,
     incremental_crates: &[String],
 ) {
     if incremental_crates.is_empty() {
