@@ -82,6 +82,9 @@ fn run() -> anyhow::Result<()> {
             let body = read_body(body, body_file)?;
             commands::edit::replace_lines(file, start, end, body)
         }
+        Commands::Batch { manifest } => {
+            commands::edit::run_batch(manifest)
+        }
         Commands::Cluster { file, min_lines } => commands::intel::run_cluster(file, min_lines),
         Commands::Watch { input } => commands::watch::run(input),
         Commands::CreateFile { file, body, body_file } => {

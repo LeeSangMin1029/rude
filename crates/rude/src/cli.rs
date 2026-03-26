@@ -229,6 +229,11 @@ pub enum Commands {
         #[arg(long)]
         body_file: Option<PathBuf>,
     },
+    /// Batch edit: apply multiple symbol edits atomically from a JSON manifest.
+    Batch {
+        /// Path to JSON manifest file with edit operations.
+        manifest: PathBuf,
+    },
     /// Analyze independent function clusters in a file
     Cluster {
         /// File path suffix to filter (e.g. "src/dag_runner.rs").

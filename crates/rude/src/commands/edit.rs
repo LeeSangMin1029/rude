@@ -85,6 +85,66 @@ pub fn create_file(file: String, body: String) -> Result<()> {
     Ok(())
 }
 
+pub fn run_batch(manifest: PathBuf) -> Result<()> {
+    let content = std::fs::read_to_string(&manifest)
+        .with_context(|| format!("failed to read manifest: {}", manifest.display()))?;
+    let entries: Vec<BatchEntry> = serde_json::from_str(&content)
+        .context("failed to parse batch manifest JSON")?;
+    if entries.is_empty() { return Ok(()); }
+    let db = crate::db();
+    let graph = crate::commands::intel::load_or_build_graph()?;
+    let mut by_file: std::collections::HashMap<String, Vec<(SymbolLocation, String, String)>> = std::collections::HashMap::new();
+    for e in &entries {
+        let indices = graph.resolve(&e.symbol);
+        let candidates: Vec<u32> = indices.into_iter()
+            .filter(|&i| e.file.as_ref().is_none_or(|f| graph.chunks[i as usize].file.ends_with(f.as_str())))
+            .collect();
+        if candidates.is_empty() { bail!("Symbol '{}' not found", e.symbol); }
+        if candidates.len() > 1 { bail!("Ambiguous '{}'", e.symbol); }
+        let chunk = &graph.chunks[candidates[0] as usize];
+        let abs_path = resolve_abs_path(db, &chunk.file)?;
+        let leaf = e.symbol.rsplit("::").next().unwrap_or(&e.symbol);
+        let (start, end) = syn_locate(&abs_path, leaf)?;
+        let rel = relative_display(db, &chunk.file);
+        let loc = SymbolLocation { abs_path: abs_path.clone(), rel_path: rel, start_line: start, end_line: end };
+        let body = match (&e.body, &e.body_file) {
+            (Some(b), _) => b.clone(),
+            (_, Some(f)) => std::fs::read_to_string(f).with_context(|| format!("read body_file: {}", f.display()))?,
+            _ if e.op == "delete" => String::new(),
+            _ => bail!("No body for '{}'", e.symbol),
+        };
+        by_file.entry(abs_path.to_string_lossy().into_owned()).or_default().push((loc, e.op.clone(), body));
+    }
+    for (_, mut ops) in by_file {
+        ops.sort_by(|a, b| b.0.start_line.cmp(&a.0.start_line));
+        let path = ops[0].0.abs_path.clone();
+        let rel = ops[0].0.rel_path.clone();
+        splice_file(&path, |lines| {
+            for (loc, op, body) in &ops {
+                let (drain, repl) = match op.as_str() {
+                    "replace" => (loc.start_line..(loc.end_line + 1).min(lines.len()), body.trim_end().lines().collect()),
+                    "delete" => (loc.start_line..(loc.end_line + 1).min(lines.len()), vec![]),
+                    "insert-after" => { let pos = (loc.end_line + 1).min(lines.len()); let mut r = vec![""]; r.extend(body.trim_end().lines()); (pos..pos, r) }
+                    "insert-before" => { let mut r: Vec<&str> = body.trim_end().lines().collect(); r.push(""); (loc.start_line..loc.start_line, r) }
+                    _ => continue,
+                };
+                lines.splice(drain, repl.into_iter().map(String::from));
+                eprintln!("  {op} {} in {rel}", loc.start_line + 1);
+            }
+        })?;
+    }
+    Ok(())
+}
+
+#[derive(serde::Deserialize)]
+struct BatchEntry {
+    op: String,
+    symbol: String,
+    file: Option<String>,
+    body: Option<String>,
+    body_file: Option<PathBuf>,
+}
+
 fn splice_file(path: &Path, f: impl FnOnce(&mut Vec<String>)) -> Result<()> {
     locked_edit(path, |content| {
         let mut lines: Vec<String> = content.lines().map(String::from).collect();
