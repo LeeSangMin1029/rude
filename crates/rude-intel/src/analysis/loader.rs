@@ -53,26 +53,44 @@ pub fn save_chunks_cache_for(db: &Path, chunks: &[ParsedChunk], changed_crates: 
     let Ok(engine) = rude_db::StorageEngine::open(db) else { return };
     let config = bincode::config::standard();
 
-    let mut by_crate: std::collections::HashMap<&str, Vec<&ParsedChunk>> = std::collections::HashMap::new();
+    let mut by_crate: std::collections::HashMap<&str, Vec<ParsedChunk>> = std::collections::HashMap::new();
     for c in chunks {
         let key = if c.crate_name.is_empty() { "(root)" } else { &c.crate_name };
-        by_crate.entry(key).or_default().push(c);
+        by_crate.entry(key).or_default().push(c.clone());
     }
 
-    // Save only changed crates (or all if changed_crates is None)
-    for (name, crate_chunks) in &by_crate {
+    let crate_names_snapshot: Vec<String> = by_crate.keys().map(|s| s.to_string()).collect();
+    for (name, mut crate_chunks) in by_crate {
         if let Some(changed) = changed_crates {
             if !changed.iter().any(|c| c.replace('-', "_") == name.replace('-', "_")) { continue; }
         }
         let key = format!("chunks:{name}");
+        // Merge: keep existing chunks not present in new set (e.g. test chunks when only lib updated)
+        if changed_crates.is_some() {
+            if let Ok(Some(existing_bytes)) = engine.get_cache(&key) {
+                if existing_bytes.first() == Some(&CHUNKS_CACHE_VERSION) {
+                    if let Ok((existing, _)) = bincode::decode_from_slice::<Vec<ParsedChunk>, _>(&existing_bytes[1..], config) {
+                        let new_ids: std::collections::HashSet<(&str, Option<(usize, usize)>)> =
+                            crate_chunks.iter().map(|c| (c.file.as_str(), c.lines)).collect();
+                        let retained: Vec<ParsedChunk> = existing.into_iter()
+                            .filter(|c| !new_ids.contains(&(c.file.as_str(), c.lines)))
+                            .collect();
+                        if !retained.is_empty() {
+                            crate_chunks.extend(retained);
+                            crate_chunks.sort_by(|a, b| a.file.cmp(&b.file).then_with(|| a.lines.cmp(&b.lines)));
+                        }
+                    }
+                }
+            }
+        }
         let mut bytes = vec![CHUNKS_CACHE_VERSION];
-        if let Ok(cb) = bincode::encode_to_vec(crate_chunks, config) {
+        if let Ok(cb) = bincode::encode_to_vec(&crate_chunks, config) {
             bytes.extend_from_slice(&cb);
             let _ = engine.set_cache(&key, &bytes);
         }
     }
     // Update crate index (merge with existing if incremental)
-    let mut all_names: std::collections::HashSet<String> = by_crate.keys().map(|s| s.to_string()).collect();
+    let mut all_names: std::collections::HashSet<String> = crate_names_snapshot.into_iter().collect();
     if changed_crates.is_some() {
         if let Ok(Some(idx_bytes)) = engine.get_cache("chunks:_index") {
             if let Ok((existing, _)) = bincode::decode_from_slice::<Vec<String>, _>(&idx_bytes, config) {

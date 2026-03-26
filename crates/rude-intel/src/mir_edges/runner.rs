@@ -251,22 +251,23 @@ pub fn run_mir_direct(
     };
     kill_previous_test_bg(&out_dir);
 
+    let mut all_files = lib_files;
+    all_files.extend(test_files);
     // Try daemon first (DLL already loaded → fast)
-    if let Some(()) = try_daemon_all(project_root, &lib_files, &out_dir, &mir_db) {
+    if let Some(()) = try_daemon_all(project_root, &all_files, &out_dir, &mir_db) {
         return Ok(());
     }
     // Daemon not running → start it, retry once
     if start_daemon(project_root, mir_callgraph_bin).is_ok() {
-        if let Some(()) = try_daemon_all(project_root, &lib_files, &out_dir, &mir_db) {
+        if let Some(()) = try_daemon_all(project_root, &all_files, &out_dir, &mir_db) {
             return Ok(());
         }
     }
-    // Fallback: subprocess (slow DLL loading)
+    // Fallback: subprocess
     let mut had_error = false;
     {
-        let mut lib_children: Vec<(PathBuf, std::process::Child)> = Vec::new();
-        for args_file in &lib_files {
-            let _span = tracing::info_span!("lib_spawn").entered();
+        let mut children: Vec<(PathBuf, std::process::Child)> = Vec::new();
+        for args_file in &all_files {
             let mut cmd = Command::new(&bin);
             add_nightly_path(&mut cmd);
             cmd.current_dir(project_root)
@@ -276,24 +277,20 @@ pub fn run_mir_direct(
                 .env("MIR_CALLGRAPH_DB", &mir_db)
                 .env("MIR_CALLGRAPH_JSON", "1");
             match cmd.spawn() {
-                Ok(child) => lib_children.push((args_file.clone(), child)),
-                Err(e) => { eprintln!("  [mir] failed to spawn direct (lib): {e}"); had_error = true; }
+                Ok(child) => children.push((args_file.clone(), child)),
+                Err(e) => { eprintln!("  [mir] failed to spawn direct: {e}"); had_error = true; }
             }
         }
-        for (path, mut child) in lib_children {
-            let _span = tracing::info_span!("lib_wait").entered();
+        for (path, mut child) in children {
             if let Ok(status) = child.wait() {
                 if !status.success() { eprintln!("  [mir] direct failed for {}: {status}", path.display()); had_error = true; }
             }
         }
     }
     if had_error {
-        eprintln!("  [mir] some lib builds failed, refreshing via cargo...");
+        eprintln!("  [mir] some builds failed, refreshing via cargo...");
         run_mir_callgraph_for(project_root, mir_callgraph_bin, crates, _rust_only)?;
-        return Ok(());
     }
-
-    // Test builds skipped in direct mode — lib edges are sufficient.
     Ok(())
 }
 
