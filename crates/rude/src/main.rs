@@ -20,11 +20,11 @@ fn main() {
         .join()
         .expect("main thread panicked");
 
-    if let Err(err) = result {
-        eprintln!("Error: {err}");
-        std::process::exit(1);
+    drop(_guard);
+    match result {
+        Err(err) => { eprintln!("Error: {err}"); std::process::exit(1); }
+        Ok(()) => {}
     }
-    std::process::exit(0);
 }
 
 fn env_compact() -> bool {
