@@ -254,14 +254,16 @@ pub fn run_mir_direct(
 
     let mut all_files = lib_files;
     all_files.extend(test_files);
-    // Try daemon first (DLL already loaded → fast)
-    if let Some(()) = try_daemon_all(project_root, &all_files, &out_dir, &mir_db) {
-        return Ok(());
-    }
-    // Daemon not running → start it, retry once
-    if start_daemon(project_root, mir_callgraph_bin).is_ok() {
+    // Try daemon (with retry — daemon may be between disconnect/reconnect)
+    for attempt in 0..3 {
         if let Some(()) = try_daemon_all(project_root, &all_files, &out_dir, &mir_db) {
             return Ok(());
+        }
+        if attempt == 0 {
+            // First failure: maybe daemon not running, try to start it
+            start_daemon(project_root, mir_callgraph_bin).ok();
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(200));
         }
     }
     // Fallback: subprocess
@@ -485,9 +487,7 @@ pub fn start_daemon(project_root: &Path, mir_callgraph_bin: Option<&Path>) -> Re
         .env("MIR_CALLGRAPH_JSON", "1")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::inherit());
-    let child = cmd.spawn().context("failed to start daemon")?;
-    #[cfg(windows)]
-    assign_to_job(&child);
+    cmd.spawn().context("failed to start daemon")?;
     wait_for_event(&event_name, 6000);
     Ok(())
 }

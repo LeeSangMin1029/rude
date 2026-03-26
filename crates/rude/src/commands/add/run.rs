@@ -165,11 +165,25 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
 
 
 fn run_sub_workspaces(
-    root: &std::path::Path, main_mir_db: &std::path::Path, _code_files: &[&PathBuf],
+    root: &std::path::Path, main_mir_db: &std::path::Path, code_files: &[&PathBuf],
 ) -> Result<()> {
     let sub_workspaces = find_sub_workspaces(root);
+    let abs_root = root.canonicalize().unwrap_or(root.to_path_buf());
     for ws in &sub_workspaces {
-        let abs_ws = ws.canonicalize().unwrap_or(ws.clone());
+        let abs_ws = ws.canonicalize().unwrap_or(abs_root.join(ws));
+        // Skip if no files changed in this sub-workspace
+        let has_changes = code_files.iter().any(|f| {
+            let abs_f = if f.is_absolute() { f.to_path_buf() } else { abs_root.join(f) };
+            abs_f.starts_with(&abs_ws)
+        });
+        if !has_changes {
+            // Still merge existing mir.db if available
+            let ws_mir_db = abs_ws.join("target").join("mir-edges").join("mir.db");
+            if ws_mir_db.exists() {
+                rude_intel::mir_edges::merge_mir_db(main_mir_db, &ws_mir_db).ok();
+            }
+            continue;
+        }
         eprintln!("  [mir] sub-workspace: {}", ws.display());
         run_mir_cargo_wrapper(&abs_ws).ok();
         let ws_mir_db = abs_ws.join("target").join("mir-edges").join("mir.db");
