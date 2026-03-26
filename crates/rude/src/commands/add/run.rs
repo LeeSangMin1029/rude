@@ -188,20 +188,20 @@ fn run_sub_workspaces(
         });
         if has_changes {
             eprintln!("  [mir] sub-workspace: {}", ws.display());
-            let changed = rude_intel::mir_edges::detect_changed_crates(&abs_ws,
-                &code_files.iter().filter(|f| {
+            let ws_args_dir = abs_ws.join("target").join("mir-edges").join("rustc-args");
+            if ws_args_dir.exists() {
+                let changed_ws: Vec<PathBuf> = code_files.iter().filter_map(|f| {
                     let abs_f = if f.is_absolute() { f.to_path_buf() } else { abs_root.join(f) };
-                    abs_f.starts_with(&abs_ws)
-                }).cloned().collect::<Vec<_>>());
-            if !changed.is_empty() {
-                let refs: Vec<&str> = changed.iter().map(|s| s.as_str()).collect();
-                rude_intel::mir_edges::clear_mir_db(&abs_ws, &refs).ok();
-                // Try daemon first (same as main workspace)
-                if rude_intel::mir_edges::run_mir_direct(&abs_ws, None, &refs, true).is_err() {
-                    run_mir_cargo_wrapper(&abs_ws).ok();
+                    abs_f.strip_prefix(&abs_ws).ok().map(|rel| abs_ws.join(rel))
+                }).collect();
+                let refs: Vec<&PathBuf> = changed_ws.iter().collect();
+                let crates = rude_intel::mir_edges::detect_changed_crates(&abs_ws, &refs);
+                if !crates.is_empty() {
+                    let refs: Vec<&str> = crates.iter().map(|s| s.as_str()).collect();
+                    rude_intel::mir_edges::clear_mir_db(&abs_ws, &refs).ok();
+                    rude_intel::mir_edges::run_mir_direct(&abs_ws, None, &refs, true).ok();
                 }
             } else {
-                // No crates detected → full cargo wrapper
                 run_mir_cargo_wrapper(&abs_ws).ok();
             }
         }
@@ -225,14 +225,6 @@ fn run_mir_cargo_wrapper(ws: &std::path::Path) -> Result<()> {
     let bin = rude_intel::mir_edges::find_mir_callgraph_bin(None)?;
     let out_dir = ws.join("target").join("mir-edges");
     std::fs::create_dir_all(&out_dir).ok();
-    // Full clean to force RUSTC_WRAPPER re-invocation for all crates
-    let mir_check_dir = ws.join("target").join("mir-check");
-    if mir_check_dir.exists() {
-        for _ in 0..3 {
-            if std::fs::remove_dir_all(&mir_check_dir).is_ok() { break; }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-    }
     let abs_out = strip_unc(out_dir.canonicalize().unwrap_or(out_dir.clone()));
     let abs_db = abs_out.join("mir.db");
     let abs_bin = strip_unc(bin.canonicalize().unwrap_or(bin));
