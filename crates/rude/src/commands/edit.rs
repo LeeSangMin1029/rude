@@ -23,20 +23,20 @@ pub fn apply_edits(ops: &[(&str, Op)], file: Option<&str>) -> Result<()> {
         .map(|(s, _)| *s).collect();
     if !deletes.is_empty() { warn_callers(&deletes); }
 
-    let mut edits: Vec<(usize, usize, &str, &Op)> = ops.iter()
+    let mut locs: Vec<(SymbolLocation, &str, &Op)> = ops.iter()
         .map(|(sym, op)| {
             let loc = locate_symbol(db, sym, file).unwrap();
-            (loc.start_line, loc.end_line, *sym, op)
+            (loc, *sym, op)
         }).collect();
-    edits.sort_by(|a, b| b.0.cmp(&a.0));
-
-    let first = locate_symbol(db, ops[0].0, file)?;
-    splice_file(&first.abs_path, |lines| {
-        for &(start, end, sym, op) in &edits {
-            let (drain, repl) = op_to_splice(start, end, op, lines.len());
+    locs.sort_by(|a, b| b.0.start_line.cmp(&a.0.start_line));
+    let abs_path = locs[0].0.abs_path.clone();
+    let rel_path = locs[0].0.rel_path.clone();
+    splice_file(&abs_path, |lines| {
+        for (loc, sym, op) in &locs {
+            let (drain, repl) = op_to_splice(loc.start_line, loc.end_line, op, lines.len());
             let owned: Vec<String> = repl.into_iter().map(String::from).collect();
             lines.splice(drain, owned);
-            eprintln!("  {} {sym} in {}", op_label(op, start, end), first.rel_path);
+            eprintln!("  {} {sym} in {rel_path}", op_label(op, loc.start_line, loc.end_line));
         }
     })
 }
@@ -92,12 +92,7 @@ fn splice_file(path: &Path, f: impl FnOnce(&mut Vec<String>)) -> Result<()> {
         f(&mut lines);
         let refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
         Ok(join_lines(&refs, trailing))
-    })?;
-    // Invalidate graph cache so next locate_symbol uses fresh line numbers
-    if let Ok(engine) = rude_db::StorageEngine::open(crate::db()) {
-        let _ = engine.set_cache("graph", &[]);
-    }
-    Ok(())
+    })
 }
 
 fn op_to_splice<'a>(start: usize, end: usize, op: &'a Op, len: usize) -> (std::ops::Range<usize>, Vec<&'a str>) {
@@ -132,7 +127,6 @@ fn op_label(op: &Op, start: usize, end: usize) -> String {
 }
 
 pub(crate) fn locate_symbol(db: &Path, symbol: &str, file_hint: Option<&str>) -> Result<SymbolLocation> {
-    // Use graph to find which file the symbol is in
     let graph = crate::commands::intel::load_or_build_graph()?;
     let indices = graph.resolve(symbol);
     let candidates: Vec<u32> = indices.into_iter()
