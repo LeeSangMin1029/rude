@@ -282,45 +282,8 @@ pub fn run_mir_direct(
         return Ok(());
     }
 
-    // Test processes append to the same JSONL files after lib is done.
-    // We record their PIDs so the next `add` can wait/kill if needed.
-    if !test_files.is_empty() {
-        let mut test_pids: Vec<u32> = Vec::new();
-        for args_file in &test_files {
-            let mut cmd = Command::new(&bin);
-            add_nightly_path(&mut cmd);
-            cmd.current_dir(project_root)
-                .arg("--direct")
-                .arg("--args-file").arg(args_file)
-                .env("MIR_CALLGRAPH_OUT", &out_dir)
-                .env("MIR_CALLGRAPH_DB", &mir_db)
-                .env("MIR_CALLGRAPH_JSON", "1")
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null());
-            #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                cmd.creation_flags(0x00000008 | 0x00000200); // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-            }
-            match cmd.spawn() {
-                Ok(child) => {
-                    test_pids.push(child.id());
-                    std::mem::forget(child);
-                }
-                Err(e) => {
-                    eprintln!("  [mir] failed to spawn direct (test): {e}");
-                    // Non-fatal: lib edges are enough for now.
-                }
-            }
-        }
-        if !test_pids.is_empty() {
-            let pid_file = out_dir.join(".test-bg.pid");
-            let content = test_pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join("\n");
-            let _ = std::fs::write(&pid_file, content);
-            eprintln!("  [mir] test builds spawned in background (PIDs: {})",
-                test_pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "));
-        }
-    }
+    // Test builds skipped in direct mode — lib edges are sufficient.
+    // Test-only functions are captured during full `cargo check --tests` (initial build).
 
     Ok(())
 }
