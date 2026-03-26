@@ -26,7 +26,13 @@ pub fn write_results(
 }
 
 fn write_sqlite(db_path: &str, crate_name: &str, edges: &[CallEdge], chunks: &[MirChunk]) {
-    let Ok(conn) = rusqlite::Connection::open(db_path) else { return };
+    if let Some(parent) = std::path::Path::new(db_path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let conn = match rusqlite::Connection::open(db_path) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("[mir-callgraph] failed to open DB {db_path}: {e}"); return; }
+    };
     let _ = conn.pragma_update(None, "journal_mode", "wal");
     conn.busy_timeout(std::time::Duration::from_secs(30)).ok();
 

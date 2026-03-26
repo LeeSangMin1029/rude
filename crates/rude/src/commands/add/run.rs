@@ -175,22 +175,45 @@ fn run_sub_workspaces(
             .filter(|f| f.starts_with(ws) || f.starts_with(&abs_ws))
             .cloned().collect();
         if ws_changed.is_empty() { continue; }
-        let ws_mir_db = rude_intel::mir_edges::mir_db_path(&abs_ws);
-        let has_cache = ws_mir_db.exists();
-        if !has_cache {
-            eprintln!("  [mir] sub-workspace: {} (full)", ws.display());
-            rude_intel::mir_edges::run_mir_callgraph(&abs_ws, None).ok();
-        } else {
-            let changed = rude_intel::mir_edges::detect_changed_crates(&abs_ws, &ws_changed);
-            if changed.is_empty() { continue; }
-            let refs: Vec<&str> = changed.iter().map(|s| s.as_str()).collect();
-            eprintln!("  [mir] sub-workspace: {} ({} crate(s))", ws.display(), refs.len());
-            rude_intel::mir_edges::clear_mir_db(&abs_ws, &refs).ok();
-            rude_intel::mir_edges::run_mir_direct(&abs_ws, None, &refs, true).ok();
-        }
+        eprintln!("  [mir] sub-workspace: {}", ws.display());
+        run_mir_cargo_wrapper(&abs_ws).ok();
+        let ws_mir_db = abs_ws.join("target").join("mir-edges").join("mir.db");
         if ws_mir_db.exists() {
             rude_intel::mir_edges::merge_mir_db(main_mir_db, &ws_mir_db).ok();
         }
+    }
+    Ok(())
+}
+
+fn strip_unc(p: PathBuf) -> PathBuf {
+    let s = p.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        p
+    }
+}
+
+fn run_mir_cargo_wrapper(ws: &std::path::Path) -> Result<()> {
+    let bin = rude_intel::mir_edges::find_mir_callgraph_bin(None)?;
+    let out_dir = ws.join("target").join("mir-edges");
+    let mir_db = rude_intel::mir_edges::mir_db_path(ws);
+    std::fs::create_dir_all(&out_dir).ok();
+    let abs_out = strip_unc(out_dir.canonicalize().unwrap_or(out_dir.clone()));
+    let abs_db = abs_out.join("mir.db");
+    let abs_bin = strip_unc(bin.canonicalize().unwrap_or(bin));
+    let status = std::process::Command::new("cargo")
+        .arg("+nightly").arg("check").arg("--tests")
+        .arg("--target-dir").arg(ws.join("target").join("mir-check"))
+        .current_dir(ws)
+        .env("RUSTC_WRAPPER", &abs_bin)
+        .env("MIR_CALLGRAPH_OUT", &abs_out)
+        .env("MIR_CALLGRAPH_DB", &abs_db)
+        .env("MIR_CALLGRAPH_JSON", "1")
+        .status()
+        .context("failed to run cargo check for sub-workspace")?;
+    if !status.success() {
+        eprintln!("  [mir] sub-workspace cargo check failed: {status}");
     }
     Ok(())
 }
@@ -213,12 +236,7 @@ fn scan_for_workspaces(dir: &std::path::Path, result: &mut Vec<PathBuf>, depth: 
     let cargo_toml = dir.join("Cargo.toml");
     if cargo_toml.exists() {
         if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
-            // Standalone workspace with own [workspace] section
             if content.contains("[workspace]") && !content.contains("workspace.members") {
-                // Skip rustc_private projects (require special nightly handling)
-                if content.contains("rustc_private") {
-                    return;
-                }
                 result.push(dir.to_path_buf());
                 return;
             }

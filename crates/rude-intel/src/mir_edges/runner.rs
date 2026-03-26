@@ -86,7 +86,7 @@ fn install_mir_callgraph() -> Result<PathBuf> {
     Ok(cached_bin)
 }
 
-fn find_mir_callgraph_bin(override_path: Option<&Path>) -> Result<PathBuf> {
+pub fn find_mir_callgraph_bin(override_path: Option<&Path>) -> Result<PathBuf> {
     if let Some(p) = override_path { return Ok(p.to_path_buf()); }
     if let Ok(exe) = std::env::current_exe() {
         let sibling = exe.with_file_name(mir_callgraph_bin_name());
