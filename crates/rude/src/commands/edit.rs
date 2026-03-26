@@ -132,12 +132,12 @@ fn op_label(op: &Op, start: usize, end: usize) -> String {
 }
 
 pub(crate) fn locate_symbol(db: &Path, symbol: &str, file_hint: Option<&str>) -> Result<SymbolLocation> {
+    // Use graph to find which file the symbol is in
     let graph = crate::commands::intel::load_or_build_graph()?;
     let indices = graph.resolve(symbol);
     let candidates: Vec<u32> = indices.into_iter()
         .filter(|&i| file_hint.is_none_or(|f| graph.chunks[i as usize].file.ends_with(f)))
         .collect();
-
     if candidates.is_empty() { bail!("Symbol '{symbol}' not found"); }
     if candidates.len() > 1 {
         let locs: Vec<String> = candidates.iter()
@@ -145,41 +145,60 @@ pub(crate) fn locate_symbol(db: &Path, symbol: &str, file_hint: Option<&str>) ->
                 c.file, c.lines.map_or("?".into(), |(s, e)| format!("{s}-{e}"))) }).collect();
         bail!("Ambiguous '{symbol}' — {} matches:\n{}", candidates.len(), locs.join("\n"));
     }
-
     let chunk = &graph.chunks[candidates[0] as usize];
-    let (start_1, end_1) = chunk.lines.context("No line range")?;
-
     let abs_path = resolve_abs_path(db, &chunk.file)?;
-    let content = std::fs::read_to_string(&abs_path)?;
-    let lines: Vec<&str> = content.lines().collect();
+    let rel = relative_display(db, &chunk.file);
+    // Use syn to find exact line range from actual file content (not cached MIR lines)
+    let leaf = symbol.rsplit("::").next().unwrap_or(symbol);
+    let (start, end) = syn_locate(&abs_path, leaf)?;
+    Ok(SymbolLocation { abs_path, rel_path: rel, start_line: start, end_line: end })
+}
 
-    let mut start = start_1.saturating_sub(1);
-    let mut end = end_1.saturating_sub(1);
-    if end >= lines.len() { bail!("L{start_1}-{end_1} exceeds file ({} lines)", lines.len()); }
+fn line_of(span: proc_macro2::Span) -> usize {
+    span.start().line.saturating_sub(1)
+}
 
-    // Extend upward to include doc comments and attributes (excluding #[test]).
-    while start > 0 {
-        let p = lines[start - 1].trim();
-        if p.starts_with("///") || p.starts_with("//!")
-            || (p.starts_with("#[") && !p.starts_with("#[test") && !p.starts_with("#[cfg(test"))
-            || p.starts_with("#![") || p.starts_with("/** ") || p.starts_with("* ") || p == "*/"
-        { start -= 1; } else { break; }
-    }
-    if (start..=end).any(|i| lines[i].contains('{'))
-        && !(start..=end).any(|i| lines[i].contains('}'))
-    {
-        let mut depth: i32 = 0;
-        for i in start..lines.len() {
-            for ch in lines[i].chars() {
-                if ch == '{' { depth += 1; }
-                if ch == '}' { depth -= 1; }
+fn end_line_of(span: proc_macro2::Span) -> usize {
+    span.end().line.saturating_sub(1)
+}
+
+fn syn_locate(path: &Path, name: &str) -> Result<(usize, usize)> {
+    let content = std::fs::read_to_string(path)?;
+    let file = syn::parse_file(&content).context("syn parse failed")?;
+    for item in &file.items {
+        if let Some(r) = item_span(item, name) { return Ok(r); }
+        if let syn::Item::Impl(imp) = item {
+            for sub in &imp.items {
+                if let syn::ImplItem::Fn(f) = sub {
+                    if f.sig.ident == name {
+                        return Ok((line_of(f.sig.fn_token.span), end_line_of(f.block.brace_token.span.close())));
+                    }
+                }
             }
-            if i > end && depth <= 0 { end = i; break; }
         }
     }
+    bail!("Symbol '{name}' not found by syn in {}", path.display())
+}
 
-    let rel = relative_display(db, &chunk.file);
-    Ok(SymbolLocation { abs_path, rel_path: rel, start_line: start, end_line: end })
+fn item_span(item: &syn::Item, name: &str) -> Option<(usize, usize)> {
+    match item {
+        syn::Item::Fn(f) if f.sig.ident == name =>
+            Some((line_of(f.sig.fn_token.span), end_line_of(f.block.brace_token.span.close()))),
+        syn::Item::Struct(s) if s.ident == name => {
+            let start = line_of(s.struct_token.span);
+            let end = match &s.fields {
+                syn::Fields::Named(n) => end_line_of(n.brace_token.span.close()),
+                syn::Fields::Unnamed(u) => end_line_of(u.paren_token.span.close()),
+                syn::Fields::Unit => s.semi_token.map(|t| line_of(t.span)).unwrap_or(start),
+            };
+            Some((start, end))
+        }
+        syn::Item::Enum(e) if e.ident == name =>
+            Some((line_of(e.enum_token.span), end_line_of(e.brace_token.span.close()))),
+        syn::Item::Trait(t) if t.ident == name =>
+            Some((line_of(t.trait_token.span), end_line_of(t.brace_token.span.close()))),
+        _ => None,
+    }
 }
 
 pub(crate) fn locked_edit<F: FnOnce(&str) -> Result<String>>(path: &Path, f: F) -> Result<()> {
