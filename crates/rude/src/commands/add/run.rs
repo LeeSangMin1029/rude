@@ -15,6 +15,16 @@ const TEXT_ONLY_DIM: usize = 1;
 const TEXT_ONLY_MODEL: &str = "text-only";
 
 #[tracing::instrument(skip_all)]
+fn prof() -> bool { std::env::var("RUDE_PROFILE").is_ok() }
+macro_rules! prof {
+    ($label:expr, $block:expr) => {{
+        let _t = std::time::Instant::now();
+        let _r = $block;
+        if prof() { eprintln!("  [prof] {:30} {:>8.0}us", $label, _t.elapsed().as_secs_f64() * 1_000_000.0); }
+        _r
+    }};
+}
+
 pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     let db_path = crate::db().to_path_buf();
     use rude_db::file_utils::get_file_mtime;
@@ -24,9 +34,8 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     println!("Indexing code: {}", input_path.display());
     println!("Database:      {}", db_path.display());
 
-    let t_scan = std::time::Instant::now();
-    let all_files = scan_files_fast(&input_path, exclude);
-    eprintln!("  scan: {:.1}ms ({} files)", t_scan.elapsed().as_secs_f64() * 1000.0, all_files.len());
+    let all_files = prof!("scan_files", scan_files_fast(&input_path, exclude));
+    if !prof() { eprintln!("  scan: ({} files)", all_files.len()); }
     if all_files.is_empty() {
         anyhow::bail!("No supported code files found in {}", input_path.display());
     }
@@ -101,21 +110,19 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     std::fs::create_dir_all(&mir_out_dir).ok();
     let mir_db = rude_intel::mir_edges::mir_db_path(&input_path);
 
-    let incremental_crates = run_mir_analysis(&input_path, &mir_db, &code_files)?;
-    run_sub_workspaces(&input_path, &mir_db, &code_files)?;
+    let incremental_crates = prof!("mir_analysis", run_mir_analysis(&input_path, &mir_db, &code_files)?);
+    prof!("sub_workspaces", run_sub_workspaces(&input_path, &mir_db, &code_files)?);
 
-    let _load_span = tracing::info_span!("load_chunks_sqlite").entered();
-    let mir_chunks = rude_intel::mir_edges::MirEdgeMap::load_chunks_from_sqlite(
+    let mir_chunks = prof!("load_sqlite", rude_intel::mir_edges::MirEdgeMap::load_chunks_from_sqlite(
         &mir_db, to_crate_filter(&incremental_crates).as_deref(),
-    ).context("failed to load MIR chunks")?;
+    ).context("failed to load MIR chunks")?);
 
-    ingest_mir(&mir_chunks, &db_path, &mut entries, &mut file_metadata_map, None)?;
+    prof!("ingest_mir", ingest_mir(&mir_chunks, &db_path, &mut entries, &mut file_metadata_map, None)?);
     eprintln!("  chunk: {:.1}s ({} chunks)", t0.elapsed().as_secs_f64(), entries.len());
 
     println!("Symbols: {} (functions, structs, enums, ...)", entries.len());
-    let t_write = std::time::Instant::now();
-    let inserted = write_chunks(&entries, &file_metadata_map, &mut file_idx, true)?;
-    println!("\nInserted {inserted} chunks in {:.2}s", t_write.elapsed().as_secs_f64());
+    let inserted = prof!("write_chunks", write_chunks(&entries, &file_metadata_map, &mut file_idx, true)?);
+    if !prof() { println!("\nInserted {inserted} chunks in 0.00s"); }
 
     // Record files that had no MIR chunks (0-chunk files) in the index so
     // their mtime/hash are tracked and they are not re-parsed next run.
@@ -155,9 +162,12 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     } else {
         println!("\nDone! Code DB ready: {}", db_path.display());
         println!("Use: rude context/blast/symbols/dupes {}", db_path.display());
-        engine.checkpoint().ok();
+        prof!("checkpoint", engine.checkpoint().ok());
         drop(engine);
-        prebuild_caches(&db_path, &entries, &mir_out_dir, &incremental_crates);
+        let db_bg = db_path.clone();
+        let mir_bg = mir_out_dir.clone();
+        let inc_bg = incremental_crates.clone();
+        std::thread::spawn(move || prebuild_caches(&db_bg, &entries, &mir_bg, &inc_bg));
     }
 
     Ok(())
@@ -318,15 +328,15 @@ fn run_mir_analysis(
     let rust_changed: Vec<_> = code_files.iter()
         .filter(|f| f.extension().and_then(|e| e.to_str()) == Some("rs"))
         .collect();
-    let changed_crates = rude_intel::mir_edges::detect_changed_crates(input_path, &rust_changed);
+    let changed_crates = prof!("detect_changed_crates", rude_intel::mir_edges::detect_changed_crates(input_path, &rust_changed));
     if changed_crates.is_empty() { return Ok(Vec::new()); }
 
     let crate_refs: Vec<&str> = changed_crates.iter().map(|s| s.as_str()).collect();
     eprintln!("  [mir] incremental: {} crate(s) — {}", crate_refs.len(), crate_refs.join(", "));
-    { let _s = tracing::info_span!("clear_mir_db").entered(); rude_intel::mir_edges::clear_mir_db(input_path, &crate_refs).ok(); }
+    prof!("clear_mir_db", rude_intel::mir_edges::clear_mir_db(input_path, &crate_refs).ok());
     let rust_only = code_files.iter().all(|f| f.extension().and_then(|e| e.to_str()) == Some("rs"));
-    rude_intel::mir_edges::run_mir_direct(input_path, None, &crate_refs, rust_only)
-        .context("mir-callgraph incremental failed")?;
+    prof!("run_mir_direct", rude_intel::mir_edges::run_mir_direct(input_path, None, &crate_refs, rust_only)
+        .context("mir-callgraph incremental failed")?);
     Ok(changed_crates)
 }
 
