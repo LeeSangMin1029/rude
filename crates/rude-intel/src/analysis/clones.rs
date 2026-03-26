@@ -301,6 +301,7 @@ fn remove_overlapping_chunks(chunks: &[ParsedChunk], indices: &mut Vec<usize>) {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn ranges_overlap(s1: usize, e1: usize, s2: usize, e2: usize) -> bool {
     s1 <= e2 && s2 <= e1
 }

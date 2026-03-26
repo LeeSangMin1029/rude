@@ -67,7 +67,6 @@ fn make_chunk(name: String, file: String, kind: &str, span: &Span) -> MirChunk {
 
 /// Build signature for struct/enum from AdtDef API
 fn build_adt_signature(name: &str, adt: &rustc_public::ty::AdtDef) -> String {
-    use rustc_public::CrateDef;
     match adt.kind() {
         AdtKind::Struct => {
             let variants = adt.variants();
