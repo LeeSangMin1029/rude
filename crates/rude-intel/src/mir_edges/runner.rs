@@ -254,15 +254,12 @@ pub fn run_mir_direct(
 
     let mut all_files = lib_files;
     all_files.extend(test_files);
-    for attempt in 0..5 {
-        if let Some(()) = try_daemon_all(project_root, &all_files, &out_dir, &mir_db) {
-            return Ok(());
-        }
-        if attempt == 0 {
-            start_daemon(project_root, mir_callgraph_bin).ok();
-        } else {
-            std::thread::sleep(std::time::Duration::from_millis(100 * (attempt as u64)));
-        }
+    if let Some(()) = try_daemon_all(project_root, &all_files, &out_dir, &mir_db) {
+        return Ok(());
+    }
+    start_daemon(project_root, mir_callgraph_bin).ok();
+    if let Some(()) = try_daemon_all(project_root, &all_files, &out_dir, &mir_db) {
+        return Ok(());
     }
     // Fallback: subprocess
     let mut had_error = false;
@@ -343,24 +340,18 @@ fn try_daemon(
 fn daemon_rpc(pipe_name: &str, request: &str) -> Option<String> {
     #[link(name = "kernel32")]
     unsafe extern "system" {
-        fn CreateFileW(
-            name: *const u16, access: u32, share: u32, attrs: *const std::ffi::c_void,
-            disposition: u32, flags: u32, template: *const std::ffi::c_void,
-        ) -> *mut std::ffi::c_void;
+        fn CreateFileW(name: *const u16, access: u32, share: u32, attrs: *const std::ffi::c_void,
+            disposition: u32, flags: u32, template: *const std::ffi::c_void) -> *mut std::ffi::c_void;
         fn CreateEventW(attrs: *const std::ffi::c_void, manual: i32, initial: i32, name: *const u16) -> *mut std::ffi::c_void;
-        fn ReadFile(
-            file: *mut std::ffi::c_void, buf: *mut u8, len: u32,
-            read: *mut u32, overlapped: *mut std::ffi::c_void,
-        ) -> i32;
-        fn WriteFile(
-            file: *mut std::ffi::c_void, buf: *const u8, len: u32,
-            written: *mut u32, overlapped: *const std::ffi::c_void,
-        ) -> i32;
-        fn GetOverlappedResult(
-            file: *mut std::ffi::c_void, overlapped: *mut std::ffi::c_void,
-            transferred: *mut u32, wait: i32,
-        ) -> i32;
+        fn ReadFile(file: *mut std::ffi::c_void, buf: *mut u8, len: u32,
+            read: *mut u32, overlapped: *mut std::ffi::c_void) -> i32;
+        fn WriteFile(file: *mut std::ffi::c_void, buf: *const u8, len: u32,
+            written: *mut u32, overlapped: *const std::ffi::c_void) -> i32;
+        fn GetOverlappedResult(file: *mut std::ffi::c_void, overlapped: *mut std::ffi::c_void,
+            transferred: *mut u32, wait: i32) -> i32;
         fn WaitForSingleObject(handle: *mut std::ffi::c_void, ms: u32) -> u32;
+        fn WaitNamedPipeW(name: *const u16, timeout: u32) -> i32;
+        fn ResetEvent(handle: *mut std::ffi::c_void) -> i32;
         fn CancelIo(handle: *mut std::ffi::c_void) -> i32;
         fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
         fn GetLastError() -> u32;
@@ -368,56 +359,61 @@ fn daemon_rpc(pipe_name: &str, request: &str) -> Option<String> {
     const GENERIC_RW: u32 = 0xC0000000;
     const OPEN_EXISTING: u32 = 3;
     const FILE_FLAG_OVERLAPPED: u32 = 0x40000000;
-    const INVALID_HANDLE: *mut std::ffi::c_void = -1isize as *mut _;
+    const INVALID: *mut std::ffi::c_void = -1isize as *mut _;
+    const ERROR_PIPE_BUSY: u32 = 231;
+    const ERROR_IO_PENDING: u32 = 997;
 
     let wide: Vec<u16> = pipe_name.encode_utf16().chain(std::iter::once(0)).collect();
-    let handle = unsafe {
+    // MS standard pattern: CreateFile → ERROR_PIPE_BUSY → WaitNamedPipe → retry
+    let mut handle = unsafe {
         CreateFileW(wide.as_ptr(), GENERIC_RW, 0, std::ptr::null(), OPEN_EXISTING, FILE_FLAG_OVERLAPPED, std::ptr::null())
     };
-    if handle == INVALID_HANDLE { return None; }
+    if handle == INVALID {
+        if unsafe { GetLastError() } != ERROR_PIPE_BUSY { return None; }
+        unsafe { WaitNamedPipeW(wide.as_ptr(), 3000); }
+        handle = unsafe {
+            CreateFileW(wide.as_ptr(), GENERIC_RW, 0, std::ptr::null(), OPEN_EXISTING, FILE_FLAG_OVERLAPPED, std::ptr::null())
+        };
+        if handle == INVALID { return None; }
+    }
     let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
     if event.is_null() { unsafe { CloseHandle(handle); } return None; }
 
     let _span = tracing::info_span!("daemon_rpc").entered();
-
     #[repr(C)]
-    struct Ov { internal: usize, internal_high: usize, offset: u32, offset_high: u32, event: *mut std::ffi::c_void }
+    struct Ov { _pad: [usize; 2], _off: [u32; 2], event: *mut std::ffi::c_void }
+    let ov_new = |e| Ov { _pad: [0; 2], _off: [0; 2], event: e };
 
-    // Write request (with timeout)
+    let wait_ov = |h: *mut _, ov: &mut Ov, bytes: &mut u32, timeout_ms: u32| -> bool {
+        if unsafe { GetLastError() } != ERROR_IO_PENDING { return false; }
+        if unsafe { WaitForSingleObject(ov.event, timeout_ms) } != 0 {
+            unsafe { CancelIo(h); }
+            return false;
+        }
+        unsafe { GetOverlappedResult(h, ov as *mut Ov as *mut _, bytes, 0) != 0 }
+    };
+
+    // Write
     let bytes = request.as_bytes();
     let mut written = 0u32;
-    let mut ov = Ov { internal: 0, internal_high: 0, offset: 0, offset_high: 0, event };
-    let ok = unsafe { WriteFile(handle, bytes.as_ptr(), bytes.len() as u32, &mut written, &mut ov as *mut Ov as *mut _) };
-    if ok == 0 && unsafe { GetLastError() } == 997 {
-        if unsafe { WaitForSingleObject(event, 10_000) } != 0 {
-            unsafe { CancelIo(handle); CloseHandle(event); CloseHandle(handle); }
-            return None;
-        }
-    } else if ok == 0 {
+    let mut ov_w = ov_new(event);
+    let ok = unsafe { WriteFile(handle, bytes.as_ptr(), bytes.len() as u32, &mut written, &mut ov_w as *mut Ov as *mut _) };
+    if ok == 0 && !wait_ov(handle, &mut ov_w, &mut written, 10_000) {
         unsafe { CloseHandle(event); CloseHandle(handle); }
         return None;
     }
 
-    // Read response (with timeout)
+    // Read
     unsafe { ResetEvent(event); }
     let mut buf = vec![0u8; 65536];
     let mut read = 0u32;
-    let mut ov2 = Ov { internal: 0, internal_high: 0, offset: 0, offset_high: 0, event };
-    let ok = unsafe { ReadFile(handle, buf.as_mut_ptr(), buf.len() as u32, &mut read, &mut ov2 as *mut Ov as *mut _) };
-    if ok == 0 && unsafe { GetLastError() } == 997 {
-        let wait = unsafe { WaitForSingleObject(event, DAEMON_RPC_TIMEOUT_MS) };
-        if wait != 0 {
-            eprintln!("  [mir] daemon timeout after {}s", DAEMON_RPC_TIMEOUT_MS / 1000);
-            unsafe { CancelIo(handle); CloseHandle(event); CloseHandle(handle); }
-            return None;
-        }
-        unsafe { GetOverlappedResult(handle, &mut ov2 as *mut Ov as *mut _, &mut read, 0); }
+    let mut ov_r = ov_new(event);
+    let ok = unsafe { ReadFile(handle, buf.as_mut_ptr(), buf.len() as u32, &mut read, &mut ov_r as *mut Ov as *mut _) };
+    if ok == 0 && !wait_ov(handle, &mut ov_r, &mut read, DAEMON_RPC_TIMEOUT_MS) {
+        unsafe { CloseHandle(event); CloseHandle(handle); }
+        return None;
     }
     unsafe { CloseHandle(event); CloseHandle(handle); }
-
-    #[link(name = "kernel32")]
-    unsafe extern "system" { fn ResetEvent(handle: *mut std::ffi::c_void) -> i32; }
-
     Some(String::from_utf8_lossy(&buf[..read as usize]).into_owned())
 }
 
