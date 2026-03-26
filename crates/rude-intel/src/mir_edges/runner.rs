@@ -251,9 +251,13 @@ pub fn run_mir_direct(
 
     let mut had_error = false;
     {
-        let _span = tracing::info_span!("lib_subprocess").entered();
         let mut lib_children: Vec<(PathBuf, std::process::Child)> = Vec::new();
+        {
+            let _span = tracing::info_span!("nightly_path").entered();
+            let _ = nightly_sysroot_bin(); // 캐시 워밍
+        }
         for args_file in &lib_files {
+            let _span = tracing::info_span!("lib_spawn").entered();
             let mut cmd = Command::new(&bin);
             add_nightly_path(&mut cmd);
             cmd.current_dir(project_root)
@@ -262,15 +266,13 @@ pub fn run_mir_direct(
                 .env("MIR_CALLGRAPH_OUT", &out_dir)
                 .env("MIR_CALLGRAPH_DB", &mir_db)
                 .env("MIR_CALLGRAPH_JSON", "1");
-            if std::env::var("MIR_PROFILE").is_ok() {
-                cmd.env("MIR_PROFILE", "1");
-            }
             match cmd.spawn() {
                 Ok(child) => lib_children.push((args_file.clone(), child)),
                 Err(e) => { eprintln!("  [mir] failed to spawn direct (lib): {e}"); had_error = true; }
             }
         }
         for (path, mut child) in lib_children {
+            let _span = tracing::info_span!("lib_wait").entered();
             if let Ok(status) = child.wait() {
                 if !status.success() { eprintln!("  [mir] direct failed for {}: {status}", path.display()); had_error = true; }
             }
