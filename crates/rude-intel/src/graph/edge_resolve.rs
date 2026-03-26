@@ -210,7 +210,7 @@ fn resolve_crate_edges(
 pub(crate) fn resolve_incremental(
     chunks: &[ParsedChunk],
     index: &ChunkIndex,
-    mir_edges: &MirEdgeMap,
+    mir_edges: Option<&MirEdgeMap>,
     changed_crates: &[String],
     db_path: &Path,
     mir_edge_dir: &Path,
@@ -232,31 +232,50 @@ pub(crate) fn resolve_incremental(
         bundle.as_ref().map(|b| b.crates.iter().map(|(n, c)| (n.as_str(), c)).collect()).unwrap_or_default()
     } else { HashMap::new() };
 
-    let all_crate_names = mir_edges.crate_names();
+    // Get crate list from MirEdgeMap if available, otherwise from edge cache + changed_crates
+    let all_crate_names: std::collections::HashSet<String> = if let Some(me) = mir_edges {
+        me.crate_names().into_iter().map(|s| s.to_owned()).collect()
+    } else {
+        let mut names: std::collections::HashSet<String> = cached.keys().map(|s| s.to_string()).collect();
+        for c in changed_crates { names.insert(c.replace('-', "_")); }
+        names
+    };
+
+    // Load MirEdgeMap for changed crates only (from mir.db directly) if not provided
+    let mir_db = crate::mir_edges::mir_db_path(db_path.parent().unwrap_or(db_path));
+    let lazy_mir = if mir_edges.is_none() && mir_db.exists() {
+        let filter: Vec<&str> = changed_crates.iter().map(|s| s.as_str()).collect();
+        MirEdgeMap::from_sqlite(&mir_db, Some(&filter)).ok()
+    } else { None };
+    let effective_mir = mir_edges.or(lazy_mir.as_ref());
+
     let changed_set: std::collections::HashSet<&str> = changed_crates.iter().map(String::as_str).collect();
     let mut new_crates: HashMap<String, CrateEdgeCache> = HashMap::new();
 
     for crate_name in &all_crate_names {
-        let needs_resolve = changed_set.contains(crate_name)
+        let needs_resolve = changed_set.contains(crate_name.as_str())
             || !hash_matches
             || is_crate_cache_stale(mir_edge_dir, bundle_mtime);
 
         if !needs_resolve {
-            if let Some(cache) = cached.get(crate_name) {
+            if let Some(cache) = cached.get(crate_name.as_str()) {
                 cache_loaded += cache.idx_edges.len();
                 for &(s, t, line) in &cache.idx_edges { adj.add_edge(s as usize, t, line); }
                 continue;
             }
         }
-        let mut idx_edges = resolve_crate_edges(crate_name, mir_edges, &loc_to_idx, &name_to_idx, &suffix_to_idx, &file_suffix_to_normalized);
-        idx_edges.sort_unstable(); idx_edges.dedup();
-        re_resolved_crates += 1;
-        mir_resolved += idx_edges.len();
-        for &(s, t, line) in &idx_edges { adj.add_edge(s as usize, t, line); }
-        new_crates.insert(crate_name.to_string(), CrateEdgeCache { idx_edges });
+        if let Some(me) = effective_mir {
+            let mut idx_edges = resolve_crate_edges(crate_name, me, &loc_to_idx, &name_to_idx, &suffix_to_idx, &file_suffix_to_normalized);
+            idx_edges.sort_unstable(); idx_edges.dedup();
+            re_resolved_crates += 1;
+            mir_resolved += idx_edges.len();
+            for &(s, t, line) in &idx_edges { adj.add_edge(s as usize, t, line); }
+            new_crates.insert(crate_name.to_string(), CrateEdgeCache { idx_edges });
+        }
     }
 
-    let final_crates = merge_crate_caches(bundle, hash_matches, new_crates, &all_crate_names);
+    let all_refs: std::collections::HashSet<&str> = all_crate_names.iter().map(|s| s.as_str()).collect();
+    let final_crates = merge_crate_caches(bundle, hash_matches, new_crates, &all_refs);
     if let Some(ref eng) = edge_engine {
         let _ = save_edge_bundle(eng, &EdgeCacheBundle { chunks_hash, crates: final_crates });
     }

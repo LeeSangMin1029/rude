@@ -143,9 +143,9 @@ impl CallGraph {
         let t0 = std::time::Instant::now();
         let index = ChunkIndex::build(&chunks);
         let (adj, label) = match (mir_edges, incremental) {
-            (Some(mir), Some(inc)) if mir.total > 0 => {
+            (_, Some(inc)) => {
                 let adj = edge_resolve::resolve_incremental(
-                    &chunks, &index, mir, inc.changed_crates, db, inc.mir_edge_dir,
+                    &chunks, &index, mir_edges, inc.changed_crates, db, inc.mir_edge_dir,
                 );
                 (adj, "mir-incremental")
             }

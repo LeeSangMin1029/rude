@@ -104,14 +104,10 @@ fn process_changes(changed: &[PathBuf], db_path: &Path, input_path: &Path) {
 
     // 2. Run mir-callgraph for changed crates only
     let crate_refs: Vec<&str> = crates.iter().map(|s| s.as_str()).collect();
-    let mir_edge_map =
-        match rude_intel::mir_edges::run_mir_direct(input_path, None, &crate_refs, true) {
-            Ok(m) => m,
-            Err(e) => {
-                eprintln!("[watch] mir-callgraph failed: {e}");
-                return;
-            }
-        };
+    if let Err(e) = rude_intel::mir_edges::run_mir_direct(input_path, None, &crate_refs, true) {
+        eprintln!("[watch] mir-callgraph failed: {e}");
+        return;
+    }
 
     // 3. Load MIR chunks from sqlite
     let mir_out_dir = input_path.join("target").join("mir-edges");
@@ -152,6 +148,7 @@ fn process_changes(changed: &[PathBuf], db_path: &Path, input_path: &Path) {
     }
 
     // 7. Rebuild graph cache (incremental: only re-resolve changed crates)
+    let mir_edge_map = rude_intel::mir_edges::MirEdgeMap::from_sqlite(&mir_db, None).unwrap_or_default();
     if let Err(e) = rebuild_graph_cache(db_path, &mir_out_dir, &mir_edge_map, &crates) {
         eprintln!("[watch] graph rebuild failed: {e}");
         return;

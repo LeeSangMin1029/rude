@@ -157,8 +157,7 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
         println!("Use: rude context/blast/symbols/dupes {}", db_path.display());
         engine.checkpoint().ok();
         drop(engine);
-        let mir_edges = load_mir_edges(&mir_db, &mir_out_dir, &incremental_crates);
-        prebuild_caches(&db_path, &entries, mir_edges.as_ref(), &mir_out_dir, &incremental_crates);
+        prebuild_caches(&db_path, &entries, &mir_out_dir, &incremental_crates);
     }
 
     Ok(())
@@ -215,17 +214,6 @@ fn run_mir_analysis(
     Ok(changed_crates)
 }
 
-fn load_mir_edges(
-    mir_db: &std::path::Path,
-    mir_out_dir: &std::path::Path,
-    incremental_crates: &[String],
-) -> Option<rude_intel::mir_edges::MirEdgeMap> {
-    if mir_db.exists() || mir_out_dir.exists() {
-        rude_intel::mir_edges::MirEdgeMap::from_sqlite(mir_db, to_crate_filter(incremental_crates).as_deref()).ok()
-    } else {
-        None
-    }
-}
 
 fn merge_chunks_cache(
     db_path: &std::path::Path,
@@ -249,7 +237,6 @@ fn merge_chunks_cache(
 fn prebuild_caches(
     db_path: &std::path::Path,
     new_entries: &[CodeChunkEntry],
-    mir_edges: Option<&rude_intel::mir_edges::MirEdgeMap>,
     mir_edge_dir: &std::path::Path,
     incremental_crates: &[String],
 ) {
@@ -260,11 +247,11 @@ fn prebuild_caches(
     let filter = if changed.is_empty() { None } else { Some(changed.as_slice()) };
     rude_intel::loader::save_chunks_cache_for(db_path, &chunks, filter);
 
-    let incremental = mir_edges.map(|_| rude_intel::graph::IncrementalArgs {
-        changed_crates: &[],
+    let incremental = Some(rude_intel::graph::IncrementalArgs {
+        changed_crates: incremental_crates,
         mir_edge_dir,
     });
-    rude_intel::graph::CallGraph::build_only(chunks, mir_edges, incremental, db_path)
+    rude_intel::graph::CallGraph::build_only(chunks, None, incremental, db_path)
         .save_background(db_path);
 }
 fn scan_files_fast(input_path: &std::path::Path, exclude: &[String]) -> Vec<PathBuf> {
