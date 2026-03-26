@@ -14,3 +14,22 @@ pub fn set_db(path: PathBuf) {
 pub fn db() -> &'static Path {
     DB_PATH.get().expect("DB path not set — call set_db() first")
 }
+
+pub struct WriteLock {
+    _file: std::fs::File,
+    path: PathBuf,
+}
+
+impl Drop for WriteLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+pub fn acquire_write_lock() -> anyhow::Result<WriteLock> {
+    use fs2::FileExt;
+    let path = db().join(".write.lock");
+    let file = std::fs::File::create(&path)?;
+    file.lock_exclusive()?;
+    Ok(WriteLock { _file: file, path })
+}

@@ -38,6 +38,14 @@ fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     rude_cli::set_db(resolve_db(cli.db)?);
 
+    let is_write = matches!(cli.command,
+        Commands::Add { .. } | Commands::Replace { .. } | Commands::InsertAfter { .. } |
+        Commands::InsertBefore { .. } | Commands::DeleteSymbol { .. } | Commands::InsertAt { .. } |
+        Commands::DeleteLines { .. } | Commands::ReplaceLines { .. } | Commands::Batch { .. } |
+        Commands::Watch { .. } | Commands::CreateFile { .. }
+    );
+    let _write_lock = if is_write { Some(rude_cli::acquire_write_lock()?) } else { None };
+
     match cli.command {
         Commands::Aliases => intel::run_aliases(),
         Commands::Symbols { name, kind, include_tests, limit, compact } => {
