@@ -3,3 +3,4 @@ target/
 *.exe
 profile/
 rude-profile.json
+*.pdb
