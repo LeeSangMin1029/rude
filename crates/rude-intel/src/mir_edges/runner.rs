@@ -32,7 +32,9 @@ pub(super) fn nightly_rustc_version() -> Option<String> {
 }
 
 fn nightly_sysroot_bin() -> Option<String> {
-    run_nightly_rustc(&["--print", "sysroot"]).map(|s| format!("{s}/bin"))
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<Option<String>> = OnceLock::new();
+    CACHE.get_or_init(|| run_nightly_rustc(&["--print", "sysroot"]).map(|s| format!("{s}/bin"))).clone()
 }
 
 pub(super) fn add_nightly_path(cmd: &mut Command) {
@@ -241,40 +243,36 @@ pub fn run_mir_direct(
         }
     }
 
-    let bin = find_mir_callgraph_bin(mir_callgraph_bin)?;
-    let _t0 = std::time::Instant::now();
-
+    let bin = {
+        let _span = tracing::info_span!("find_bin").entered();
+        find_mir_callgraph_bin(mir_callgraph_bin)?
+    };
     kill_previous_test_bg(&out_dir);
 
-    let mut lib_children: Vec<(PathBuf, std::process::Child)> = Vec::new();
     let mut had_error = false;
-
-    for args_file in &lib_files {
-        let mut cmd = Command::new(&bin);
-        add_nightly_path(&mut cmd);
-        cmd.current_dir(project_root)
-            .arg("--direct")
-            .arg("--args-file").arg(args_file)
-            .env("MIR_CALLGRAPH_OUT", &out_dir)
-            .env("MIR_CALLGRAPH_DB", &mir_db)
-            .env("MIR_CALLGRAPH_JSON", "1");
-        if std::env::var("MIR_PROFILE").is_ok() {
-            cmd.env("MIR_PROFILE", "1");
-        }
-        match cmd.spawn() {
-            Ok(child) => lib_children.push((args_file.clone(), child)),
-            Err(e) => {
-                eprintln!("  [mir] failed to spawn direct (lib): {e}");
-                had_error = true;
+    {
+        let _span = tracing::info_span!("lib_subprocess").entered();
+        let mut lib_children: Vec<(PathBuf, std::process::Child)> = Vec::new();
+        for args_file in &lib_files {
+            let mut cmd = Command::new(&bin);
+            add_nightly_path(&mut cmd);
+            cmd.current_dir(project_root)
+                .arg("--direct")
+                .arg("--args-file").arg(args_file)
+                .env("MIR_CALLGRAPH_OUT", &out_dir)
+                .env("MIR_CALLGRAPH_DB", &mir_db)
+                .env("MIR_CALLGRAPH_JSON", "1");
+            if std::env::var("MIR_PROFILE").is_ok() {
+                cmd.env("MIR_PROFILE", "1");
+            }
+            match cmd.spawn() {
+                Ok(child) => lib_children.push((args_file.clone(), child)),
+                Err(e) => { eprintln!("  [mir] failed to spawn direct (lib): {e}"); had_error = true; }
             }
         }
-    }
-
-    for (path, mut child) in lib_children {
-        if let Ok(status) = child.wait() {
-            if !status.success() {
-                eprintln!("  [mir] direct failed for {}: {status}", path.display());
-                had_error = true;
+        for (path, mut child) in lib_children {
+            if let Ok(status) = child.wait() {
+                if !status.success() { eprintln!("  [mir] direct failed for {}: {status}", path.display()); had_error = true; }
             }
         }
     }
@@ -299,11 +297,14 @@ pub fn run_mir_direct(
                 .env("MIR_CALLGRAPH_JSON", "1")
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x00000008 | 0x00000200); // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+            }
             match cmd.spawn() {
                 Ok(child) => {
                     test_pids.push(child.id());
-                    // Intentionally leak the Child handle — the OS will reap
-                    // the process when it exits. We track it via PID file.
                     std::mem::forget(child);
                 }
                 Err(e) => {

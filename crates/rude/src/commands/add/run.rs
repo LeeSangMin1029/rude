@@ -103,13 +103,12 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
 
     let incremental_crates = run_mir_analysis(&input_path, &mir_db, &code_files)?;
 
+    let _load_span = tracing::info_span!("load_chunks_sqlite").entered();
     let mir_chunks = rude_intel::mir_edges::MirEdgeMap::load_chunks_from_sqlite(
         &mir_db, to_crate_filter(&incremental_crates).as_deref(),
     ).context("failed to load MIR chunks")?;
 
-    let changed_sources: std::collections::HashSet<String> =
-        code_files.iter().filter_map(|f| source_cache.get(*f).cloned()).collect();
-    ingest_mir(&mir_chunks, &db_path, &mut entries, &mut file_metadata_map, Some(&changed_sources))?;
+    ingest_mir(&mir_chunks, &db_path, &mut entries, &mut file_metadata_map, None)?;
     eprintln!("  chunk: {:.1}s ({} chunks)", t0.elapsed().as_secs_f64(), entries.len());
 
     println!("Symbols: {} (functions, structs, enums, ...)", entries.len());
@@ -200,7 +199,7 @@ fn run_mir_analysis(
 
     let crate_refs: Vec<&str> = changed_crates.iter().map(|s| s.as_str()).collect();
     eprintln!("  [mir] incremental: {} crate(s) — {}", crate_refs.len(), crate_refs.join(", "));
-    rude_intel::mir_edges::clear_mir_db(input_path, &crate_refs).ok();
+    { let _s = tracing::info_span!("clear_mir_db").entered(); rude_intel::mir_edges::clear_mir_db(input_path, &crate_refs).ok(); }
     let rust_only = code_files.iter().all(|f| f.extension().and_then(|e| e.to_str()) == Some("rs"));
     rude_intel::mir_edges::run_mir_direct(input_path, None, &crate_refs, rust_only)
         .context("mir-callgraph incremental failed")?;
