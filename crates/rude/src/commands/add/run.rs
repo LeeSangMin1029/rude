@@ -231,7 +231,7 @@ fn run_mir_cargo_wrapper(ws: &std::path::Path) -> Result<()> {
     let status = std::process::Command::new("cargo")
         .arg("check").arg("--tests")
         .env("RUSTUP_TOOLCHAIN", "nightly")
-        .arg("--target-dir").arg(ws.join("target").join("mir-check"))
+        .arg("--target-dir").arg(ws.join("target").join(rude_intel::mir_edges::mir_check_dir_name()))
         .current_dir(ws)
         .env("RUSTC_WRAPPER", &abs_bin)
         .env("MIR_CALLGRAPH_OUT", &abs_out)

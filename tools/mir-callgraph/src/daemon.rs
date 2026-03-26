@@ -1,14 +1,9 @@
 use std::env;
-use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::path::Path;
-use std::process::{Command, Stdio};
 use crate::extract;
 use crate::types::RustcArgs;
 
 const MAX_REQUESTS: usize = 100;
 const IDLE_TIMEOUT_MS: u32 = 300_000;
-const WORKER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
-const MAX_CONSECUTIVE_FAILURES: u32 = 3;
 
 pub fn run(args: &[String]) {
     let pipe_name = args.iter()
@@ -18,163 +13,41 @@ pub fn run(args: &[String]) {
         .skip_while(|a| *a != "--event").skip(1).next()
         .cloned();
 
-    eprintln!("[supervisor] starting on {pipe_name}");
+    eprintln!("[daemon] starting on {pipe_name}");
 
     let pipe = match pipe::create(&pipe_name) {
         Ok(p) => p,
-        Err(e) => { eprintln!("[supervisor] pipe create failed: {e}"); return; }
+        Err(e) => { eprintln!("[daemon] pipe create failed: {e}"); return; }
     };
 
     if let Some(ref ev) = event_name {
         signal_event(ev);
     }
-    eprintln!("[supervisor] ready, spawning worker");
+    eprintln!("[daemon] ready");
 
-    let exe = std::env::current_exe().unwrap();
-    let mut worker: Option<Worker> = spawn_worker(&exe).ok();
-
-    let result = supervisor_loop(&pipe, &exe, &mut worker);
-    // Cleanup: kill worker on exit
-    if let Some(mut w) = worker {
-        let _ = w.child.kill();
-        let _ = w.child.wait();
-    }
-    if let Err(e) = result {
-        eprintln!("[supervisor] exit: {e}");
-    }
-}
-
-fn supervisor_loop(
-    pipe: &pipe::PipeHandle, exe: &Path, worker: &mut Option<Worker>,
-) -> Result<(), String> {
-    let mut consecutive_failures: u32 = 0;
+    let mut count = 0usize;
     loop {
-        match pipe::wait_connect(pipe, IDLE_TIMEOUT_MS) {
-            Ok(false) => { eprintln!("[supervisor] idle timeout, exiting"); return Ok(()); }
-            Err(e) => { eprintln!("[supervisor] connect error: {e}"); continue; }
+        match pipe::wait_connect(&pipe, IDLE_TIMEOUT_MS) {
+            Ok(false) => { eprintln!("[daemon] idle timeout, exiting"); break; }
+            Err(e) => { eprintln!("[daemon] connect error: {e}"); continue; }
             Ok(true) => {}
         }
-        let request = match pipe::read_line(pipe) {
-            Ok(s) if s.is_empty() => { pipe::disconnect(pipe); continue; }
+        let request = match pipe::read_line(&pipe) {
+            Ok(s) if s.is_empty() => { pipe::disconnect(&pipe); continue; }
             Ok(s) => s,
-            Err(e) => { eprintln!("[supervisor] read error: {e}"); pipe::disconnect(pipe); continue; }
+            Err(e) => { eprintln!("[daemon] read error: {e}"); pipe::disconnect(&pipe); continue; }
         };
-        ensure_worker(worker, exe, &mut consecutive_failures);
-        let response = match worker.as_mut() {
-            Some(w) => match w.send_with_timeout(&request, WORKER_TIMEOUT) {
-                Ok(r) => { consecutive_failures = 0; r }
-                Err(e) => {
-                    eprintln!("[supervisor] worker error: {e}, respawning");
-                    kill_worker(worker);
-                    consecutive_failures += 1;
-                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-                        eprintln!("[supervisor] {consecutive_failures} consecutive failures, giving up");
-                        error_json("worker repeatedly crashed")
-                    } else {
-                        *worker = spawn_worker(exe).ok();
-                        match worker.as_mut() {
-                            Some(w2) => w2.send_with_timeout(&request, WORKER_TIMEOUT)
-                                .unwrap_or_else(|e2| error_json(&format!("retry failed: {e2}"))),
-                            None => error_json("failed to spawn worker"),
-                        }
-                    }
-                }
-            },
-            None => error_json("no worker"),
+        let response = match std::thread::spawn(move || process(&request)).join() {
+            Ok(r) => r,
+            Err(_) => error_json("panic"),
         };
-        let _ = pipe::write(pipe, &response);
-        pipe::flush_and_disconnect(pipe);
-    }
-}
-
-fn ensure_worker(worker: &mut Option<Worker>, exe: &Path, failures: &mut u32) {
-    if worker.as_mut().map_or(true, |w| !w.is_alive()) {
-        if *failures >= MAX_CONSECUTIVE_FAILURES { return; }
-        eprintln!("[supervisor] worker dead, respawning");
-        kill_worker(worker);
-        *worker = spawn_worker(exe).ok();
-        if worker.is_none() { *failures += 1; }
-    }
-}
-
-fn kill_worker(worker: &mut Option<Worker>) {
-    if let Some(mut w) = worker.take() {
-        let _ = w.child.kill();
-        let _ = w.child.wait();
-    }
-}
-
-fn default_pipe_name() -> String {
-    #[cfg(windows)]
-    { r"\\.\pipe\rude-mir-default".to_owned() }
-    #[cfg(not(windows))]
-    { "/tmp/rude-mir-default.sock".to_owned() }
-}
-
-fn error_json(msg: &str) -> String {
-    format!("{{\"ok\":false,\"error\":\"{msg}\"}}\n")
-}
-
-struct Worker {
-    stdin: BufWriter<std::process::ChildStdin>,
-    stdout: BufReader<std::process::ChildStdout>,
-    child: std::process::Child,
-}
-
-fn spawn_worker(exe: &Path) -> Result<Worker, String> {
-    let mut child = Command::new(exe)
-        .arg("--worker")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .map_err(|e| format!("spawn: {e}"))?;
-    let stdin = BufWriter::new(child.stdin.take().unwrap());
-    let stdout = BufReader::new(child.stdout.take().unwrap());
-    eprintln!("[supervisor] worker spawned (pid {})", child.id());
-    Ok(Worker { stdin, stdout, child })
-}
-
-impl Worker {
-    fn send_with_timeout(&mut self, request: &str, timeout: std::time::Duration) -> Result<String, String> {
-        let req = if request.ends_with('\n') { request.to_owned() } else { format!("{request}\n") };
-        self.stdin.write_all(req.as_bytes()).map_err(|e| format!("write: {e}"))?;
-        self.stdin.flush().map_err(|e| format!("flush: {e}"))?;
-        // Watchdog: kill worker if it doesn't respond within timeout.
-        // When worker dies, its stdout closes → read_line returns Ok(0) or Err.
-        let child_id = self.child.id();
-        let watchdog = std::thread::spawn(move || {
-            std::thread::sleep(timeout);
-            #[cfg(windows)]
-            {
-                #[link(name = "kernel32")]
-                unsafe extern "system" {
-                    fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut std::ffi::c_void;
-                    fn TerminateProcess(proc: *mut std::ffi::c_void, code: u32) -> i32;
-                    fn CloseHandle(h: *mut std::ffi::c_void) -> i32;
-                }
-                unsafe {
-                    let h = OpenProcess(0x0001, 0, child_id);
-                    if !h.is_null() { TerminateProcess(h, 1); CloseHandle(h); }
-                }
-            }
-            #[cfg(unix)]
-            {
-                // kill -9 via Command to avoid libc dependency
-                let _ = Command::new("kill").arg("-9").arg(child_id.to_string()).status();
-            }
-        });
-        let mut response = String::new();
-        let result = match self.stdout.read_line(&mut response) {
-            Ok(0) => Err("worker closed stdout".into()),
-            Ok(_) => Ok(response),
-            Err(e) => Err(format!("read: {e}")),
-        };
-        drop(watchdog); // watchdog thread continues but is harmless if worker already responded
-        result
-    }
-    fn is_alive(&mut self) -> bool {
-        self.child.try_wait().ok().flatten().is_none()
+        let _ = pipe::write(&pipe, &response);
+        pipe::flush_and_disconnect(&pipe);
+        count += 1;
+        if count >= MAX_REQUESTS {
+            eprintln!("[daemon] max requests ({MAX_REQUESTS}), exiting");
+            break;
+        }
     }
 }
 
@@ -205,6 +78,19 @@ pub fn worker_run() {
     eprintln!("[worker] exiting after {count} requests");
 }
 
+use std::io::{BufRead, Write};
+
+fn default_pipe_name() -> String {
+    #[cfg(windows)]
+    { r"\\.\pipe\rude-mir-default".to_owned() }
+    #[cfg(not(windows))]
+    { "/tmp/rude-mir-default.sock".to_owned() }
+}
+
+fn error_json(msg: &str) -> String {
+    format!("{{\"ok\":false,\"error\":\"{msg}\"}}\n")
+}
+
 #[cfg(windows)]
 fn signal_event(name: &str) {
     #[link(name = "kernel32")]
@@ -226,29 +112,28 @@ fn process(request: &str) -> String {
     #[derive(serde::Deserialize)]
     #[allow(dead_code)]
     struct Req { args_file: String, out_dir: String, db: String }
-    let t0 = std::time::Instant::now();
     let req: Req = match serde_json::from_str(request) {
         Ok(r) => r,
         Err(e) => return error_json(&format!("parse: {e}")),
     };
-    let t_parse = t0.elapsed();
-    let t1 = std::time::Instant::now();
     let cached: RustcArgs = match crate::types::RustcArgs::load(&req.args_file) {
         Ok(c) => c,
         Err(e) => return error_json(&format!("{e}")),
     };
-    let t_load = t1.elapsed();
     for (k, v) in &cached.env { unsafe { env::set_var(k, v); } }
     let is_test = cached.args.iter().any(|a| a == "--test");
     let db_path = Some(req.db.clone());
     let crate_name = cached.crate_name.clone();
-    let t2 = std::time::Instant::now();
+    let mut args = cached.args.clone();
+    if !args.iter().any(|a| a.starts_with("incremental=")) {
+        let inc_dir = format!("{}/incremental/{}", req.out_dir, cached.crate_name);
+        let _ = std::fs::create_dir_all(&inc_dir);
+        args.push("-C".into());
+        args.push(format!("incremental={inc_dir}"));
+    }
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rustc_public::run!(&cached.args, || extract::extract_all(is_test, true, &db_path))
+        rustc_public::run!(&args, || extract::extract_all(is_test, true, &db_path))
     }));
-    let t_rustc = t2.elapsed();
-    eprintln!("[prof:worker] {crate_name}: parse={:.0}us load={:.0}us rustc={:.0}us",
-        t_parse.as_micros(), t_load.as_micros(), t_rustc.as_micros());
     match result {
         Ok(Ok(_)) => format!("{{\"ok\":true,\"crate\":\"{crate_name}\"}}\n"),
         Ok(Err(e)) => error_json(&format!("run: {e:?}")),

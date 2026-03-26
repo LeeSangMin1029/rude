@@ -9,9 +9,14 @@ pub fn run(args: &[String]) {
     let has_package_flag = extra.iter().any(|a| *a == "-p" || a.starts_with("--package"));
     let packages: Vec<String> = if has_package_flag { Vec::new() } else { local_workspace_packages() };
 
+    let tc_hash = Command::new("rustc").arg("+nightly").arg("--version")
+        .output().ok().and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|v| v.trim().chars().rev().take(9).collect::<String>().chars().rev().collect::<String>())
+        .unwrap_or_else(|| "unknown".into());
+    let target_dir = format!("target/mir-check-{tc_hash}");
     let mut cmd = Command::new("cargo");
     cmd.arg("check").arg("--tests")
-        .arg("--target-dir").arg("target/mir-check")
+        .arg("--target-dir").arg(&target_dir)
         .env("RUSTC_WRAPPER", &exe)
         .env("RUSTUP_TOOLCHAIN", "nightly");
     if keep_going { cmd.arg("--keep-going"); }

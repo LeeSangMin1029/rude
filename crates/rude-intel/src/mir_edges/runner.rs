@@ -14,6 +14,12 @@ fn mir_callgraph_bin_name() -> &'static str {
     if cfg!(windows) { "mir-callgraph.exe" } else { "mir-callgraph" }
 }
 
+pub fn mir_check_dir_name() -> String {
+    nightly_rustc_version()
+        .map(|v| format!("mir-check-{}", &v[v.len().saturating_sub(9)..]))
+        .unwrap_or_else(|| "mir-check".into())
+}
+
 fn rude_home() -> Result<PathBuf> {
     let home = rude_db::home_dir()
         .context("cannot determine home directory")?;
