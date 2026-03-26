@@ -1,4 +1,7 @@
 use std::env;
+use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::path::Path;
+use std::process::{Command, Stdio};
 use crate::extract;
 use crate::types::RustcArgs;
 
@@ -8,52 +11,138 @@ const IDLE_TIMEOUT_MS: u32 = 300_000;
 pub fn run(args: &[String]) {
     let pipe_name = args.iter()
         .skip_while(|a| *a != "--pipe").skip(1).next()
-        .cloned().unwrap_or_else(|| r"\\.\pipe\rude-mir-default".to_owned());
+        .cloned().unwrap_or_else(|| default_pipe_name());
     let event_name = args.iter()
         .skip_while(|a| *a != "--event").skip(1).next()
         .cloned();
 
-    eprintln!("[daemon] starting on {pipe_name}");
+    eprintln!("[supervisor] starting on {pipe_name}");
 
     let pipe = match pipe::create(&pipe_name) {
         Ok(p) => p,
-        Err(e) => { eprintln!("[daemon] pipe create failed: {e}"); return; }
+        Err(e) => { eprintln!("[supervisor] pipe create failed: {e}"); return; }
     };
 
     if let Some(ref ev) = event_name {
         signal_event(ev);
     }
-    eprintln!("[daemon] ready for requests");
+    eprintln!("[supervisor] ready, spawning worker");
 
-    let mut request_count = 0usize;
+    let exe = std::env::current_exe().unwrap();
+    let mut worker: Option<Worker> = spawn_worker(&exe).ok();
+
     loop {
         match pipe::wait_connect(&pipe, IDLE_TIMEOUT_MS) {
             Ok(false) => {
-                eprintln!("[daemon] idle timeout, exiting");
+                eprintln!("[supervisor] idle timeout, exiting");
                 break;
             }
-            Err(e) => { eprintln!("[daemon] connect error: {e}"); continue; }
+            Err(e) => { eprintln!("[supervisor] connect error: {e}"); continue; }
             Ok(true) => {}
         }
         let request = match pipe::read_line(&pipe) {
             Ok(s) => s,
-            Err(e) => { eprintln!("[daemon] read error: {e}"); pipe::disconnect(&pipe); continue; }
+            Err(e) => { eprintln!("[supervisor] read error: {e}"); pipe::disconnect(&pipe); continue; }
         };
 
-        let response = match std::thread::spawn(move || process(&request)).join() {
-            Ok(r) => r,
-            Err(_) => "{\"ok\":false,\"error\":\"panic\"}\n".to_owned(),
+        if worker.as_mut().map_or(true, |w| !w.is_alive()) {
+            eprintln!("[supervisor] worker dead, respawning");
+            worker = spawn_worker(&exe).ok();
+        }
+
+        let response = match worker.as_mut() {
+            Some(w) => match w.send(&request) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("[supervisor] worker error: {e}, respawning");
+                    worker = spawn_worker(&exe).ok();
+                    match worker.as_mut() {
+                        Some(w2) => w2.send(&request).unwrap_or_else(|e2| error_json(&format!("retry failed: {e2}"))),
+                        None => error_json("failed to spawn worker"),
+                    }
+                }
+            },
+            None => error_json("no worker"),
         };
 
         let _ = pipe::write(&pipe, &response);
         pipe::flush_and_disconnect(&pipe);
+    }
+}
 
-        request_count += 1;
-        if request_count >= MAX_REQUESTS {
-            eprintln!("[daemon] max requests ({MAX_REQUESTS}) reached, exiting");
+fn default_pipe_name() -> String {
+    #[cfg(windows)]
+    { r"\\.\pipe\rude-mir-default".to_owned() }
+    #[cfg(not(windows))]
+    { "/tmp/rude-mir-default.sock".to_owned() }
+}
+
+fn error_json(msg: &str) -> String {
+    format!("{{\"ok\":false,\"error\":\"{msg}\"}}\n")
+}
+
+struct Worker {
+    stdin: BufWriter<std::process::ChildStdin>,
+    stdout: BufReader<std::process::ChildStdout>,
+    child: std::process::Child,
+}
+
+fn spawn_worker(exe: &Path) -> Result<Worker, String> {
+    let mut child = Command::new(exe)
+        .arg("--worker")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|e| format!("spawn: {e}"))?;
+    let stdin = BufWriter::new(child.stdin.take().unwrap());
+    let stdout = BufReader::new(child.stdout.take().unwrap());
+    eprintln!("[supervisor] worker spawned (pid {})", child.id());
+    Ok(Worker { stdin, stdout, child })
+}
+
+impl Worker {
+    fn send(&mut self, request: &str) -> Result<String, String> {
+        let req = if request.ends_with('\n') { request.to_owned() } else { format!("{request}\n") };
+        self.stdin.write_all(req.as_bytes()).map_err(|e| format!("write: {e}"))?;
+        self.stdin.flush().map_err(|e| format!("flush: {e}"))?;
+        let mut response = String::new();
+        self.stdout.read_line(&mut response).map_err(|e| format!("read: {e}"))?;
+        if response.is_empty() {
+            return Err("worker closed stdout".into());
+        }
+        Ok(response)
+    }
+    fn is_alive(&mut self) -> bool {
+        self.child.try_wait().ok().flatten().is_none()
+    }
+}
+
+pub fn worker_run() {
+    eprintln!("[worker] starting (pid {})", std::process::id());
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let mut count = 0usize;
+    for line in stdin.lock().lines() {
+        let request = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        if request.is_empty() { continue; }
+        let response = match std::thread::spawn(move || process(&request)).join() {
+            Ok(r) => r,
+            Err(_) => error_json("panic"),
+        };
+        let resp = if response.ends_with('\n') { response } else { format!("{response}\n") };
+        if writeln!(stdout.lock(), "{}", resp.trim_end()).is_err() { break; }
+        if stdout.lock().flush().is_err() { break; }
+        count += 1;
+        if count >= MAX_REQUESTS {
+            eprintln!("[worker] max requests ({MAX_REQUESTS}), exiting");
             break;
         }
     }
+    eprintln!("[worker] exiting after {count} requests");
 }
 
 #[cfg(windows)]
@@ -80,17 +169,16 @@ fn process(request: &str) -> String {
 
     let req: Req = match serde_json::from_str(request) {
         Ok(r) => r,
-        Err(e) => return format!("{{\"ok\":false,\"error\":\"parse: {e}\"}}\n"),
+        Err(e) => return error_json(&format!("parse: {e}")),
     };
 
     let cached: RustcArgs = match crate::types::RustcArgs::load(&req.args_file) {
         Ok(c) => c,
-        Err(e) => return format!("{{\"ok\":false,\"error\":\"{e}\"}}\n"),
+        Err(e) => return error_json(&format!("{e}")),
     };
 
-    // SAFETY: daemon processes requests sequentially, one thread at a time.
+    // SAFETY: worker processes requests sequentially, one thread at a time.
     // CARGO_* vars must be set before rustc_public::run! for env!() macro expansion.
-    // rustc internal threads haven't started yet at this point.
     for (k, v) in &cached.env { unsafe { env::set_var(k, v); } }
 
     let is_test = cached.args.iter().any(|a| a == "--test");
@@ -103,8 +191,8 @@ fn process(request: &str) -> String {
 
     match result {
         Ok(Ok(_)) => format!("{{\"ok\":true,\"crate\":\"{crate_name}\"}}\n"),
-        Ok(Err(e)) => format!("{{\"ok\":false,\"error\":\"run: {e:?}\"}}\n"),
-        Err(_) => format!("{{\"ok\":false,\"error\":\"panic\"}}\n"),
+        Ok(Err(e)) => error_json(&format!("run: {e:?}")),
+        Err(_) => error_json("panic"),
     }
 }
 
@@ -164,10 +252,8 @@ pub mod pipe {
     }
 
     pub struct PipeHandle(pub *mut std::ffi::c_void, pub *mut std::ffi::c_void);
-
     unsafe impl Send for PipeHandle {}
     unsafe impl Sync for PipeHandle {}
-
     impl Drop for PipeHandle {
         fn drop(&mut self) {
             unsafe {
@@ -200,28 +286,15 @@ pub mod pipe {
 
     pub fn wait_connect(pipe: &PipeHandle, timeout_ms: u32) -> Result<bool, String> {
         let mut ov = Overlapped {
-            internal: 0,
-            internal_high: 0,
-            offset: 0,
-            offset_high: 0,
-            event: pipe.1,
+            internal: 0, internal_high: 0, offset: 0, offset_high: 0, event: pipe.1,
         };
         let ok = unsafe { ConnectNamedPipe(pipe.0, &mut ov as *mut Overlapped as *mut std::ffi::c_void) };
         let err = unsafe { GetLastError() };
-        if ok != 0 || err == ERROR_PIPE_CONNECTED {
-            return Ok(true);
-        }
-        if err != ERROR_IO_PENDING {
-            return Err(format!("ConnectNamedPipe failed: {err}"));
-        }
+        if ok != 0 || err == ERROR_PIPE_CONNECTED { return Ok(true); }
+        if err != ERROR_IO_PENDING { return Err(format!("ConnectNamedPipe failed: {err}")); }
         let wait = unsafe { WaitForSingleObject(pipe.1, timeout_ms) };
-        if wait == WAIT_TIMEOUT {
-            unsafe { CancelIo(pipe.0); }
-            return Ok(false);
-        }
-        if wait == WAIT_OBJECT_0 {
-            return Ok(true);
-        }
+        if wait == WAIT_TIMEOUT { unsafe { CancelIo(pipe.0); } return Ok(false); }
+        if wait == WAIT_OBJECT_0 { return Ok(true); }
         Err(format!("WaitForSingleObject failed: {}", unsafe { GetLastError() }))
     }
 
@@ -242,6 +315,7 @@ pub mod pipe {
             false
         }
     }
+
     pub fn read_line(pipe: &PipeHandle) -> Result<String, String> {
         let mut buf = vec![0u8; 65536];
         let mut total = 0usize;
@@ -257,6 +331,7 @@ pub mod pipe {
         }
         String::from_utf8(buf[..total].to_vec()).map_err(|e| format!("utf8: {e}"))
     }
+
     pub fn write(pipe: &PipeHandle, data: &str) -> Result<(), String> {
         let bytes = data.as_bytes();
         let mut written = 0u32;
@@ -274,7 +349,76 @@ pub mod pipe {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
+pub mod pipe {
+    use std::cell::RefCell;
+    use std::io::{Write, BufRead, BufReader};
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::time::{Duration, Instant};
+
+    pub struct PipeHandle {
+        listener: UnixListener,
+        conn: RefCell<Option<UnixStream>>,
+        path: String,
+    }
+    impl Drop for PipeHandle {
+        fn drop(&mut self) { let _ = std::fs::remove_file(&self.path); }
+    }
+
+    pub fn create(name: &str) -> Result<PipeHandle, String> {
+        let _ = std::fs::remove_file(name);
+        let listener = UnixListener::bind(name).map_err(|e| format!("bind: {e}"))?;
+        Ok(PipeHandle { listener, conn: RefCell::new(None), path: name.to_owned() })
+    }
+
+    pub fn wait_connect(pipe: &PipeHandle, timeout_ms: u32) -> Result<bool, String> {
+        pipe.listener.set_nonblocking(true).map_err(|e| format!("nonblock: {e}"))?;
+        let start = Instant::now();
+        let timeout = Duration::from_millis(timeout_ms as u64);
+        loop {
+            match pipe.listener.accept() {
+                Ok((stream, _)) => {
+                    stream.set_nonblocking(false).ok();
+                    *pipe.conn.borrow_mut() = Some(stream);
+                    return Ok(true);
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if start.elapsed() >= timeout { return Ok(false); }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Err(e) => return Err(format!("accept: {e}")),
+            }
+        }
+    }
+
+    pub fn disconnect(pipe: &PipeHandle) {
+        *pipe.conn.borrow_mut() = None;
+    }
+
+    pub fn read_line(pipe: &PipeHandle) -> Result<String, String> {
+        let conn = pipe.conn.borrow();
+        let stream = conn.as_ref().ok_or("no connection")?;
+        let mut response = String::new();
+        BufReader::new(stream).read_line(&mut response).map_err(|e| format!("read: {e}"))?;
+        Ok(response)
+    }
+
+    pub fn write(pipe: &PipeHandle, data: &str) -> Result<(), String> {
+        let conn = pipe.conn.borrow();
+        let mut stream = conn.as_ref().ok_or("no connection")?;
+        stream.write_all(data.as_bytes()).map_err(|e| format!("write: {e}"))?;
+        Ok(())
+    }
+
+    pub fn flush_and_disconnect(pipe: &PipeHandle) {
+        if let Some(stream) = pipe.conn.borrow().as_ref() {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+        *pipe.conn.borrow_mut() = None;
+    }
+}
+
+#[cfg(not(any(windows, unix)))]
 pub mod pipe {
     pub struct PipeHandle;
     pub fn create(_: &str) -> Result<PipeHandle, String> { Err("not supported".into()) }

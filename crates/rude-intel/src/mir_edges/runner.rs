@@ -304,11 +304,45 @@ fn try_daemon_all(project_root: &Path, lib_files: &[PathBuf], out_dir: &Path, mi
     Some(())
 }
 
+#[cfg(windows)]
+fn assign_to_job(child: &std::process::Child) {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CreateJobObjectW(attrs: *const std::ffi::c_void, name: *const u16) -> *mut std::ffi::c_void;
+        fn SetInformationJobObject(job: *mut std::ffi::c_void, class: u32, info: *const std::ffi::c_void, len: u32) -> i32;
+        fn AssignProcessToJobObject(job: *mut std::ffi::c_void, process: *mut std::ffi::c_void) -> i32;
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut std::ffi::c_void;
+        fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+    }
+    #[repr(C)] struct BasicLimit { _times: [i64; 2], limit_flags: u32, _pad: [usize; 4], _pad2: [u32; 2] }
+    #[repr(C)] struct ExtLimit { basic: BasicLimit, _io: [u64; 6], _mem: [usize; 4] }
+    const KILL_ON_JOB_CLOSE: u32 = 0x2000;
+    const EXT_LIMIT_INFO: u32 = 9;
+    const PROCESS_SET_QUOTA: u32 = 0x0100;
+    const PROCESS_TERMINATE: u32 = 0x0001;
+    unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() { return; }
+        let mut info: ExtLimit = std::mem::zeroed();
+        info.basic.limit_flags = KILL_ON_JOB_CLOSE;
+        SetInformationJobObject(job, EXT_LIMIT_INFO, &info as *const _ as *const std::ffi::c_void, std::mem::size_of::<ExtLimit>() as u32);
+        let proc = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, child.id());
+        if !proc.is_null() {
+            AssignProcessToJobObject(job, proc);
+            CloseHandle(proc);
+        }
+        // Don't close job handle — KILL_ON_JOB_CLOSE triggers when handle closes (i.e. parent exits)
+    }
+}
+
 fn daemon_pipe_name(project_root: &Path) -> String {
     let path = project_root.canonicalize().unwrap_or(project_root.to_path_buf());
     let bytes = path.as_os_str().as_encoded_bytes();
     let hash = xxhash_rust::xxh64::xxh64(bytes, 0);
-    format!(r"\\.\pipe\rude-mir-{hash:016x}")
+    #[cfg(windows)]
+    { format!(r"\\.\pipe\rude-mir-{hash:016x}") }
+    #[cfg(not(windows))]
+    { format!("/tmp/rude-mir-{hash:016x}.sock") }
 }
 
 fn try_daemon(
@@ -369,24 +403,49 @@ fn try_daemon(
         }
         eprintln!("  [mir] daemon error: {}", response.trim());
     }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::net::UnixStream;
+        use std::io::{Read, Write, BufRead, BufReader};
+        let mut stream = match UnixStream::connect(&pipe_name) {
+            Ok(s) => s,
+            Err(_) => return None,
+        };
+        let _span = tracing::info_span!("daemon_rpc").entered();
+        if stream.write_all(request.as_bytes()).is_err() { return None; }
+        let mut response = String::new();
+        if BufReader::new(&stream).read_line(&mut response).is_err() { return None; }
+        if response.contains("\"ok\":true") {
+            eprintln!("  [mir] daemon: {}", response.trim());
+            return Some(());
+        }
+        eprintln!("  [mir] daemon error: {}", response.trim());
+    }
     None
 }
 
 pub fn start_daemon(project_root: &Path, mir_callgraph_bin: Option<&Path>) -> Result<()> {
     let bin = find_mir_callgraph_bin(mir_callgraph_bin)?;
     let pipe_name = daemon_pipe_name(project_root);
+    #[cfg(windows)]
     let event_name = pipe_name.replace("rude-mir-", "rude-mir-ready-");
+    #[cfg(not(windows))]
+    let event_name = pipe_name.clone(); // Unix: check socket file existence
     let out_dir = project_root.join("target").join("mir-edges");
     let mut cmd = Command::new(&bin);
     add_nightly_path(&mut cmd);
-    cmd.arg("--daemon").arg("--pipe").arg(&pipe_name)
-        .arg("--event").arg(&event_name)
-        .env("MIR_CALLGRAPH_OUT", &out_dir)
+    cmd.arg("--daemon").arg("--pipe").arg(&pipe_name);
+    #[cfg(windows)]
+    cmd.arg("--event").arg(&event_name);
+    cmd.env("MIR_CALLGRAPH_OUT", &out_dir)
         .env("MIR_CALLGRAPH_DB", super::sqlite::mir_db_path(project_root))
         .env("MIR_CALLGRAPH_JSON", "1")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::inherit());
-    cmd.spawn().context("failed to start daemon")?;
+    let child = cmd.spawn().context("failed to start daemon")?;
+    #[cfg(windows)]
+    assign_to_job(&child);
     wait_for_event(&event_name, 6000);
     Ok(())
 }
@@ -415,4 +474,12 @@ fn wait_for_event(name: &str, timeout_ms: u32) -> bool {
     r == 0
 }
 #[cfg(not(windows))]
-fn wait_for_event(_name: &str, _timeout_ms: u32) -> bool { false }
+fn wait_for_event(name: &str, timeout_ms: u32) -> bool {
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_millis(timeout_ms as u64);
+    while start.elapsed() < timeout {
+        if std::path::Path::new(name).exists() { return true; }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    false
+}
