@@ -159,7 +159,10 @@ impl Worker {
                 }
             }
             #[cfg(unix)]
-            unsafe { libc::kill(child_id as i32, libc::SIGKILL); }
+            {
+                // kill -9 via Command to avoid libc dependency
+                let _ = Command::new("kill").arg("-9").arg(child_id.to_string()).status();
+            }
         });
         let mut response = String::new();
         let result = match self.stdout.read_line(&mut response) {

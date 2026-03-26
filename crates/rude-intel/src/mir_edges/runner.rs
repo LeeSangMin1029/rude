@@ -42,7 +42,8 @@ fn nightly_sysroot_bin() -> Option<String> {
 pub(super) fn add_nightly_path(cmd: &mut Command) {
     if let Some(nightly_bin) = nightly_sysroot_bin() {
         let current = std::env::var("PATH").unwrap_or_default();
-        cmd.env("PATH", format!("{current};{nightly_bin}"));
+        let sep = if cfg!(windows) { ";" } else { ":" };
+        cmd.env("PATH", format!("{nightly_bin}{sep}{current}"));
     }
 }
 
