@@ -236,30 +236,36 @@ fn run_mir_cargo_wrapper(ws: &std::path::Path) -> Result<()> {
 }
 
 fn find_sub_workspaces(root: &std::path::Path) -> Vec<PathBuf> {
-    let main_ws_root = cargo_workspace_root(root);
+    // Single cargo metadata call → get workspace root + all member directories
+    let meta_output = std::process::Command::new("cargo")
+        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .current_dir(root).output().ok();
+    let Some(out) = meta_output.filter(|o| o.status.success()) else { return Vec::new() };
+    let Ok(meta) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else { return Vec::new() };
+    let norm = |s: &str| s.replace('\\', "/").to_lowercase();
+    let ws_root = meta.get("workspace_root").and_then(|v| v.as_str()).map(norm).unwrap_or_default();
+    let members: std::collections::HashSet<String> = meta.get("packages")
+        .and_then(|p| p.as_array())
+        .map(|pkgs| pkgs.iter().filter_map(|p| {
+            Some(norm(&PathBuf::from(p.get("manifest_path")?.as_str()?).parent()?.to_string_lossy()))
+        }).collect())
+        .unwrap_or_default();
+    // Find Cargo.toml dirs from git that are NOT workspace members
     let git_output = std::process::Command::new("git")
         .args(["ls-files", "--cached", "--others", "--exclude-standard", "*/Cargo.toml"])
         .current_dir(root).output().ok();
-    let Some(out) = git_output.filter(|o| o.status.success()) else { return Vec::new() };
-    let main = main_ws_root.unwrap_or_default();
-    String::from_utf8_lossy(&out.stdout).lines()
+    let Some(git_out) = git_output.filter(|o| o.status.success()) else { return Vec::new() };
+    let abs_root = strip_unc(root.canonicalize().unwrap_or(root.to_path_buf()));
+    String::from_utf8_lossy(&git_out.stdout).lines()
         .filter_map(|line| {
             let parent = PathBuf::from(line).parent()?.to_path_buf();
             if parent.as_os_str().is_empty() { return None; }
-            let dir = root.join(&parent);
-            let ws = cargo_workspace_root(&dir)?;
-            if ws != main { Some(dir) } else { None }
+            let abs_dir = strip_unc(abs_root.join(&parent));
+            let dir_norm = norm(&abs_dir.to_string_lossy());
+            if members.contains(&dir_norm) || dir_norm == ws_root { return None; }
+            Some(root.join(parent))
         })
         .collect()
-}
-
-fn cargo_workspace_root(dir: &std::path::Path) -> Option<String> {
-    let out = std::process::Command::new("cargo")
-        .args(["metadata", "--no-deps", "--format-version", "1"])
-        .current_dir(dir).output().ok()?;
-    if !out.status.success() { return None; }
-    let meta: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
-    meta.get("workspace_root")?.as_str().map(|s| s.replace('\\', "/").to_lowercase())
 }
 
 

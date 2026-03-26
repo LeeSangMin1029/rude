@@ -304,36 +304,6 @@ fn try_daemon_all(project_root: &Path, lib_files: &[PathBuf], out_dir: &Path, mi
     Some(())
 }
 
-#[cfg(windows)]
-fn assign_to_job(child: &std::process::Child) {
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn CreateJobObjectW(attrs: *const std::ffi::c_void, name: *const u16) -> *mut std::ffi::c_void;
-        fn SetInformationJobObject(job: *mut std::ffi::c_void, class: u32, info: *const std::ffi::c_void, len: u32) -> i32;
-        fn AssignProcessToJobObject(job: *mut std::ffi::c_void, process: *mut std::ffi::c_void) -> i32;
-        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut std::ffi::c_void;
-        fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
-    }
-    #[repr(C)] struct BasicLimit { _times: [i64; 2], limit_flags: u32, _pad: [usize; 4], _pad2: [u32; 2] }
-    #[repr(C)] struct ExtLimit { basic: BasicLimit, _io: [u64; 6], _mem: [usize; 4] }
-    const KILL_ON_JOB_CLOSE: u32 = 0x2000;
-    const EXT_LIMIT_INFO: u32 = 9;
-    const PROCESS_SET_QUOTA: u32 = 0x0100;
-    const PROCESS_TERMINATE: u32 = 0x0001;
-    unsafe {
-        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-        if job.is_null() { return; }
-        let mut info: ExtLimit = std::mem::zeroed();
-        info.basic.limit_flags = KILL_ON_JOB_CLOSE;
-        SetInformationJobObject(job, EXT_LIMIT_INFO, &info as *const _ as *const std::ffi::c_void, std::mem::size_of::<ExtLimit>() as u32);
-        let proc = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, child.id());
-        if !proc.is_null() {
-            AssignProcessToJobObject(job, proc);
-            CloseHandle(proc);
-        }
-        // Don't close job handle — KILL_ON_JOB_CLOSE triggers when handle closes (i.e. parent exits)
-    }
-}
 
 fn daemon_pipe_name(project_root: &Path) -> String {
     let path = project_root.canonicalize().unwrap_or(project_root.to_path_buf());
