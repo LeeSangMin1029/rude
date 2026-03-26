@@ -385,14 +385,10 @@ pub fn start_daemon(project_root: &Path, mir_callgraph_bin: Option<&Path>) -> Re
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::inherit());
     cmd.spawn().context("failed to start daemon")?;
-    // daemon이 pipe를 생성할 때까지 연결 재시도 (이벤트 기반, sleep 없음)
-    for _ in 0..50 {
-        if try_daemon(project_root, Path::new(""), Path::new(""), Path::new("")).is_some()
-            || pipe_exists(&pipe_name)
-        {
-            return Ok(());
-        }
-        std::thread::yield_now();
+    // daemon이 pipe를 생성할 때까지 대기 (WaitNamedPipeW = OS 이벤트 대기)
+    if !pipe_exists(&pipe_name) {
+        // 첫 시도 실패 → 한번 더 (DLL 로딩 시간 고려)
+        pipe_exists(&pipe_name);
     }
     Ok(())
 }
@@ -404,7 +400,7 @@ fn pipe_exists(name: &str) -> bool {
         fn WaitNamedPipeW(name: *const u16, timeout: u32) -> i32;
     }
     let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
-    unsafe { WaitNamedPipeW(wide.as_ptr(), 100) != 0 }
+    unsafe { WaitNamedPipeW(wide.as_ptr(), 3000) != 0 }
 }
 
 #[cfg(not(windows))]
