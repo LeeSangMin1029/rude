@@ -305,11 +305,10 @@ fn try_daemon_all(project_root: &Path, lib_files: &[PathBuf], out_dir: &Path, mi
 }
 
 fn daemon_pipe_name(project_root: &Path) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    project_root.canonicalize().unwrap_or(project_root.to_path_buf()).hash(&mut h);
-    format!(r"\\.\pipe\rude-mir-{:016x}", h.finish())
+    let path = project_root.canonicalize().unwrap_or(project_root.to_path_buf());
+    let bytes = path.as_os_str().as_encoded_bytes();
+    let hash = xxhash_rust::xxh64::xxh64(bytes, 0);
+    format!(r"\\.\pipe\rude-mir-{hash:016x}")
 }
 
 fn try_daemon(
@@ -355,7 +354,8 @@ fn try_daemon(
         let _span = tracing::info_span!("daemon_rpc").entered();
         let bytes = request.as_bytes();
         let mut written = 0u32;
-        unsafe { WriteFile(handle, bytes.as_ptr(), bytes.len() as u32, &mut written, std::ptr::null()); }
+        let ok = unsafe { WriteFile(handle, bytes.as_ptr(), bytes.len() as u32, &mut written, std::ptr::null()) };
+        if ok == 0 { unsafe { CloseHandle(handle); } return None; }
 
         let mut buf = vec![0u8; 65536];
         let mut read = 0u32;
@@ -375,33 +375,44 @@ fn try_daemon(
 pub fn start_daemon(project_root: &Path, mir_callgraph_bin: Option<&Path>) -> Result<()> {
     let bin = find_mir_callgraph_bin(mir_callgraph_bin)?;
     let pipe_name = daemon_pipe_name(project_root);
+    let event_name = pipe_name.replace("rude-mir-", "rude-mir-ready-");
     let out_dir = project_root.join("target").join("mir-edges");
     let mut cmd = Command::new(&bin);
     add_nightly_path(&mut cmd);
     cmd.arg("--daemon").arg("--pipe").arg(&pipe_name)
+        .arg("--event").arg(&event_name)
         .env("MIR_CALLGRAPH_OUT", &out_dir)
         .env("MIR_CALLGRAPH_DB", super::sqlite::mir_db_path(project_root))
         .env("MIR_CALLGRAPH_JSON", "1")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::inherit());
     cmd.spawn().context("failed to start daemon")?;
-    // daemon이 pipe를 생성할 때까지 대기 (WaitNamedPipeW = OS 이벤트 대기)
-    if !pipe_exists(&pipe_name) {
-        // 첫 시도 실패 → 한번 더 (DLL 로딩 시간 고려)
-        pipe_exists(&pipe_name);
-    }
+    wait_for_event(&event_name, 6000);
     Ok(())
 }
 
 #[cfg(windows)]
-fn pipe_exists(name: &str) -> bool {
+fn wait_for_event(name: &str, timeout_ms: u32) -> bool {
     #[link(name = "kernel32")]
     unsafe extern "system" {
-        fn WaitNamedPipeW(name: *const u16, timeout: u32) -> i32;
+        fn OpenEventW(access: u32, inherit: i32, name: *const u16) -> *mut std::ffi::c_void;
+        fn WaitForSingleObject(handle: *mut std::ffi::c_void, ms: u32) -> u32;
+        fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
     }
+    const SYNCHRONIZE: u32 = 0x00100000;
     let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
-    unsafe { WaitNamedPipeW(wide.as_ptr(), 3000) != 0 }
+    let handle = unsafe { OpenEventW(SYNCHRONIZE, 0, wide.as_ptr()) };
+    if handle.is_null() {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let handle = unsafe { OpenEventW(SYNCHRONIZE, 0, wide.as_ptr()) };
+        if handle.is_null() { return false; }
+        let r = unsafe { WaitForSingleObject(handle, timeout_ms) };
+        unsafe { CloseHandle(handle); }
+        return r == 0;
+    }
+    let r = unsafe { WaitForSingleObject(handle, timeout_ms) };
+    unsafe { CloseHandle(handle); }
+    r == 0
 }
-
 #[cfg(not(windows))]
-fn pipe_exists(_: &str) -> bool { false }
+fn wait_for_event(_name: &str, _timeout_ms: u32) -> bool { false }
