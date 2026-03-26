@@ -106,7 +106,10 @@ pub fn load_chunks_from_cache_with_engine(engine: &rude_db::StorageEngine) -> Op
                     }
                 }
             }
-            if !all.is_empty() { return Some(all); }
+            if !all.is_empty() {
+                all.sort_by(|a, b| a.file.cmp(&b.file).then_with(|| a.lines.cmp(&b.lines)));
+                return Some(all);
+            }
         }
     }
     // monolithic fallback

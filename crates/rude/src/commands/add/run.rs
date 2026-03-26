@@ -238,8 +238,8 @@ fn prebuild_caches(
         // 전체 인덱싱: monolithic + 크레이트별 양쪽 저장
         rude_intel::loader::save_chunks_cache(db_path, &chunks);
         rude_intel::loader::save_chunks_cache_for(db_path, &chunks, None);
-        rude_intel::graph::CallGraph::build_only(chunks, None, None, db_path)
-            .save_background(db_path);
+        let graph = rude_intel::graph::CallGraph::build_only(chunks, None, None, db_path);
+        let _ = graph.save(db_path);
     } else {
         // 증분: 변경 크레이트만 저장 (crate_name 기반)
         let new_chunks: Vec<rude_intel::parse::ParsedChunk> = new_entries.iter()

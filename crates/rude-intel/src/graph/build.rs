@@ -19,6 +19,7 @@ pub struct IncrementalArgs<'a> {
 #[derive(bincode::Encode, bincode::Decode)]
 pub struct Edges {
     version: String,
+    chunks_hash: u64,
     pub name_index: Vec<(String, u32)>,
     pub callees: Vec<Vec<u32>>,
     pub callers: Vec<Vec<u32>>,
@@ -71,12 +72,14 @@ impl CallGraph {
         }
         let fn_trait_impl = index_tables::build_fn_trait_impl(&names, &kinds);
 
+        let chunks_hash = compute_chunks_order_hash(&chunks);
         eprintln!("      [graph] assemble: {:.1}ms", t.elapsed().as_secs_f64() * 1000.0);
 
         Self {
             chunks,
             edges: Edges {
                 version: GRAPH_SOURCE_HASH.to_owned(),
+                chunks_hash,
                 name_index, callees: adj.callees, callers: adj.callers,
                 is_test, trait_impls, impl_of_trait, fn_trait_impl,
                 call_sites: adj.call_sites, field_access_index,
@@ -199,6 +202,7 @@ impl CallGraph {
         if edges.version != GRAPH_SOURCE_HASH { return None; }
         let chunks = crate::analysis::loader::load_chunks_from_cache_with_engine(engine)?;
         if chunks.len() != edges.callees.len() { return None; }
+        if compute_chunks_order_hash(&chunks) != edges.chunks_hash { return None; }
         Some(Self { chunks, edges })
     }
 
@@ -209,4 +213,15 @@ impl CallGraph {
         let all: Vec<&str> = self.chunks.iter().map(|c| crate::helpers::relative_path(&c.file)).collect();
         crate::helpers::build_path_aliases(&all)
     }
+}
+
+fn compute_chunks_order_hash(chunks: &[ParsedChunk]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for c in chunks {
+        c.name.hash(&mut h);
+        c.file.hash(&mut h);
+        c.lines.hash(&mut h);
+    }
+    h.finish()
 }
