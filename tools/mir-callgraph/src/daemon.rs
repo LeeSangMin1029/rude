@@ -34,7 +34,7 @@ fn process(request: &str) -> String {
         Err(e) => return format!("{{\"ok\":false,\"error\":\"parse: {e}\"}}\n"),
     };
 
-    let cached: RustcArgs = match crate::load_cached_args(&req.args_file) {
+    let cached: RustcArgs = match crate::types::RustcArgs::load(&req.args_file) {
         Ok(c) => c,
         Err(e) => return format!("{{\"ok\":false,\"error\":\"{e}\"}}\n"),
     };

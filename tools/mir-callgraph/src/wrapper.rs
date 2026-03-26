@@ -11,7 +11,7 @@ pub fn run(args: &[String]) {
     }
     let full_args = build_full_args(&args[1], &rustc_args);
     cache_rustc_args(&rustc_args, &full_args);
-    let (json, db_path) = crate::env_config();
+    let (json, db_path) = crate::types::env_config();
     let is_test = rustc_args.iter().any(|a| a == "--test");
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rustc_public::run!(&full_args, || extract::extract_all(is_test, json, &db_path))

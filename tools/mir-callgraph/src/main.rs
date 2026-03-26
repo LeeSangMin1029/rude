@@ -9,7 +9,7 @@ mod daemon;
 mod direct;
 mod extract;
 mod output;
-mod types;
+pub mod types;
 mod wrapper;
 
 fn main() {
@@ -34,13 +34,4 @@ fn detect_mode(args: &[String]) -> Mode {
     } else {
         Mode::Cli
     }
-}
-
-pub fn env_config() -> (bool, Option<String>) {
-    (std::env::var("MIR_CALLGRAPH_JSON").is_ok(), std::env::var("MIR_CALLGRAPH_DB").ok())
-}
-
-pub fn load_cached_args(path: &str) -> Result<types::RustcArgs, String> {
-    let content = std::fs::read_to_string(path).map_err(|e| format!("read error {path}: {e}"))?;
-    serde_json::from_str(&content).map_err(|e| format!("parse error {path}: {e}"))
 }

@@ -37,3 +37,14 @@ pub struct RustcArgs {
     #[serde(default)]
     pub env: Vec<(String, String)>,
 }
+
+impl RustcArgs {
+    pub fn load(path: &str) -> Result<Self, String> {
+        let content = std::fs::read_to_string(path).map_err(|e| format!("read error {path}: {e}"))?;
+        serde_json::from_str(&content).map_err(|e| format!("parse error {path}: {e}"))
+    }
+}
+
+pub fn env_config() -> (bool, Option<String>) {
+    (std::env::var("MIR_CALLGRAPH_JSON").is_ok(), std::env::var("MIR_CALLGRAPH_DB").ok())
+}

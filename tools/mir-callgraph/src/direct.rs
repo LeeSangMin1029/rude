@@ -10,10 +10,10 @@ pub fn run(args: &[String]) {
         eprintln!("[mir-callgraph] --direct requires --args-file <path>");
         std::process::exit(1);
     }
-    let (json, _) = crate::env_config();
+    let (json, _) = crate::types::env_config();
     let mut had_error = false;
     for args_file in &args_files {
-        let cached: RustcArgs = match crate::load_cached_args(args_file) {
+        let cached: RustcArgs = match crate::types::RustcArgs::load(args_file) {
             Ok(c) => c,
             Err(e) => { eprintln!("[mir-callgraph] {e}"); had_error = true; continue; }
         };
