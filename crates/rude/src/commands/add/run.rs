@@ -199,6 +199,9 @@ fn run_mir_cargo_wrapper(ws: &std::path::Path) -> Result<()> {
     let out_dir = ws.join("target").join("mir-edges");
     let mir_db = rude_intel::mir_edges::mir_db_path(ws);
     std::fs::create_dir_all(&out_dir).ok();
+    // Clean mir-check to force cargo to re-invoke RUSTC_WRAPPER
+    let mir_check_dir = ws.join("target").join("mir-check");
+    if mir_check_dir.exists() { let _ = std::fs::remove_dir_all(&mir_check_dir); }
     let abs_out = strip_unc(out_dir.canonicalize().unwrap_or(out_dir.clone()));
     let abs_db = abs_out.join("mir.db");
     let abs_bin = strip_unc(bin.canonicalize().unwrap_or(bin));

@@ -89,9 +89,13 @@ impl MirEdgeMap {
 
             let file_normalized = normalize_path(&caller_file);
             combined.by_location
-                .entry((file_normalized, line))
+                .entry((file_normalized.clone(), line))
                 .or_default()
                 .push(callee.clone());
+            if !file_normalized.is_empty() {
+                let files = combined.caller_files.entry(caller.clone()).or_default();
+                if !files.contains(&file_normalized) { files.push(file_normalized); }
+            }
 
             let callee_file_normalized = normalize_path(&callee_file);
             // Track caller→crate mapping; a caller may appear in multiple crates

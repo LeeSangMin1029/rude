@@ -145,6 +145,7 @@ fn is_crate_cache_stale(
 type MirIndexes<'a> = (
     HashMap<(&'a str, usize), u32>,
     HashMap<String, u32>,
+    HashMap<String, Vec<u32>>,
     HashMap<String, u32>,
     HashMap<String, Vec<String>>,
 );
@@ -152,22 +153,27 @@ type MirIndexes<'a> = (
 fn build_mir_indexes(chunks: &[ParsedChunk]) -> MirIndexes<'_> {
     let mut loc_to_idx: HashMap<(&str, usize), u32> = HashMap::new();
     let mut name_to_idx: HashMap<String, u32> = HashMap::new();
+    let mut name_to_all: HashMap<String, Vec<u32>> = HashMap::new();
     let mut suffix_to_idx: HashMap<String, u32> = HashMap::new();
     let mut file_suffix_to_normalized: HashMap<String, Vec<String>> = HashMap::new();
 
     for (i, c) in chunks.iter().enumerate() {
+        let is_synthetic = c.lines == Some((0, 0));
         if let Some((start, _)) = c.lines {
-            loc_to_idx.insert((&c.file, start), i as u32);
+            if !is_synthetic { loc_to_idx.insert((&c.file, start), i as u32); }
         }
         let lower = strip_visibility_prefix(&c.name).to_lowercase();
-        name_to_idx.insert(lower.clone(), i as u32);
+        name_to_all.entry(lower.clone()).or_default().push(i as u32);
+        if !is_synthetic || !name_to_idx.contains_key(&lower) {
+            name_to_idx.insert(lower.clone(), i as u32);
+        }
         if let Some(last) = lower.rsplit("::").next() {
-            suffix_to_idx.entry(last.to_owned()).or_insert(i as u32);
+            if !is_synthetic { suffix_to_idx.entry(last.to_owned()).or_insert(i as u32); }
         }
         file_suffix_to_normalized.entry(c.file.to_lowercase()).or_default().push(c.file.clone());
     }
     for v in file_suffix_to_normalized.values_mut() { v.sort(); v.dedup(); }
-    (loc_to_idx, name_to_idx, suffix_to_idx, file_suffix_to_normalized)
+    (loc_to_idx, name_to_idx, name_to_all, suffix_to_idx, file_suffix_to_normalized)
 }
 
 fn resolve_callee(
@@ -220,7 +226,7 @@ pub(crate) fn resolve_incremental(
     let mut cache_loaded: usize = 0;
     let mut re_resolved_crates: usize = 0;
 
-    let (loc_to_idx, name_to_idx, suffix_to_idx, file_suffix_to_normalized) =
+    let (loc_to_idx, name_to_idx, _name_to_all, suffix_to_idx, file_suffix_to_normalized) =
         build_mir_indexes(chunks);
 
     let chunks_hash = compute_chunks_hash(chunks);
@@ -312,14 +318,22 @@ pub(crate) fn resolve_with_mir(
 ) -> ResolvedEdges {
     let mut adj = ResolvedEdges::new(chunks.len());
 
-    let (loc_to_idx, name_to_idx, suffix_to_idx, file_suffix_to_normalized) =
+    let (loc_to_idx, name_to_idx, name_to_all, suffix_to_idx, file_suffix_to_normalized) =
         build_mir_indexes(chunks);
 
     for (caller_name, callees) in &mir_edges.by_caller {
-        let src = resolve_by_loc_or_name(caller_name, &name_to_idx, &suffix_to_idx);
+        let caller_files = mir_edges.caller_files.get(caller_name.as_str());
+        let srcs = resolve_all_callers(
+            caller_name, caller_files,
+            chunks, &name_to_idx, &name_to_all, &suffix_to_idx,
+        );
         for callee in callees {
-            if let (Some(s), Some(t)) = (src, resolve_callee(callee, &loc_to_idx, &name_to_idx, &file_suffix_to_normalized)) {
-                adj.add_edge(s as usize, t, callee.call_line as u32);
+            if let Some(t) = resolve_callee(callee, &loc_to_idx, &name_to_idx, &file_suffix_to_normalized) {
+                let tgt_root = file_root(&chunks[t as usize].file);
+                // Pick the src from the same workspace as the callee
+                if let Some(&s) = srcs.iter().find(|&&s| file_root(&chunks[s as usize].file) == tgt_root) {
+                    adj.add_edge(s as usize, t, callee.call_line as u32);
+                }
             }
         }
     }
@@ -327,6 +341,37 @@ pub(crate) fn resolve_with_mir(
     for (src, chunk) in chunks.iter().enumerate() { resolve_type_refs(src, chunk, index, &mut adj); }
     adj.dedup();
     adj
+}
+
+
+fn resolve_all_callers(
+    caller_name: &str, caller_files: Option<&Vec<String>>,
+    chunks: &[ParsedChunk],
+    name_to_idx: &HashMap<String, u32>,
+    name_to_all: &HashMap<String, Vec<u32>>,
+    suffix_to_idx: &HashMap<String, u32>,
+) -> Vec<u32> {
+    let lower = caller_name.to_lowercase();
+    let candidates = name_to_all.get(&lower)
+        .or_else(|| lower.split_once("::").and_then(|(_, r)| name_to_all.get(r)));
+    if let Some(cands) = candidates {
+        if cands.len() > 1 {
+            // Multiple chunks with same name — return all non-synthetic candidates
+            let real: Vec<u32> = cands.iter().copied()
+                .filter(|&idx| chunks[idx as usize].lines != Some((0, 0)))
+                .collect();
+            if !real.is_empty() { return real; }
+        }
+    }
+    resolve_by_loc_or_name(caller_name, name_to_idx, suffix_to_idx)
+        .into_iter().collect()
+}
+
+fn file_root(file: &str) -> &str {
+    // "crates/rude/src/main.rs" → "crates/"
+    // "src/daemon.rs" → "src/"
+    // Workspace membership: files starting with same root belong together
+    if let Some(pos) = file.find('/') { &file[..=pos] } else { file }
 }
 
 fn resolve_by_location(

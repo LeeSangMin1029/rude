@@ -5,6 +5,7 @@ use std::collections::HashMap;
 pub struct MirEdgeMap {
     pub by_location: HashMap<(String, usize), Vec<String>>,
     pub by_caller: HashMap<String, Vec<CalleeInfo>>,
+    pub caller_files: HashMap<String, Vec<String>>,
     pub total: usize,
     pub caller_crate: HashMap<String, String>,
     pub crate_to_callers: HashMap<String, Vec<String>>,
