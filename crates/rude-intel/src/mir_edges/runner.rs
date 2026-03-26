@@ -118,6 +118,7 @@ pub fn run_mir_callgraph_for(
         .with_context(|| format!("failed to create MIR edge dir: {}", out_dir.display()))?;
 
     let bin = find_mir_callgraph_bin(mir_callgraph_bin)?;
+    let _t0 = std::time::Instant::now();
 
     let mir_db = mir_db_path(project_root);
 
@@ -246,6 +247,7 @@ pub fn run_mir_direct(
     }
 
     let bin = find_mir_callgraph_bin(mir_callgraph_bin)?;
+    let _t0 = std::time::Instant::now();
 
     kill_previous_test_bg(&out_dir);
 

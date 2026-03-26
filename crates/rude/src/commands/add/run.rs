@@ -195,14 +195,7 @@ fn run_mir_analysis(
     let rust_changed: Vec<_> = code_files.iter()
         .filter(|f| f.extension().and_then(|e| e.to_str()) == Some("rs"))
         .collect();
-    let mut changed_crates = rude_intel::mir_edges::detect_changed_crates(input_path, &rust_changed);
-
-    let missing = rude_intel::mir_edges::detect_missing_edge_crates(input_path);
-    if !missing.is_empty() {
-        eprintln!("  [mir] missing edge files for: {}", missing.join(", "));
-        for m in missing { if !changed_crates.contains(&m) { changed_crates.push(m); } }
-    }
-
+    let changed_crates = rude_intel::mir_edges::detect_changed_crates(input_path, &rust_changed);
     if changed_crates.is_empty() { return Ok(Vec::new()); }
 
     let crate_refs: Vec<&str> = changed_crates.iter().map(|s| s.as_str()).collect();
