@@ -118,10 +118,10 @@ impl MirEdgeMap {
 
         let (query, params) = if let Some(crates) = only_crates {
             let (placeholders, params) = make_crate_params(crates);
-            let q = format!("SELECT name, file, kind, start_line, end_line, signature, visibility, is_test, body, calls, type_refs FROM mir_chunks WHERE crate_name IN ({})", placeholders);
+            let q = format!("SELECT name, file, kind, start_line, end_line, signature, visibility, is_test, body, calls, type_refs, crate_name FROM mir_chunks WHERE crate_name IN ({})", placeholders);
             (q, params)
         } else {
-            ("SELECT name, file, kind, start_line, end_line, signature, visibility, is_test, body, calls, type_refs FROM mir_chunks".to_owned(), vec![])
+            ("SELECT name, file, kind, start_line, end_line, signature, visibility, is_test, body, calls, type_refs, crate_name FROM mir_chunks".to_owned(), vec![])
         };
 
         let mut stmt = conn.prepare(&query).context("failed to prepare chunk query")?;
@@ -140,6 +140,7 @@ impl MirEdgeMap {
                 body: row.get::<_, String>(8).unwrap_or_default(),
                 calls: row.get::<_, String>(9).unwrap_or_default(),
                 type_refs: row.get::<_, String>(10).unwrap_or_default(),
+                crate_name: row.get::<_, String>(11).unwrap_or_default(),
             })
         }).context("failed to query chunks")?;
 

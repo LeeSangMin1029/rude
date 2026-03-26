@@ -53,11 +53,10 @@ pub fn save_chunks_cache_for(db: &Path, chunks: &[ParsedChunk], changed_crates: 
     let Ok(engine) = rude_db::StorageEngine::open(db) else { return };
     let config = bincode::config::standard();
 
-    // Group by crate
-    let mut by_crate: std::collections::HashMap<String, Vec<&ParsedChunk>> = std::collections::HashMap::new();
+    let mut by_crate: std::collections::HashMap<&str, Vec<&ParsedChunk>> = std::collections::HashMap::new();
     for c in chunks {
-        let crate_name = crate::helpers::extract_crate_name(&c.file);
-        by_crate.entry(crate_name).or_default().push(c);
+        let key = if c.crate_name.is_empty() { "(root)" } else { &c.crate_name };
+        by_crate.entry(key).or_default().push(c);
     }
 
     // Save only changed crates (or all if changed_crates is None)
@@ -72,9 +71,17 @@ pub fn save_chunks_cache_for(db: &Path, chunks: &[ParsedChunk], changed_crates: 
             let _ = engine.set_cache(&key, &bytes);
         }
     }
-    // Save crate list
-    let crate_names: Vec<&str> = by_crate.keys().map(|s| s.as_str()).collect();
-    if let Ok(b) = bincode::encode_to_vec(&crate_names, config) {
+    // Update crate index (merge with existing if incremental)
+    let mut all_names: std::collections::HashSet<String> = by_crate.keys().map(|s| s.to_string()).collect();
+    if changed_crates.is_some() {
+        if let Ok(Some(idx_bytes)) = engine.get_cache("chunks:_index") {
+            if let Ok((existing, _)) = bincode::decode_from_slice::<Vec<String>, _>(&idx_bytes, config) {
+                all_names.extend(existing);
+            }
+        }
+    }
+    let names_vec: Vec<&str> = all_names.iter().map(|s| s.as_str()).collect();
+    if let Ok(b) = bincode::encode_to_vec(&names_vec, config) {
         let _ = engine.set_cache("chunks:_index", &b);
     }
 }
@@ -86,6 +93,23 @@ pub fn load_chunks_from_cache(db: &Path) -> Option<Vec<ParsedChunk>> {
 
 pub fn load_chunks_from_cache_with_engine(engine: &rude_db::StorageEngine) -> Option<Vec<ParsedChunk>> {
     let config = bincode::config::standard();
+    // 크레이트별 캐시 시도
+    if let Ok(Some(idx_bytes)) = engine.get_cache("chunks:_index") {
+        if let Ok((crate_names, _)) = bincode::decode_from_slice::<Vec<String>, _>(&idx_bytes, config) {
+            let mut all = Vec::new();
+            for name in &crate_names {
+                if let Ok(Some(bytes)) = engine.get_cache(&format!("chunks:{name}")) {
+                    if bytes.first() == Some(&CHUNKS_CACHE_VERSION) {
+                        if let Ok((chunks, _)) = bincode::decode_from_slice::<Vec<ParsedChunk>, _>(&bytes[1..], config) {
+                            all.extend(chunks);
+                        }
+                    }
+                }
+            }
+            if !all.is_empty() { return Some(all); }
+        }
+    }
+    // monolithic fallback
     let bytes = engine.get_cache("chunks").ok()??;
     if bytes.first() != Some(&CHUNKS_CACHE_VERSION) { return None; }
     let (chunks, _) = bincode::decode_from_slice::<Vec<ParsedChunk>, _>(&bytes[1..], config).ok()?;

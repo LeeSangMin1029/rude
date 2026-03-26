@@ -38,6 +38,8 @@ pub struct ParsedChunk {
     pub chunk_index: usize,
     #[serde(default)]
     pub minhash: Option<String>,
+    #[serde(default)]
+    pub crate_name: String,
 }
 
 impl ParsedChunk {

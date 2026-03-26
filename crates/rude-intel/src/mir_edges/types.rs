@@ -37,6 +37,8 @@ pub struct MirChunk {
     pub calls: String,
     #[serde(default)]
     pub type_refs: String,
+    #[serde(default)]
+    pub crate_name: String,
 }
 
 impl MirChunk {
@@ -58,6 +60,7 @@ impl MirChunk {
             visibility: self.visibility.clone().unwrap_or_default(),
             text: self.body.clone(),
             is_test: self.is_test,
+            crate_name: self.crate_name.clone(),
             ..Default::default()
         };
         chunk.compute_minhash();
