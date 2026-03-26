@@ -39,7 +39,13 @@ pub fn load_chunks_from_mir_db(db_path: &Path) -> Result<Vec<ParsedChunk>> {
 
 #[tracing::instrument(skip_all)]
 pub fn save_chunks_cache(db: &Path, chunks: &[ParsedChunk]) {
-    save_chunks_cache_for(db, chunks, None);
+    let Ok(engine) = rude_db::StorageEngine::open(db) else { return };
+    let config = bincode::config::standard();
+    let mut bytes = vec![CHUNKS_CACHE_VERSION];
+    if let Ok(cb) = bincode::encode_to_vec(chunks, config) {
+        bytes.extend_from_slice(&cb);
+        let _ = engine.set_cache("chunks", &bytes);
+    }
 }
 
 #[tracing::instrument(skip_all)]
@@ -80,27 +86,10 @@ pub fn load_chunks_from_cache(db: &Path) -> Option<Vec<ParsedChunk>> {
 
 pub fn load_chunks_from_cache_with_engine(engine: &rude_db::StorageEngine) -> Option<Vec<ParsedChunk>> {
     let config = bincode::config::standard();
-    let idx_bytes = engine.get_cache("chunks:_index").ok()??;
-    let (crate_names, _): (Vec<String>, _) = bincode::decode_from_slice(&idx_bytes, config).ok()?;
-
-    let mut all = Vec::new();
-    for name in &crate_names {
-        let key = format!("chunks:{name}");
-        if let Ok(Some(bytes)) = engine.get_cache(&key) {
-            if bytes.first() != Some(&CHUNKS_CACHE_VERSION) { continue; }
-            if let Ok((chunks, _)) = bincode::decode_from_slice::<Vec<ParsedChunk>, _>(&bytes[1..], config) {
-                all.extend(chunks);
-            }
-        }
-    }
-    if all.is_empty() {
-        // Fallback: try old monolithic cache
-        let bytes = engine.get_cache("chunks").ok()??;
-        if bytes.first() != Some(&CHUNKS_CACHE_VERSION) { return None; }
-        let (chunks, _) = bincode::decode_from_slice::<Vec<ParsedChunk>, _>(&bytes[1..], config).ok()?;
-        return Some(chunks);
-    }
-    Some(all)
+    let bytes = engine.get_cache("chunks").ok()??;
+    if bytes.first() != Some(&CHUNKS_CACHE_VERSION) { return None; }
+    let (chunks, _) = bincode::decode_from_slice::<Vec<ParsedChunk>, _>(&bytes[1..], config).ok()?;
+    Some(chunks)
 }
 
 fn ensure_project_root(db: &Path) {

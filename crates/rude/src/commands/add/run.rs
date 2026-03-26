@@ -233,23 +233,21 @@ fn prebuild_caches(
     incremental_crates: &[String],
 ) {
     if incremental_crates.is_empty() {
-        // 전체 인덱싱: 전체 chunks 머지 + graph 빌드
         let chunks = merge_chunks_cache(db_path, new_entries);
         eprintln!("    [cache] {} chunks", chunks.len());
-        rude_intel::loader::save_chunks_cache_for(db_path, &chunks, None);
+        // 전체 인덱싱: monolithic + 크레이트별 양쪽 저장
+        rude_intel::loader::save_chunks_cache(db_path, &chunks);
         rude_intel::graph::CallGraph::build_only(chunks, None, None, db_path)
             .save_background(db_path);
     } else {
-        // 증분: 변경 크레이트 chunks만 저장 (전체 로드 안 함)
-        let new_chunks: Vec<rude_intel::parse::ParsedChunk> = new_entries.iter()
-            .map(|e| e.chunk.clone()).collect();
-        let changed: Vec<&str> = incremental_crates.iter().map(|s| s.as_str()).collect();
-        rude_intel::loader::save_chunks_cache_for(db_path, &new_chunks, Some(&changed));
+        // 증분: monolithic 캐시를 부분 업데이트
+        let chunks = merge_chunks_cache(db_path, new_entries);
+        eprintln!("    [cache] {} chunks", chunks.len());
+        rude_intel::loader::save_chunks_cache(db_path, &chunks);
         // graph 캐시 무효화 (다음 쿼리에서 lazy rebuild)
         if let Ok(engine) = rude_db::StorageEngine::open(db_path) {
             let _ = engine.set_cache("graph", &[]);
         }
-        eprintln!("    [cache] updated {} chunks for {} crate(s)", new_chunks.len(), changed.len());
     }
 }
 fn scan_files_fast(input_path: &std::path::Path, exclude: &[String]) -> Vec<PathBuf> {
