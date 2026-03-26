@@ -205,7 +205,8 @@ fn run_mir_cargo_wrapper(ws: &std::path::Path) -> Result<()> {
     let abs_db = abs_out.join("mir.db");
     let abs_bin = strip_unc(bin.canonicalize().unwrap_or(bin));
     let status = std::process::Command::new("cargo")
-        .arg("+nightly").arg("check").arg("--tests")
+        .arg("check").arg("--tests")
+        .env("RUSTUP_TOOLCHAIN", "nightly")
         .arg("--target-dir").arg(ws.join("target").join("mir-check"))
         .current_dir(ws)
         .env("RUSTC_WRAPPER", &abs_bin)

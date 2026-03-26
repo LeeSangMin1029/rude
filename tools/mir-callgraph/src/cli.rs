@@ -10,9 +10,10 @@ pub fn run(args: &[String]) {
     let packages: Vec<String> = if has_package_flag { Vec::new() } else { local_workspace_packages() };
 
     let mut cmd = Command::new("cargo");
-    cmd.arg("+nightly").arg("check").arg("--tests")
+    cmd.arg("check").arg("--tests")
         .arg("--target-dir").arg("target/mir-check")
-        .env("RUSTC_WRAPPER", &exe);
+        .env("RUSTC_WRAPPER", &exe)
+        .env("RUSTUP_TOOLCHAIN", "nightly");
     if keep_going { cmd.arg("--keep-going"); }
     if json { cmd.env("MIR_CALLGRAPH_JSON", "1"); }
     for arg in &extra { cmd.arg(arg); }

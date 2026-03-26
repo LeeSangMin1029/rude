@@ -21,9 +21,8 @@ fn rude_home() -> Result<PathBuf> {
 }
 
 fn run_nightly_rustc(args: &[&str]) -> Option<String> {
-    let mut cmd_args = vec!["+nightly"];
-    cmd_args.extend(args);
-    Command::new("rustc").args(&cmd_args).output().ok()
+    Command::new("rustup").arg("run").arg("nightly").arg("rustc").args(args)
+        .output().ok()
         .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_owned())
@@ -73,10 +72,11 @@ fn install_mir_callgraph() -> Result<PathBuf> {
 
     std::fs::create_dir_all(&bin_dir)?;
     let status = Command::new("cargo")
-        .args(["+nightly", "install", "--git", REPO_URL,
+        .args(["install", "--git", REPO_URL,
                "mir-callgraph", "--root", &base.to_string_lossy(), "--force"])
+        .env("RUSTUP_TOOLCHAIN", "nightly")
         .status()
-        .context("failed to run cargo +nightly install")?;
+        .context("failed to run cargo install mir-callgraph")?;
 
     if !status.success() {
         bail!("mir-callgraph install failed (exit code: {status})");
