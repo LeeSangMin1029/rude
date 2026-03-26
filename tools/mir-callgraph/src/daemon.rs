@@ -226,27 +226,29 @@ fn process(request: &str) -> String {
     #[derive(serde::Deserialize)]
     #[allow(dead_code)]
     struct Req { args_file: String, out_dir: String, db: String }
-
+    let t0 = std::time::Instant::now();
     let req: Req = match serde_json::from_str(request) {
         Ok(r) => r,
         Err(e) => return error_json(&format!("parse: {e}")),
     };
-
+    let t_parse = t0.elapsed();
+    let t1 = std::time::Instant::now();
     let cached: RustcArgs = match crate::types::RustcArgs::load(&req.args_file) {
         Ok(c) => c,
         Err(e) => return error_json(&format!("{e}")),
     };
-
+    let t_load = t1.elapsed();
     for (k, v) in &cached.env { unsafe { env::set_var(k, v); } }
-
     let is_test = cached.args.iter().any(|a| a == "--test");
     let db_path = Some(req.db.clone());
     let crate_name = cached.crate_name.clone();
-
+    let t2 = std::time::Instant::now();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rustc_public::run!(&cached.args, || extract::extract_all(is_test, true, &db_path))
     }));
-
+    let t_rustc = t2.elapsed();
+    eprintln!("[prof:worker] {crate_name}: parse={:.0}us load={:.0}us rustc={:.0}us",
+        t_parse.as_micros(), t_load.as_micros(), t_rustc.as_micros());
     match result {
         Ok(Ok(_)) => format!("{{\"ok\":true,\"crate\":\"{crate_name}\"}}\n"),
         Ok(Err(e)) => error_json(&format!("run: {e:?}")),

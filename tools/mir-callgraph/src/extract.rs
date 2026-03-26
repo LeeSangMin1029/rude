@@ -190,6 +190,7 @@ impl CallExtractor<'_> {
 
 pub fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -> ControlFlow<()> {
     let _span = tracing::info_span!("extract_all").entered();
+    let t_all = std::time::Instant::now();
     let krate = rustc_public::local_crate();
     let crate_name = krate.name.to_string();
 
@@ -269,8 +270,11 @@ pub fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -
 
     // Fill calls per chunk
     fill_chunk_calls(&mut chunks, &edges);
-
+    let t_mir = t_all.elapsed();
+    let t_out = std::time::Instant::now();
     output::write_results(&crate_name, &edges, &chunks, fn_count, json, db_path);
+    let t_db = t_out.elapsed();
+    eprintln!("[prof:extract] {crate_name}: mir={:.0}us db={:.0}us fns={fn_count} chunks={}", t_mir.as_micros(), t_db.as_micros(), chunks.len());
 
     ControlFlow::Continue(())
 }
