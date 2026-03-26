@@ -4,3 +4,4 @@ target/
 profile/
 rude-profile.json
 *.pdb
+rp.json
