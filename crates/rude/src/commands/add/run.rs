@@ -163,6 +163,7 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     Ok(())
 }
 
+
 fn run_sub_workspaces(
     root: &std::path::Path, main_mir_db: &std::path::Path, code_files: &[&PathBuf],
 ) -> Result<()> {
@@ -171,10 +172,8 @@ fn run_sub_workspaces(
     let abs_root = root.canonicalize().unwrap_or(root.to_path_buf());
     for ws in &sub_workspaces {
         let abs_ws = abs_root.join(ws.strip_prefix(root).unwrap_or(ws));
-        let ws_changed: Vec<_> = code_files.iter()
-            .filter(|f| f.starts_with(ws) || f.starts_with(&abs_ws))
-            .cloned().collect();
-        if ws_changed.is_empty() { continue; }
+        let changed = code_files.iter().any(|f| f.starts_with(ws) || f.starts_with(&abs_ws));
+        if !changed { continue; }
         eprintln!("  [mir] sub-workspace: {}", ws.display());
         run_mir_cargo_wrapper(&abs_ws).ok();
         let ws_mir_db = abs_ws.join("target").join("mir-edges").join("mir.db");
@@ -198,9 +197,14 @@ fn run_mir_cargo_wrapper(ws: &std::path::Path) -> Result<()> {
     let bin = rude_intel::mir_edges::find_mir_callgraph_bin(None)?;
     let out_dir = ws.join("target").join("mir-edges");
     std::fs::create_dir_all(&out_dir).ok();
-    // Clean mir-check to force cargo to re-invoke RUSTC_WRAPPER
+    // Full clean to force RUSTC_WRAPPER re-invocation for all crates
     let mir_check_dir = ws.join("target").join("mir-check");
-    if mir_check_dir.exists() { let _ = std::fs::remove_dir_all(&mir_check_dir); }
+    if mir_check_dir.exists() {
+        for _ in 0..3 {
+            if std::fs::remove_dir_all(&mir_check_dir).is_ok() { break; }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
     let abs_out = strip_unc(out_dir.canonicalize().unwrap_or(out_dir.clone()));
     let abs_db = abs_out.join("mir.db");
     let abs_bin = strip_unc(bin.canonicalize().unwrap_or(bin));
