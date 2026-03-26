@@ -1,101 +1,14 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use rude_db::file_index::FileIndex;
 use rude_intel::parse::ParsedChunk;
 
 pub(crate) struct CodeChunkEntry {
     pub chunk: ParsedChunk,
-    pub source: String,
-    pub mtime: u64,
-    pub lang: &'static str,
 }
 
-pub(crate) fn build_callers(entries: &[CodeChunkEntry]) -> HashMap<String, Vec<String>> {
-    let mut reverse: HashMap<String, Vec<String>> = HashMap::new();
-
-    for entry in entries {
-        let caller = &entry.chunk.name;
-        for call in &entry.chunk.calls {
-            let bare = call
-                .rsplit_once("::")
-                .map(|(_, name)| name)
-                .or_else(|| call.rsplit_once('.').map(|(_, name)| name))
-                .unwrap_or(call);
-
-            reverse
-                .entry(bare.to_owned())
-                .or_default()
-                .push(caller.clone());
-        }
-    }
-
-    for callers in reverse.values_mut() {
-        callers.sort();
-        callers.dedup();
-    }
-
-    reverse
-}
-
-// Checks both the full qualified name and the bare (last segment) name
-// to handle calls recorded as either "crate::mod::fn" or just "fn".
-fn find_callers<'a>(
-    reverse: &'a HashMap<String, Vec<String>>,
-    chunk_name: &str,
-) -> Vec<&'a str> {
-    let bare = chunk_name
-        .rsplit_once("::")
-        .map(|(_, name)| name)
-        .unwrap_or(chunk_name);
-
-    let mut result: Vec<&str> = Vec::new();
-
-    if let Some(callers) = reverse.get(bare) {
-        for c in callers {
-            if c != chunk_name {
-                result.push(c.as_str());
-            }
-        }
-    }
-
-    if bare != chunk_name
-        && let Some(callers) = reverse.get(chunk_name)
-    {
-        for c in callers {
-            if c != chunk_name && !result.contains(&c.as_str()) {
-                result.push(c.as_str());
-            }
-        }
-    }
-
-    result.sort();
-    result
-}
-
-#[tracing::instrument(skip_all)]
-pub(crate) fn build_payload(
-    entry: &CodeChunkEntry,
-    now: u64,
-    chunk_total: usize,
-) -> (u64, rude_db::Payload, String) {
-    use rude_db::file_utils::generate_id;
-    let chunk = &entry.chunk;
-    let id = generate_id(&entry.source, chunk.chunk_index);
-
-    let payload = rude_db::Payload {
-        source: entry.source.clone(),
-        tags: Vec::new(),
-        created_at: now,
-        source_modified_at: entry.mtime,
-        chunk_index: chunk.chunk_index as u32,
-        chunk_total: chunk_total as u32,
-        custom: Default::default(),
-    };
-
-    (id, payload, chunk.text.clone())
-}
 
 fn parse_param_types(signature: Option<&str>) -> Vec<(String, String)> {
     signature
@@ -222,7 +135,7 @@ pub(crate) fn ingest_mir(
         let mtime = rude_db::file_utils::get_file_mtime(&file_path).unwrap_or(0);
         let size = rude_db::file_index::get_file_size(&file_path).unwrap_or(0);
         let ext = std::path::Path::new(file_key).extension().and_then(|e| e.to_str()).unwrap_or("");
-        let lang = rude_db::lang_for_ext(ext);
+        let _lang = rude_db::lang_for_ext(ext);
 
         // Read file lines once; needed when sqlite stores empty body (no-body mode).
         let file_lines: Option<Vec<String>> = if indices.iter().any(|&i| deduped[i].body.is_empty()) {
@@ -272,12 +185,7 @@ pub(crate) fn ingest_mir(
                     .find(|p| fl.starts_with(**p)).map(|p| (*p).to_owned()).unwrap_or_default();
             }
 
-            entries.push(CodeChunkEntry {
-                chunk: parsed_chunk,
-                source: source.clone(),
-                mtime,
-                lang,
-            });
+            entries.push(CodeChunkEntry { chunk: parsed_chunk });
         }
 
         file_metadata_map.insert(source.clone(), (mtime, size, chunk_ids));
@@ -291,45 +199,11 @@ pub(crate) fn ingest_mir(
 #[tracing::instrument(skip_all)]
 pub(crate) fn write_chunks(
     entries: &[CodeChunkEntry],
-    engine: &mut rude_db::StorageEngine,
     file_metadata_map: &HashMap<String, (u64, u64, Vec<u64>)>,
     file_idx: &mut FileIndex,
     include_content_hash: bool,
 ) -> Result<u64> {
-    use rude_db::Payload;
-
-    // Remove stale chunks for files that are being re-indexed.
-    for (path, (_, _, new_ids)) in file_metadata_map {
-        if let Some(existing) = file_idx.get_file(path) {
-            let new_id_set: std::collections::HashSet<u64> = new_ids.iter().copied().collect();
-            for &old_id in &existing.chunk_ids {
-                if !new_id_set.contains(&old_id) {
-                    let _ = engine.remove(old_id);
-                }
-            }
-        }
-    }
-
-    let mut chunk_total_map: HashMap<&str, usize> = HashMap::new();
-    for entry in entries {
-        *chunk_total_map.entry(entry.source.as_str()).or_default() += 1;
-    }
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-
-    use rayon::prelude::*;
-    let encoded: Vec<(u64, Payload, String)> = entries.par_iter().map(|entry| {
-        let chunk_total = chunk_total_map.get(entry.source.as_str()).copied().unwrap_or(1);
-        build_payload(entry, now, chunk_total)
-    }).collect();
-    let batch: Vec<(u64, Payload, &str)> = encoded.iter()
-        .map(|(id, payload, text)| (*id, payload.clone(), text.as_str())).collect();
-    engine.insert_batch(&batch).context("Failed to bulk load")?;
-
-    // Update in-memory file index.
+    // Update in-memory file index (chunks table skipped — all reads use kv_cache bincode).
     for (path, (mtime, size, chunk_ids)) in file_metadata_map {
         let hash = if include_content_hash {
             Some(rude_db::file_utils::content_hash(std::path::Path::new(path)).unwrap_or(0))

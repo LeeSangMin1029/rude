@@ -67,7 +67,7 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
 
     println!("Files: {} ({})", code_files.len(), lang_summary(&code_files));
 
-    let mut engine = if db_path.exists() {
+    let engine = if db_path.exists() {
         StorageEngine::open_exclusive(&db_path)
             .with_context(|| format!("Failed to open database at {}", db_path.display()))?
     } else {
@@ -114,7 +114,7 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
 
     println!("Symbols: {} (functions, structs, enums, ...)", entries.len());
     let t_write = std::time::Instant::now();
-    let inserted = write_chunks(&entries, &mut engine, &file_metadata_map, &mut file_idx, true)?;
+    let inserted = write_chunks(&entries, &file_metadata_map, &mut file_idx, true)?;
     println!("\nInserted {inserted} chunks in {:.2}s", t_write.elapsed().as_secs_f64());
 
     // Record files that had no MIR chunks (0-chunk files) in the index so
@@ -140,17 +140,9 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
         .cloned()
         .collect();
     if !deleted.is_empty() {
-        let mut del_count = 0usize;
-        for path in &deleted {
-            if let Some(entry) = file_idx.files.remove(path) {
-                for id in entry.chunk_ids { let _ = engine.remove(id); del_count += 1; }
-            }
-        }
-        if del_count > 0 {
-            engine.checkpoint().ok();
-            file_index::save_file_index(&engine, &file_idx)?;
-            eprintln!("Removed {del_count} chunks from {} deleted file(s)", deleted.len());
-        }
+        for path in &deleted { file_idx.files.remove(path); }
+        file_index::save_file_index(&engine, &file_idx)?;
+        eprintln!("Removed {} deleted file(s) from index", deleted.len());
     }
 
     if is_interrupted() {

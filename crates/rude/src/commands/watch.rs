@@ -169,11 +169,11 @@ fn update_db(
     entries: &[super::add::CodeChunkEntry],
     file_metadata_map: &HashMap<String, (u64, u64, Vec<u64>)>,
 ) -> Result<()> {
-    let mut engine = rude_db::StorageEngine::open_exclusive(db_path)
+    let engine = rude_db::StorageEngine::open_exclusive(db_path)
         .context("failed to open DB for writing")?;
 
     let mut file_idx = file_index::load_file_index(&engine)?;
-    super::add::write_chunks(entries, &mut engine, file_metadata_map, &mut file_idx, false)?;
+    super::add::write_chunks(entries, file_metadata_map, &mut file_idx, false)?;
     engine.checkpoint()?;
     file_index::save_file_index(&engine, &file_idx)?;
 
