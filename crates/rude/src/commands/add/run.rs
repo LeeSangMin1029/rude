@@ -111,7 +111,7 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     let mir_db = rude_intel::mir_edges::mir_db_path(&input_path);
 
     let incremental_crates = prof!("mir_analysis", run_mir_analysis(&input_path, &mir_db, &code_files)?);
-    prof!("sub_workspaces", run_sub_workspaces(&input_path, &mir_db, &code_files)?);
+    prof!("sub_workspaces", run_sub_workspaces(&input_path, &mir_db, &code_files).ok());
 
     let mir_chunks = prof!("load_sqlite", rude_intel::mir_edges::MirEdgeMap::load_chunks_from_sqlite(
         &mir_db, to_crate_filter(&incremental_crates).as_deref(),

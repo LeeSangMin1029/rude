@@ -28,7 +28,7 @@ pub fn load_chunks(path: &Path) -> Result<Vec<ParsedChunk>> {
 }
 
 pub fn load_chunks_from_mir_db(db_path: &Path) -> Result<Vec<ParsedChunk>> {
-    let mir_db = crate::mir_edges::mir_db_path(db_path);
+    let mir_db = crate::mir_edges::mir_db_path(db_path.parent().unwrap_or(db_path));
     if !mir_db.exists() {
         anyhow::bail!("mir.db not found at {}", mir_db.display());
     }
@@ -70,10 +70,10 @@ pub fn save_chunks_cache_for(db: &Path, chunks: &[ParsedChunk], changed_crates: 
             if let Ok(Some(existing_bytes)) = engine.get_cache(&key) {
                 if existing_bytes.first() == Some(&CHUNKS_CACHE_VERSION) {
                     if let Ok((existing, _)) = bincode::decode_from_slice::<Vec<ParsedChunk>, _>(&existing_bytes[1..], config) {
-                        let new_ids: std::collections::HashSet<(&str, Option<(usize, usize)>)> =
-                            crate_chunks.iter().map(|c| (c.file.as_str(), c.lines)).collect();
+                        let new_names: std::collections::HashSet<(&str, &str)> =
+                            crate_chunks.iter().map(|c| (c.file.as_str(), c.name.as_str())).collect();
                         let retained: Vec<ParsedChunk> = existing.into_iter()
-                            .filter(|c| !new_ids.contains(&(c.file.as_str(), c.lines)))
+                            .filter(|c| !new_names.contains(&(c.file.as_str(), c.name.as_str())))
                             .collect();
                         if !retained.is_empty() {
                             crate_chunks.extend(retained);
