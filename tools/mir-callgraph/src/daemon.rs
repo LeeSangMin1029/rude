@@ -7,6 +7,7 @@ use crate::types::RustcArgs;
 
 const MAX_REQUESTS: usize = 100;
 const IDLE_TIMEOUT_MS: u32 = 300_000;
+const WORKER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 pub fn run(args: &[String]) {
     let pipe_name = args.iter()
@@ -31,42 +32,65 @@ pub fn run(args: &[String]) {
     let exe = std::env::current_exe().unwrap();
     let mut worker: Option<Worker> = spawn_worker(&exe).ok();
 
+    let result = supervisor_loop(&pipe, &exe, &mut worker);
+    // Cleanup: kill worker on exit
+    if let Some(mut w) = worker {
+        let _ = w.child.kill();
+        let _ = w.child.wait();
+    }
+    if let Err(e) = result {
+        eprintln!("[supervisor] exit: {e}");
+    }
+}
+
+fn supervisor_loop(
+    pipe: &pipe::PipeHandle, exe: &Path, worker: &mut Option<Worker>,
+) -> Result<(), String> {
     loop {
-        match pipe::wait_connect(&pipe, IDLE_TIMEOUT_MS) {
-            Ok(false) => {
-                eprintln!("[supervisor] idle timeout, exiting");
-                break;
-            }
+        match pipe::wait_connect(pipe, IDLE_TIMEOUT_MS) {
+            Ok(false) => { eprintln!("[supervisor] idle timeout, exiting"); return Ok(()); }
             Err(e) => { eprintln!("[supervisor] connect error: {e}"); continue; }
             Ok(true) => {}
         }
-        let request = match pipe::read_line(&pipe) {
+        let request = match pipe::read_line(pipe) {
+            Ok(s) if s.is_empty() => { pipe::disconnect(pipe); continue; }
             Ok(s) => s,
-            Err(e) => { eprintln!("[supervisor] read error: {e}"); pipe::disconnect(&pipe); continue; }
+            Err(e) => { eprintln!("[supervisor] read error: {e}"); pipe::disconnect(pipe); continue; }
         };
-
-        if worker.as_mut().map_or(true, |w| !w.is_alive()) {
-            eprintln!("[supervisor] worker dead, respawning");
-            worker = spawn_worker(&exe).ok();
-        }
-
+        ensure_worker(worker, exe);
         let response = match worker.as_mut() {
-            Some(w) => match w.send(&request) {
+            Some(w) => match w.send_with_timeout(&request, WORKER_TIMEOUT) {
                 Ok(r) => r,
                 Err(e) => {
                     eprintln!("[supervisor] worker error: {e}, respawning");
-                    worker = spawn_worker(&exe).ok();
+                    kill_worker(worker);
+                    *worker = spawn_worker(exe).ok();
                     match worker.as_mut() {
-                        Some(w2) => w2.send(&request).unwrap_or_else(|e2| error_json(&format!("retry failed: {e2}"))),
+                        Some(w2) => w2.send_with_timeout(&request, WORKER_TIMEOUT)
+                            .unwrap_or_else(|e2| error_json(&format!("retry failed: {e2}"))),
                         None => error_json("failed to spawn worker"),
                     }
                 }
             },
             None => error_json("no worker"),
         };
+        let _ = pipe::write(pipe, &response);
+        pipe::flush_and_disconnect(pipe);
+    }
+}
 
-        let _ = pipe::write(&pipe, &response);
-        pipe::flush_and_disconnect(&pipe);
+fn ensure_worker(worker: &mut Option<Worker>, exe: &Path) {
+    if worker.as_mut().map_or(true, |w| !w.is_alive()) {
+        eprintln!("[supervisor] worker dead, respawning");
+        kill_worker(worker);
+        *worker = spawn_worker(exe).ok();
+    }
+}
+
+fn kill_worker(worker: &mut Option<Worker>) {
+    if let Some(mut w) = worker.take() {
+        let _ = w.child.kill();
+        let _ = w.child.wait();
     }
 }
 
@@ -102,16 +126,16 @@ fn spawn_worker(exe: &Path) -> Result<Worker, String> {
 }
 
 impl Worker {
-    fn send(&mut self, request: &str) -> Result<String, String> {
+    fn send_with_timeout(&mut self, request: &str, _timeout: std::time::Duration) -> Result<String, String> {
         let req = if request.ends_with('\n') { request.to_owned() } else { format!("{request}\n") };
         self.stdin.write_all(req.as_bytes()).map_err(|e| format!("write: {e}"))?;
         self.stdin.flush().map_err(|e| format!("flush: {e}"))?;
         let mut response = String::new();
-        self.stdout.read_line(&mut response).map_err(|e| format!("read: {e}"))?;
-        if response.is_empty() {
-            return Err("worker closed stdout".into());
+        match self.stdout.read_line(&mut response) {
+            Ok(0) => Err("worker closed stdout".into()),
+            Ok(_) => Ok(response),
+            Err(e) => Err(format!("read: {e}")),
         }
-        Ok(response)
     }
     fn is_alive(&mut self) -> bool {
         self.child.try_wait().ok().flatten().is_none()
@@ -121,7 +145,7 @@ impl Worker {
 pub fn worker_run() {
     eprintln!("[worker] starting (pid {})", std::process::id());
     let stdin = std::io::stdin();
-    let stdout = std::io::stdout();
+    let mut stdout = std::io::stdout().lock();
     let mut count = 0usize;
     for line in stdin.lock().lines() {
         let request = match line {
@@ -133,9 +157,9 @@ pub fn worker_run() {
             Ok(r) => r,
             Err(_) => error_json("panic"),
         };
-        let resp = if response.ends_with('\n') { response } else { format!("{response}\n") };
-        if writeln!(stdout.lock(), "{}", resp.trim_end()).is_err() { break; }
-        if stdout.lock().flush().is_err() { break; }
+        let resp = response.trim_end();
+        if writeln!(stdout, "{resp}").is_err() { break; }
+        if stdout.flush().is_err() { break; }
         count += 1;
         if count >= MAX_REQUESTS {
             eprintln!("[worker] max requests ({MAX_REQUESTS}), exiting");
