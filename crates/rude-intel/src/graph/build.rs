@@ -142,10 +142,15 @@ impl CallGraph {
     ) -> Self {
         let t0 = std::time::Instant::now();
         let index = ChunkIndex::build(&chunks);
-        let (adj, label) = match (mir_edges, incremental) {
+        let mir_db_path = crate::mir_edges::mir_db_path(db.parent().unwrap_or(db));
+        let fallback_mir = if mir_edges.is_none() && incremental.is_none() && mir_db_path.exists() {
+            MirEdgeMap::from_sqlite(&mir_db_path, None).ok()
+        } else { None };
+        let effective = mir_edges.or(fallback_mir.as_ref());
+        let (adj, label) = match (effective, incremental) {
             (_, Some(inc)) => {
                 let adj = edge_resolve::resolve_incremental(
-                    &chunks, &index, mir_edges, inc.changed_crates, db, inc.mir_edge_dir,
+                    &chunks, &index, effective, inc.changed_crates, db, inc.mir_edge_dir,
                 );
                 (adj, "mir-incremental")
             }
