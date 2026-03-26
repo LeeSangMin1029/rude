@@ -133,6 +133,9 @@ pub fn run_batch(manifest: PathBuf) -> Result<()> {
             }
         })?;
     }
+    // Incremental update after all edits — graph reflects new code
+    let db_parent = crate::db().parent().unwrap_or(Path::new(".")).to_path_buf();
+    crate::commands::add::run(db_parent, &[])?;
     Ok(())
 }
 
