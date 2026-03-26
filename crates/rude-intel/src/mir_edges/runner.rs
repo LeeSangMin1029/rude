@@ -251,6 +251,19 @@ pub fn run_mir_direct(
     };
     kill_previous_test_bg(&out_dir);
 
+    // Try daemon first (DLL already loaded → fast)
+    {
+        let mut all_ok = true;
+        for args_file in &lib_files {
+            if try_daemon(project_root, args_file, &out_dir, &mir_db).is_none() {
+                all_ok = false;
+                break;
+            }
+        }
+        if all_ok { return Ok(()); }
+    }
+
+    // Fallback: subprocess (slow DLL loading)
     let mut had_error = false;
     {
         let mut lib_children: Vec<(PathBuf, std::process::Child)> = Vec::new();
@@ -283,7 +296,91 @@ pub fn run_mir_direct(
     }
 
     // Test builds skipped in direct mode — lib edges are sufficient.
-    // Test-only functions are captured during full `cargo check --tests` (initial build).
+    Ok(())
+}
 
+fn daemon_pipe_name(project_root: &Path) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    project_root.canonicalize().unwrap_or(project_root.to_path_buf()).hash(&mut h);
+    format!(r"\\.\pipe\rude-mir-{:016x}", h.finish())
+}
+
+fn try_daemon(
+    project_root: &Path, args_file: &Path, out_dir: &Path, mir_db: &Path,
+) -> Option<()> {
+    let pipe_name = daemon_pipe_name(project_root);
+    let request = format!(
+        "{{\"args_file\":\"{}\",\"out_dir\":\"{}\",\"db\":\"{}\"}}\n",
+        args_file.to_string_lossy().replace('\\', "\\\\"),
+        out_dir.to_string_lossy().replace('\\', "\\\\"),
+        mir_db.to_string_lossy().replace('\\', "\\\\"),
+    );
+
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn CreateFileW(
+                name: *const u16, access: u32, share: u32, attrs: *const std::ffi::c_void,
+                disposition: u32, flags: u32, template: *const std::ffi::c_void,
+            ) -> *mut std::ffi::c_void;
+            fn ReadFile(
+                file: *mut std::ffi::c_void, buf: *mut u8, len: u32,
+                read: *mut u32, overlapped: *const std::ffi::c_void,
+            ) -> i32;
+            fn WriteFile(
+                file: *mut std::ffi::c_void, buf: *const u8, len: u32,
+                written: *mut u32, overlapped: *const std::ffi::c_void,
+            ) -> i32;
+            fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+        }
+        const GENERIC_READ: u32 = 0x80000000;
+        const GENERIC_WRITE: u32 = 0x40000000;
+        const OPEN_EXISTING: u32 = 3;
+        const INVALID_HANDLE: *mut std::ffi::c_void = -1isize as *mut _;
+
+        let wide: Vec<u16> = pipe_name.encode_utf16().chain(std::iter::once(0)).collect();
+        let handle = unsafe {
+            CreateFileW(wide.as_ptr(), GENERIC_READ | GENERIC_WRITE, 0, std::ptr::null(), OPEN_EXISTING, 0, std::ptr::null())
+        };
+        if handle == INVALID_HANDLE { return None; } // daemon not running
+
+        let _span = tracing::info_span!("daemon_rpc").entered();
+        let bytes = request.as_bytes();
+        let mut written = 0u32;
+        unsafe { WriteFile(handle, bytes.as_ptr(), bytes.len() as u32, &mut written, std::ptr::null()); }
+
+        let mut buf = vec![0u8; 65536];
+        let mut read = 0u32;
+        unsafe { ReadFile(handle, buf.as_mut_ptr(), buf.len() as u32, &mut read, std::ptr::null()); }
+        unsafe { CloseHandle(handle); }
+
+        let response = String::from_utf8_lossy(&buf[..read as usize]);
+        if response.contains("\"ok\":true") {
+            eprintln!("  [mir] daemon: {}", response.trim());
+            return Some(());
+        }
+        eprintln!("  [mir] daemon error: {}", response.trim());
+    }
+    None
+}
+
+pub fn start_daemon(project_root: &Path, mir_callgraph_bin: Option<&Path>) -> Result<()> {
+    let bin = find_mir_callgraph_bin(mir_callgraph_bin)?;
+    let pipe_name = daemon_pipe_name(project_root);
+    let out_dir = project_root.join("target").join("mir-edges");
+    let mut cmd = Command::new(&bin);
+    add_nightly_path(&mut cmd);
+    cmd.arg("--daemon").arg("--pipe").arg(&pipe_name)
+        .env("MIR_CALLGRAPH_OUT", &out_dir)
+        .env("MIR_CALLGRAPH_DB", super::sqlite::mir_db_path(project_root))
+        .env("MIR_CALLGRAPH_JSON", "1")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit());
+    cmd.spawn().context("failed to start daemon")?;
+    // daemon이 pipe를 열 때까지 잠시 대기 — ConnectNamedPipe 전에 CreateFile하면 실패
+    std::thread::sleep(std::time::Duration::from_millis(100));
     Ok(())
 }
