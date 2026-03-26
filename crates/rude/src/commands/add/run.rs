@@ -165,15 +165,11 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
 
 
 fn run_sub_workspaces(
-    root: &std::path::Path, main_mir_db: &std::path::Path, code_files: &[&PathBuf],
+    root: &std::path::Path, main_mir_db: &std::path::Path, _code_files: &[&PathBuf],
 ) -> Result<()> {
     let sub_workspaces = find_sub_workspaces(root);
-    if sub_workspaces.is_empty() { return Ok(()); }
-    let abs_root = root.canonicalize().unwrap_or(root.to_path_buf());
     for ws in &sub_workspaces {
-        let abs_ws = abs_root.join(ws.strip_prefix(root).unwrap_or(ws));
-        let changed = code_files.iter().any(|f| f.starts_with(ws) || f.starts_with(&abs_ws));
-        if !changed { continue; }
+        let abs_ws = ws.canonicalize().unwrap_or(ws.clone());
         eprintln!("  [mir] sub-workspace: {}", ws.display());
         run_mir_cargo_wrapper(&abs_ws).ok();
         let ws_mir_db = abs_ws.join("target").join("mir-edges").join("mir.db");
@@ -226,39 +222,30 @@ fn run_mir_cargo_wrapper(ws: &std::path::Path) -> Result<()> {
 }
 
 fn find_sub_workspaces(root: &std::path::Path) -> Vec<PathBuf> {
-    let mut result = Vec::new();
-    let Ok(entries) = std::fs::read_dir(root) else { return result };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() { continue; }
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if name == "target" || name.starts_with('.') { continue; }
-        scan_for_workspaces(&path, &mut result, 2);
-    }
-    result
+    let main_ws_root = cargo_workspace_root(root);
+    let git_output = std::process::Command::new("git")
+        .args(["ls-files", "--cached", "--others", "--exclude-standard", "*/Cargo.toml"])
+        .current_dir(root).output().ok();
+    let Some(out) = git_output.filter(|o| o.status.success()) else { return Vec::new() };
+    let main = main_ws_root.unwrap_or_default();
+    String::from_utf8_lossy(&out.stdout).lines()
+        .filter_map(|line| {
+            let parent = PathBuf::from(line).parent()?.to_path_buf();
+            if parent.as_os_str().is_empty() { return None; }
+            let dir = root.join(&parent);
+            let ws = cargo_workspace_root(&dir)?;
+            if ws != main { Some(dir) } else { None }
+        })
+        .collect()
 }
 
-fn scan_for_workspaces(dir: &std::path::Path, result: &mut Vec<PathBuf>, depth: usize) {
-    if depth == 0 { return; }
-    let cargo_toml = dir.join("Cargo.toml");
-    if cargo_toml.exists() {
-        if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
-            if content.contains("[workspace]") && !content.contains("workspace.members") {
-                result.push(dir.to_path_buf());
-                return;
-            }
-        }
-    }
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name != "target" && !name.starts_with('.') {
-                scan_for_workspaces(&path, result, depth - 1);
-            }
-        }
-    }
+fn cargo_workspace_root(dir: &std::path::Path) -> Option<String> {
+    let out = std::process::Command::new("cargo")
+        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .current_dir(dir).output().ok()?;
+    if !out.status.success() { return None; }
+    let meta: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    meta.get("workspace_root")?.as_str().map(|s| s.replace('\\', "/").to_lowercase())
 }
 
 
