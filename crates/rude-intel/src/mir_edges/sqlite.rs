@@ -9,6 +9,18 @@ pub fn mir_db_path(project_root: &Path) -> PathBuf {
     project_root.join("target").join("mir-edges").join("mir.db")
 }
 
+pub fn merge_mir_db(main_db: &Path, sub_db: &Path) -> Result<()> {
+    let conn = rusqlite::Connection::open(main_db)?;
+    let sub_path = sub_db.display().to_string().replace('\\', "/");
+    conn.execute_batch(&format!(
+        "ATTACH DATABASE '{sub_path}' AS sub;
+         INSERT OR REPLACE INTO mir_edges SELECT * FROM sub.mir_edges;
+         INSERT OR REPLACE INTO mir_chunks SELECT * FROM sub.mir_chunks;
+         DETACH DATABASE sub;"
+    ))?;
+    Ok(())
+}
+
 pub fn clear_mir_db(project_root: &Path, crates: &[&str]) -> Result<()> {
     let db_path = mir_db_path(project_root);
     if !db_path.exists() { return Ok(()); }

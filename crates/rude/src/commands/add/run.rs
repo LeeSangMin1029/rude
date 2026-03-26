@@ -102,6 +102,7 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     let mir_db = rude_intel::mir_edges::mir_db_path(&input_path);
 
     let incremental_crates = run_mir_analysis(&input_path, &mir_db, &code_files)?;
+    run_sub_workspaces(&input_path, &mir_db, &code_files)?;
 
     let _load_span = tracing::info_span!("load_chunks_sqlite").entered();
     let mir_chunks = rude_intel::mir_edges::MirEdgeMap::load_chunks_from_sqlite(
@@ -161,6 +162,80 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
 
     Ok(())
 }
+
+fn run_sub_workspaces(
+    root: &std::path::Path, main_mir_db: &std::path::Path, code_files: &[&PathBuf],
+) -> Result<()> {
+    let sub_workspaces = find_sub_workspaces(root);
+    if sub_workspaces.is_empty() { return Ok(()); }
+    let abs_root = root.canonicalize().unwrap_or(root.to_path_buf());
+    for ws in &sub_workspaces {
+        let abs_ws = abs_root.join(ws.strip_prefix(root).unwrap_or(ws));
+        let ws_changed: Vec<_> = code_files.iter()
+            .filter(|f| f.starts_with(ws) || f.starts_with(&abs_ws))
+            .cloned().collect();
+        if ws_changed.is_empty() { continue; }
+        let ws_mir_db = rude_intel::mir_edges::mir_db_path(&abs_ws);
+        let has_cache = ws_mir_db.exists();
+        if !has_cache {
+            eprintln!("  [mir] sub-workspace: {} (full)", ws.display());
+            rude_intel::mir_edges::run_mir_callgraph(&abs_ws, None).ok();
+        } else {
+            let changed = rude_intel::mir_edges::detect_changed_crates(&abs_ws, &ws_changed);
+            if changed.is_empty() { continue; }
+            let refs: Vec<&str> = changed.iter().map(|s| s.as_str()).collect();
+            eprintln!("  [mir] sub-workspace: {} ({} crate(s))", ws.display(), refs.len());
+            rude_intel::mir_edges::clear_mir_db(&abs_ws, &refs).ok();
+            rude_intel::mir_edges::run_mir_direct(&abs_ws, None, &refs, true).ok();
+        }
+        if ws_mir_db.exists() {
+            rude_intel::mir_edges::merge_mir_db(main_mir_db, &ws_mir_db).ok();
+        }
+    }
+    Ok(())
+}
+
+fn find_sub_workspaces(root: &std::path::Path) -> Vec<PathBuf> {
+    let mut result = Vec::new();
+    let Ok(entries) = std::fs::read_dir(root) else { return result };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() { continue; }
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name == "target" || name.starts_with('.') { continue; }
+        scan_for_workspaces(&path, &mut result, 2);
+    }
+    result
+}
+
+fn scan_for_workspaces(dir: &std::path::Path, result: &mut Vec<PathBuf>, depth: usize) {
+    if depth == 0 { return; }
+    let cargo_toml = dir.join("Cargo.toml");
+    if cargo_toml.exists() {
+        if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
+            // Standalone workspace with own [workspace] section
+            if content.contains("[workspace]") && !content.contains("workspace.members") {
+                // Skip rustc_private projects (require special nightly handling)
+                if content.contains("rustc_private") {
+                    return;
+                }
+                result.push(dir.to_path_buf());
+                return;
+            }
+        }
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name != "target" && !name.starts_with('.') {
+                scan_for_workspaces(&path, result, depth - 1);
+            }
+        }
+    }
+}
+
 
 fn to_crate_filter(crates: &[String]) -> Option<Vec<&str>> {
     if crates.is_empty() { None } else { Some(crates.iter().map(String::as_str).collect()) }
