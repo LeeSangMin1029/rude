@@ -27,8 +27,8 @@ pub fn clear_mir_db(project_root: &Path, crates: &[&str]) -> Result<()> {
     let conn = rusqlite::Connection::open(&db_path)
         .with_context(|| format!("failed to open mir.db: {}", db_path.display()))?;
     conn.busy_timeout(std::time::Duration::from_secs(5)).ok();
-    // Use DELETE journal mode to avoid WAL lock contention with subprocess
     conn.pragma_update(None, "journal_mode", "delete").ok();
+    conn.pragma_update(None, "synchronous", "off").ok();
     if crates.is_empty() {
         conn.execute_batch("DELETE FROM mir_edges; DELETE FROM mir_chunks;").ok();
     } else {

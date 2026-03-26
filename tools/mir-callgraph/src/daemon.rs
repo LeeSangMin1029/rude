@@ -237,8 +237,6 @@ fn process(request: &str) -> String {
         Err(e) => return error_json(&format!("{e}")),
     };
 
-    // SAFETY: worker processes requests sequentially, one thread at a time.
-    // CARGO_* vars must be set before rustc_public::run! for env!() macro expansion.
     for (k, v) in &cached.env { unsafe { env::set_var(k, v); } }
 
     let is_test = cached.args.iter().any(|a| a == "--test");

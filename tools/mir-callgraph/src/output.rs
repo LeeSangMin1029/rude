@@ -34,6 +34,7 @@ fn write_sqlite(db_path: &str, crate_name: &str, edges: &[CallEdge], chunks: &[M
         Err(e) => { eprintln!("[mir-callgraph] failed to open DB {db_path}: {e}"); return; }
     };
     let _ = conn.pragma_update(None, "journal_mode", "wal");
+    let _ = conn.pragma_update(None, "synchronous", "off");
     conn.busy_timeout(std::time::Duration::from_secs(30)).ok();
 
     let _ = conn.execute_batch("

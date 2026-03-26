@@ -270,7 +270,6 @@ pub fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -
     // Fill calls per chunk
     fill_chunk_calls(&mut chunks, &edges);
 
-    // Output
     output::write_results(&crate_name, &edges, &chunks, fn_count, json, db_path);
 
     ControlFlow::Continue(())
