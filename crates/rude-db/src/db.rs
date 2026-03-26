@@ -1,9 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, params};
-
-use crate::payload::Payload;
 
 pub struct StorageEngine {
     conn: Connection,
@@ -11,167 +9,58 @@ pub struct StorageEngine {
 
 impl StorageEngine {
     pub fn open(dir: impl AsRef<Path>) -> Result<Self> {
-        let dir = dir.as_ref().to_path_buf();
-        let db_path = dir.join("store.db");
-        if !db_path.exists() {
-            bail!("database not found: {}", db_path.display());
-        }
-        Self::open_impl(dir, false)
+        let db_path = dir.as_ref().join("store.db");
+        if !db_path.exists() { bail!("database not found: {}", db_path.display()); }
+        let conn = Connection::open(&db_path)
+            .with_context(|| format!("failed to open database: {}", db_path.display()))?;
+        Self::apply_pragmas(&conn)?;
+        Ok(Self { conn })
     }
 
     pub fn open_exclusive(dir: impl AsRef<Path>) -> Result<Self> {
-        let dir = dir.as_ref().to_path_buf();
-        std::fs::create_dir_all(&dir)
+        let dir = dir.as_ref();
+        std::fs::create_dir_all(dir)
             .with_context(|| format!("failed to create directory: {}", dir.display()))?;
-        Self::open_impl(dir, true)
-    }
-
-    fn open_impl(dir: PathBuf, init_schema: bool) -> Result<Self> {
         let db_path = dir.join("store.db");
         let conn = Connection::open(&db_path)
             .with_context(|| format!("failed to open database: {}", db_path.display()))?;
         Self::apply_pragmas(&conn)?;
-        if init_schema {
-            Self::ensure_schema(&conn)?;
-        }
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS kv_cache (key TEXT PRIMARY KEY, value BLOB NOT NULL);",
+        ).context("failed to create schema")?;
         Ok(Self { conn })
     }
 
     fn apply_pragmas(conn: &Connection) -> Result<()> {
         conn.execute_batch(
-            "PRAGMA journal_mode = WAL;
-             PRAGMA synchronous = NORMAL;
-             PRAGMA cache_size = -64000;
-             PRAGMA mmap_size = 268435456;
-             PRAGMA temp_store = MEMORY;
-             PRAGMA busy_timeout = 5000;",
-        )
-        .context("failed to set pragmas")?;
-        Ok(())
+            "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA cache_size=-64000;
+             PRAGMA mmap_size=268435456; PRAGMA temp_store=MEMORY; PRAGMA busy_timeout=5000;",
+        ).context("failed to set pragmas")
     }
 
-    fn ensure_schema(conn: &Connection) -> Result<()> {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS chunks (
-                 id        INTEGER PRIMARY KEY,
-                 source    TEXT NOT NULL,
-                 tags      TEXT NOT NULL DEFAULT '[]',
-                 custom    TEXT NOT NULL DEFAULT '{}',
-                 created_at       INTEGER NOT NULL DEFAULT 0,
-                 source_modified_at INTEGER NOT NULL DEFAULT 0,
-                 chunk_index      INTEGER NOT NULL DEFAULT 0,
-                 chunk_total      INTEGER NOT NULL DEFAULT 0,
-                 text      TEXT NOT NULL DEFAULT ''
-             );
-             CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source);
-             CREATE TABLE IF NOT EXISTS kv_cache (
-                 key   TEXT PRIMARY KEY,
-                 value BLOB NOT NULL
-             );",
-        )
-        .context("failed to create schema")?;
-        Ok(())
-    }
-
-    pub fn insert(&mut self, id: u64, payload: &Payload, text: &str) -> Result<()> {
-        self.insert_batch(&[(id, payload.clone(), text)])
-    }
-
-    pub fn insert_batch(&mut self, batch: &[(u64, Payload, &str)]) -> Result<()> {
-        if batch.is_empty() {
-            return Ok(());
-        }
-
-        let tx = self.conn.transaction().context("failed to begin transaction")?;
-
-        {
-            let mut stmt = tx
-                .prepare_cached(
-                    "INSERT OR REPLACE INTO chunks
-                         (id, source, tags, custom, created_at, source_modified_at,
-                          chunk_index, chunk_total, text)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                )
-                .context("failed to prepare insert")?;
-
-            for (id, payload, text) in batch {
-                let tags_json = serde_json::to_string(&payload.tags)
-                    .context("failed to serialize tags")?;
-                let custom_json = serde_json::to_string(&payload.custom)
-                    .context("failed to serialize custom")?;
-
-                stmt.execute(params![
-                    *id as i64,
-                    payload.source,
-                    tags_json,
-                    custom_json,
-                    payload.created_at as i64,
-                    payload.source_modified_at as i64,
-                    payload.chunk_index,
-                    payload.chunk_total,
-                    *text,
-                ])
-                .context("failed to insert chunk")?;
-            }
-        }
-
-        tx.commit().context("failed to commit transaction")?;
-        Ok(())
-    }
-
-    pub fn remove(&mut self, id: u64) -> Result<()> {
-        self.conn
-            .execute("DELETE FROM chunks WHERE id = ?1", params![id as i64])
-            .context("failed to remove chunk")?;
-        Ok(())
-    }
-
-    /// WAL checkpoint — forces SQLite to merge the WAL into the main DB file.
     pub fn checkpoint(&self) -> Result<()> {
-        self.conn
-            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
-            .context("failed to checkpoint WAL")?;
-        Ok(())
+        self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").context("checkpoint failed")
     }
 
     pub fn get_cache(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        // Ensure kv_cache table exists (for databases created before this schema addition)
-        self.conn
-            .execute(
-                "CREATE TABLE IF NOT EXISTS kv_cache (key TEXT PRIMARY KEY, value BLOB NOT NULL)",
-                [],
-            )
-            .ok();
-
-        let mut stmt = self
-            .conn
-            .prepare_cached("SELECT value FROM kv_cache WHERE key = ?1")
-            .context("failed to prepare kv_cache SELECT")?;
-        let mut rows = stmt
-            .query_map(params![key], |row| row.get::<_, Vec<u8>>(0))
-            .context("failed to query kv_cache")?;
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS kv_cache (key TEXT PRIMARY KEY, value BLOB NOT NULL)", [],
+        ).ok();
+        let mut stmt = self.conn.prepare_cached("SELECT value FROM kv_cache WHERE key = ?1")?;
+        let mut rows = stmt.query_map(params![key], |row| row.get::<_, Vec<u8>>(0))?;
         match rows.next() {
-            Some(v) => Ok(Some(v.context("failed to read kv_cache value")?)),
+            Some(v) => Ok(Some(v?)),
             None => Ok(None),
         }
     }
 
     pub fn set_cache(&self, key: &str, data: &[u8]) -> Result<()> {
-        // Ensure kv_cache table exists
-        self.conn
-            .execute(
-                "CREATE TABLE IF NOT EXISTS kv_cache (key TEXT PRIMARY KEY, value BLOB NOT NULL)",
-                [],
-            )
-            .ok();
-
-        self.conn
-            .execute(
-                "INSERT OR REPLACE INTO kv_cache (key, value) VALUES (?1, ?2)",
-                params![key, data],
-            )
-            .context("failed to set kv_cache value")?;
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS kv_cache (key TEXT PRIMARY KEY, value BLOB NOT NULL)", [],
+        ).ok();
+        self.conn.execute(
+            "INSERT OR REPLACE INTO kv_cache (key, value) VALUES (?1, ?2)", params![key, data],
+        )?;
         Ok(())
     }
-
 }
