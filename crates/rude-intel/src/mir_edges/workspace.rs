@@ -13,13 +13,12 @@ pub fn detect_changed_crates(project_root: &Path, changed_files: &[impl AsRef<Pa
             let toml = d.join("Cargo.toml");
             if toml.exists() {
                 if let Ok(content) = std::fs::read_to_string(&toml) {
-                    // package name (e.g. "rude")
-                    if let Some(name) = extract_package_name(&content) {
-                        crates.insert(name.replace('-', "_"));
-                    }
-                    // lib name if different (e.g. "rude_cli")
+                    // lib name takes priority (matches rustc --crate-name)
                     if let Some(lib) = extract_lib_name(&content) {
                         crates.insert(lib.replace('-', "_"));
+                    } else if let Some(name) = extract_package_name(&content) {
+                        // no [lib] section → use package name (default crate name)
+                        crates.insert(name.replace('-', "_"));
                     }
                 }
                 break;
