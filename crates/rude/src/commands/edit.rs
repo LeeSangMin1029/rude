@@ -92,7 +92,12 @@ fn splice_file(path: &Path, f: impl FnOnce(&mut Vec<String>)) -> Result<()> {
         f(&mut lines);
         let refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
         Ok(join_lines(&refs, trailing))
-    })
+    })?;
+    // Invalidate graph cache so next locate_symbol uses fresh line numbers
+    if let Ok(engine) = rude_db::StorageEngine::open(crate::db()) {
+        let _ = engine.set_cache("graph", &[]);
+    }
+    Ok(())
 }
 
 fn op_to_splice<'a>(start: usize, end: usize, op: &'a Op, len: usize) -> (std::ops::Range<usize>, Vec<&'a str>) {
