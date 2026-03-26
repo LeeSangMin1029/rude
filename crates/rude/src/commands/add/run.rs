@@ -158,7 +158,7 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
         engine.checkpoint().ok();
         drop(engine);
         let mir_edges = load_mir_edges(&mir_db, &mir_out_dir, &incremental_crates);
-        prebuild_caches(&db_path, &entries, mir_edges.as_ref(), &mir_out_dir);
+        prebuild_caches(&db_path, &entries, mir_edges.as_ref(), &mir_out_dir, &incremental_crates);
     }
 
     Ok(())
@@ -251,11 +251,14 @@ fn prebuild_caches(
     new_entries: &[CodeChunkEntry],
     mir_edges: Option<&rude_intel::mir_edges::MirEdgeMap>,
     mir_edge_dir: &std::path::Path,
+    incremental_crates: &[String],
 ) {
     let chunks = merge_chunks_cache(db_path, new_entries);
     eprintln!("    [cache] {} chunks", chunks.len());
 
-    rude_intel::loader::save_chunks_cache(db_path, &chunks);
+    let changed: Vec<&str> = incremental_crates.iter().map(|s| s.as_str()).collect();
+    let filter = if changed.is_empty() { None } else { Some(changed.as_slice()) };
+    rude_intel::loader::save_chunks_cache_for(db_path, &chunks, filter);
 
     let incremental = mir_edges.map(|_| rude_intel::graph::IncrementalArgs {
         changed_crates: &[],
