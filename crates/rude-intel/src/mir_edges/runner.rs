@@ -8,6 +8,8 @@ use super::workspace::{all_extern_paths_valid, is_args_cache_stale};
 
 const REPO_URL: &str = "https://github.com/LeeSangMin1029/rude";
 
+
+
 fn mir_callgraph_bin_name() -> &'static str {
     if cfg!(windows) { "mir-callgraph.exe" } else { "mir-callgraph" }
 }
@@ -252,10 +254,6 @@ pub fn run_mir_direct(
     let mut had_error = false;
     {
         let mut lib_children: Vec<(PathBuf, std::process::Child)> = Vec::new();
-        {
-            let _span = tracing::info_span!("nightly_path").entered();
-            let _ = nightly_sysroot_bin(); // 캐시 워밍
-        }
         for args_file in &lib_files {
             let _span = tracing::info_span!("lib_spawn").entered();
             let mut cmd = Command::new(&bin);
