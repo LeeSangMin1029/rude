@@ -83,20 +83,15 @@ fn install_mir_callgraph() -> Result<PathBuf> {
 }
 
 fn find_mir_callgraph_bin(override_path: Option<&Path>) -> Result<PathBuf> {
-    // 1. Explicit override
-    if let Some(p) = override_path {
-        return Ok(p.to_path_buf());
-    }
-
-    // 2. Sibling to current exe
+    if let Some(p) = override_path { return Ok(p.to_path_buf()); }
     if let Ok(exe) = std::env::current_exe() {
         let sibling = exe.with_file_name(mir_callgraph_bin_name());
-        if sibling.exists() {
-            return Ok(sibling);
-        }
+        if sibling.exists() { return Ok(sibling); }
     }
-
-    // 3. Auto-install via cargo install --git
+    // Cached binary — skip nightly version check for speed
+    let base = rude_home()?;
+    let cached = base.join("bin").join(mir_callgraph_bin_name());
+    if cached.exists() { return Ok(cached); }
     install_mir_callgraph()
 }
 
@@ -301,7 +296,9 @@ pub fn run_mir_direct(
                 .arg("--args-file").arg(args_file)
                 .env("MIR_CALLGRAPH_OUT", &out_dir)
                 .env("MIR_CALLGRAPH_DB", &mir_db)
-                .env("MIR_CALLGRAPH_JSON", "1");
+                .env("MIR_CALLGRAPH_JSON", "1")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
             match cmd.spawn() {
                 Ok(child) => {
                     test_pids.push(child.id());
