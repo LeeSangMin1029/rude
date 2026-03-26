@@ -181,22 +181,30 @@ fn run_sub_workspaces(
     let abs_root = root.canonicalize().unwrap_or(root.to_path_buf());
     for ws in &sub_workspaces {
         let abs_ws = ws.canonicalize().unwrap_or(abs_root.join(ws));
-        // Skip if no files changed in this sub-workspace
+        let ws_mir_db = abs_ws.join("target").join("mir-edges").join("mir.db");
         let has_changes = code_files.iter().any(|f| {
             let abs_f = if f.is_absolute() { f.to_path_buf() } else { abs_root.join(f) };
             abs_f.starts_with(&abs_ws)
         });
-        if !has_changes {
-            // Still merge existing mir.db if available
-            let ws_mir_db = abs_ws.join("target").join("mir-edges").join("mir.db");
-            if ws_mir_db.exists() {
-                rude_intel::mir_edges::merge_mir_db(main_mir_db, &ws_mir_db).ok();
+        if has_changes {
+            eprintln!("  [mir] sub-workspace: {}", ws.display());
+            let changed = rude_intel::mir_edges::detect_changed_crates(&abs_ws,
+                &code_files.iter().filter(|f| {
+                    let abs_f = if f.is_absolute() { f.to_path_buf() } else { abs_root.join(f) };
+                    abs_f.starts_with(&abs_ws)
+                }).cloned().collect::<Vec<_>>());
+            if !changed.is_empty() {
+                let refs: Vec<&str> = changed.iter().map(|s| s.as_str()).collect();
+                rude_intel::mir_edges::clear_mir_db(&abs_ws, &refs).ok();
+                // Try daemon first (same as main workspace)
+                if rude_intel::mir_edges::run_mir_direct(&abs_ws, None, &refs, true).is_err() {
+                    run_mir_cargo_wrapper(&abs_ws).ok();
+                }
+            } else {
+                // No crates detected → full cargo wrapper
+                run_mir_cargo_wrapper(&abs_ws).ok();
             }
-            continue;
         }
-        eprintln!("  [mir] sub-workspace: {}", ws.display());
-        run_mir_cargo_wrapper(&abs_ws).ok();
-        let ws_mir_db = abs_ws.join("target").join("mir-edges").join("mir.db");
         if ws_mir_db.exists() {
             rude_intel::mir_edges::merge_mir_db(main_mir_db, &ws_mir_db).ok();
         }
