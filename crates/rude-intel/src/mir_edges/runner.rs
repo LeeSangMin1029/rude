@@ -217,11 +217,11 @@ pub fn run_mir_direct(
     let mut lib_files = Vec::new();
     let mut test_files = Vec::new();
     for krate in crates {
-        let crate_underscore = krate.replace('-', "_");
-        let lib_file = args_dir.join(format!("{crate_underscore}.lib.rustc-args.json"));
-        let test_file = args_dir.join(format!("{crate_underscore}.test.rustc-args.json"));
-        if lib_file.exists() { lib_files.push(lib_file); }
-        if test_file.exists() { test_files.push(test_file); }
+        let u = krate.replace('-', "_");
+        let lib = args_dir.join(format!("{u}.lib.rustc-args.json"));
+        let test = args_dir.join(format!("{u}.test.rustc-args.json"));
+        if lib.exists() { lib_files.push(lib); }
+        if test.exists() { test_files.push(test); }
     }
 
     let mir_db = mir_db_path(project_root);
@@ -252,17 +252,15 @@ pub fn run_mir_direct(
     kill_previous_test_bg(&out_dir);
 
     // Try daemon first (DLL already loaded → fast)
-    {
-        let mut all_ok = true;
-        for args_file in &lib_files {
-            if try_daemon(project_root, args_file, &out_dir, &mir_db).is_none() {
-                all_ok = false;
-                break;
-            }
-        }
-        if all_ok { return Ok(()); }
+    if let Some(()) = try_daemon_all(project_root, &lib_files, &out_dir, &mir_db) {
+        return Ok(());
     }
-
+    // Daemon not running → start it, retry once
+    if start_daemon(project_root, mir_callgraph_bin).is_ok() {
+        if let Some(()) = try_daemon_all(project_root, &lib_files, &out_dir, &mir_db) {
+            return Ok(());
+        }
+    }
     // Fallback: subprocess (slow DLL loading)
     let mut had_error = false;
     {
@@ -297,6 +295,13 @@ pub fn run_mir_direct(
 
     // Test builds skipped in direct mode — lib edges are sufficient.
     Ok(())
+}
+
+fn try_daemon_all(project_root: &Path, lib_files: &[PathBuf], out_dir: &Path, mir_db: &Path) -> Option<()> {
+    for args_file in lib_files {
+        try_daemon(project_root, args_file, out_dir, mir_db)?;
+    }
+    Some(())
 }
 
 fn daemon_pipe_name(project_root: &Path) -> String {
@@ -380,7 +385,27 @@ pub fn start_daemon(project_root: &Path, mir_callgraph_bin: Option<&Path>) -> Re
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::inherit());
     cmd.spawn().context("failed to start daemon")?;
-    // daemon이 pipe를 열 때까지 잠시 대기 — ConnectNamedPipe 전에 CreateFile하면 실패
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    // daemon이 pipe를 생성할 때까지 연결 재시도 (이벤트 기반, sleep 없음)
+    for _ in 0..50 {
+        if try_daemon(project_root, Path::new(""), Path::new(""), Path::new("")).is_some()
+            || pipe_exists(&pipe_name)
+        {
+            return Ok(());
+        }
+        std::thread::yield_now();
+    }
     Ok(())
 }
+
+#[cfg(windows)]
+fn pipe_exists(name: &str) -> bool {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn WaitNamedPipeW(name: *const u16, timeout: u32) -> i32;
+    }
+    let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe { WaitNamedPipeW(wide.as_ptr(), 100) != 0 }
+}
+
+#[cfg(not(windows))]
+fn pipe_exists(_: &str) -> bool { false }

@@ -12,8 +12,15 @@ pub fn detect_changed_crates(project_root: &Path, changed_files: &[impl AsRef<Pa
         while let Some(d) = dir {
             let toml = d.join("Cargo.toml");
             if toml.exists() {
-                if let Some(name) = std::fs::read_to_string(&toml).ok().and_then(|c| extract_package_name(&c)) {
-                    crates.insert(name);
+                if let Ok(content) = std::fs::read_to_string(&toml) {
+                    // package name (e.g. "rude")
+                    if let Some(name) = extract_package_name(&content) {
+                        crates.insert(name.replace('-', "_"));
+                    }
+                    // lib name if different (e.g. "rude_cli")
+                    if let Some(lib) = extract_lib_name(&content) {
+                        crates.insert(lib.replace('-', "_"));
+                    }
                 }
                 break;
             }
@@ -21,6 +28,18 @@ pub fn detect_changed_crates(project_root: &Path, changed_files: &[impl AsRef<Pa
         }
     }
     crates.into_iter().collect()
+}
+
+fn extract_lib_name(content: &str) -> Option<String> {
+    let mut in_lib = false;
+    for line in content.lines() {
+        let t = line.trim();
+        if t.starts_with('[') { in_lib = t == "[lib]"; continue; }
+        if in_lib && t.starts_with("name") {
+            return t.split('"').nth(1).map(|s| s.to_owned());
+        }
+    }
+    None
 }
 
 pub fn detect_missing_edge_crates(project_root: &Path) -> Vec<String> {
