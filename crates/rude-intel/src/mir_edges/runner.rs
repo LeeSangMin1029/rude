@@ -254,16 +254,14 @@ pub fn run_mir_direct(
 
     let mut all_files = lib_files;
     all_files.extend(test_files);
-    // Try daemon (with retry — daemon may be between disconnect/reconnect)
-    for attempt in 0..3 {
+    for attempt in 0..5 {
         if let Some(()) = try_daemon_all(project_root, &all_files, &out_dir, &mir_db) {
             return Ok(());
         }
         if attempt == 0 {
-            // First failure: maybe daemon not running, try to start it
             start_daemon(project_root, mir_callgraph_bin).ok();
         } else {
-            std::thread::sleep(std::time::Duration::from_millis(200));
+            std::thread::sleep(std::time::Duration::from_millis(100 * (attempt as u64)));
         }
     }
     // Fallback: subprocess

@@ -236,7 +236,25 @@ fn run_mir_cargo_wrapper(ws: &std::path::Path) -> Result<()> {
 }
 
 fn find_sub_workspaces(root: &std::path::Path) -> Vec<PathBuf> {
-    // Single cargo metadata call → get workspace root + all member directories
+    let cache_file = root.join("target").join("mir-edges").join(".sub-workspaces");
+    let toml_mtime = std::fs::metadata(root.join("Cargo.toml"))
+        .and_then(|m| m.modified()).ok();
+    let cache_mtime = std::fs::metadata(&cache_file)
+        .and_then(|m| m.modified()).ok();
+    if let (Some(t), Some(c)) = (toml_mtime, cache_mtime) {
+        if c > t {
+            if let Ok(content) = std::fs::read_to_string(&cache_file) {
+                return content.lines().filter(|l| !l.is_empty()).map(PathBuf::from).collect();
+            }
+        }
+    }
+    let result = detect_sub_workspaces(root);
+    let text: String = result.iter().filter_map(|p| p.to_str()).collect::<Vec<_>>().join("\n");
+    let _ = std::fs::write(&cache_file, text);
+    result
+}
+
+fn detect_sub_workspaces(root: &std::path::Path) -> Vec<PathBuf> {
     let meta_output = std::process::Command::new("cargo")
         .args(["metadata", "--no-deps", "--format-version", "1"])
         .current_dir(root).output().ok();
@@ -250,7 +268,6 @@ fn find_sub_workspaces(root: &std::path::Path) -> Vec<PathBuf> {
             Some(norm(&PathBuf::from(p.get("manifest_path")?.as_str()?).parent()?.to_string_lossy()))
         }).collect())
         .unwrap_or_default();
-    // Find Cargo.toml dirs from git that are NOT workspace members
     let git_output = std::process::Command::new("git")
         .args(["ls-files", "--cached", "--others", "--exclude-standard", "*/Cargo.toml"])
         .current_dir(root).output().ok();
