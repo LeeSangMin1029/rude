@@ -92,28 +92,16 @@ pub fn run_batch(manifest: PathBuf) -> Result<()> {
         .context("failed to parse batch manifest JSON")?;
     if entries.is_empty() { return Ok(()); }
     let db = crate::db();
-    let graph = crate::commands::intel::load_or_build_graph()?;
     let mut by_file: std::collections::HashMap<String, Vec<(SymbolLocation, String, String)>> = std::collections::HashMap::new();
     for e in &entries {
-        let indices = graph.resolve(&e.symbol);
-        let candidates: Vec<u32> = indices.into_iter()
-            .filter(|&i| e.file.as_ref().is_none_or(|f| graph.chunks[i as usize].file.ends_with(f.as_str())))
-            .collect();
-        if candidates.is_empty() { bail!("Symbol '{}' not found", e.symbol); }
-        if candidates.len() > 1 { bail!("Ambiguous '{}'", e.symbol); }
-        let chunk = &graph.chunks[candidates[0] as usize];
-        let abs_path = resolve_abs_path(db, &chunk.file)?;
-        let leaf = e.symbol.rsplit("::").next().unwrap_or(&e.symbol);
-        let (start, end) = syn_locate(&abs_path, leaf)?;
-        let rel = relative_display(db, &chunk.file);
-        let loc = SymbolLocation { abs_path: abs_path.clone(), rel_path: rel, start_line: start, end_line: end };
+        let loc = locate_symbol(db, &e.symbol, e.file.as_deref())?;
         let body = match (&e.body, &e.body_file) {
             (Some(b), _) => b.clone(),
             (_, Some(f)) => std::fs::read_to_string(f).with_context(|| format!("read body_file: {}", f.display()))?,
             _ if e.op == "delete" => String::new(),
             _ => bail!("No body for '{}'", e.symbol),
         };
-        by_file.entry(abs_path.to_string_lossy().into_owned()).or_default().push((loc, e.op.clone(), body));
+        by_file.entry(loc.abs_path.to_string_lossy().into_owned()).or_default().push((loc, e.op.clone(), body));
     }
     for (_, mut ops) in by_file {
         ops.sort_by(|a, b| b.0.start_line.cmp(&a.0.start_line));
