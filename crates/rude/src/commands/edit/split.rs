@@ -20,7 +20,6 @@ pub fn split(symbols: String, to: String, dry_run: bool) -> Result<()> {
     let source_content = std::fs::read_to_string(source_path)
         .with_context(|| format!("Failed to read {}", source_path.display()))?;
     let source_lines: Vec<&str> = source_content.lines().collect();
-    let use_lines = extract_use_lines(&source_content);
     let mut ranges: Vec<(usize, usize, &str)> = locs.iter()
         .zip(symbol_names.iter())
         .map(|(loc, &name)| (loc.start_line, loc.end_line, name))
@@ -32,6 +31,10 @@ pub fn split(symbols: String, to: String, dry_run: bool) -> Result<()> {
                 w[0].2, w[0].0 + 1, w[0].1 + 1, w[1].2, w[1].0 + 1, w[1].1 + 1);
         }
     }
+    let moved_body: String = ranges.iter()
+        .flat_map(|&(start, end, _)| &source_lines[start..=end])
+        .cloned().collect::<Vec<_>>().join("\n");
+    let use_lines = filter_used_imports(&source_content, &moved_body);
     let mut parts: Vec<String> = Vec::new();
     if !use_lines.is_empty() { parts.extend(use_lines); parts.push(String::new()); }
     for (i, &(start, end, _)) in ranges.iter().enumerate() {
@@ -83,14 +86,18 @@ fn is_header_line(t: &str) -> bool {
         || t.starts_with("mod ") || t.starts_with("pub mod ") || t.starts_with("extern ")
 }
 
-fn extract_use_lines(content: &str) -> Vec<String> {
-    let mut uses = Vec::new();
-    for line in content.lines() {
+fn filter_used_imports(source: &str, body: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    for line in source.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("use ") || trimmed.starts_with("pub use ") { uses.push(line.to_string()); }
         if !is_header_line(trimmed) { break; }
+        if !trimmed.starts_with("use ") && !trimmed.starts_with("pub use ") { continue; }
+        let idents = super::imports::extract_use_idents(trimmed);
+        if idents.iter().any(|id| super::imports::ident_used_in(body, id)) {
+            result.push(line.to_string());
+        }
     }
-    uses
+    result
 }
 
 fn print_dry_run(to: &str, content: &str, rel: &str, reexport: &str, dir: &Path, mod_decl: &str, ranges: &[(usize, usize, &str)]) {
@@ -110,7 +117,7 @@ fn insert_line_after(path: &Path, matcher: impl Fn(&str) -> bool, line: &str, sk
             if content.lines().any(|l| l.trim() == check) { return Ok(content.to_string()); }
         }
         let lines: Vec<&str> = content.lines().collect();
-        let pos = lines.iter().rposition(|l| matcher(l.trim())).map(|i| i + 1).unwrap_or(0);
+        let pos = lines.iter().rposition(|l| !l.starts_with(' ') && !l.starts_with('\t') && matcher(l.trim())).map(|i| i + 1).unwrap_or(0);
         let mut result: Vec<String> = Vec::with_capacity(lines.len() + 2);
         for (i, &l) in lines.iter().enumerate() {
             result.push(l.to_string());

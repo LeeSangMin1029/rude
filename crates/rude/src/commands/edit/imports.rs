@@ -118,7 +118,7 @@ fn is_use_line(trimmed: &str) -> bool {
         && trimmed.ends_with(';')
 }
 
-fn extract_use_idents(use_line: &str) -> Vec<String> {
+pub(crate) fn extract_use_idents(use_line: &str) -> Vec<String> {
     let after_use = use_line
         .trim_start_matches("pub(crate) ").trim_start_matches("pub ")
         .trim_start_matches("use ").trim_end_matches(';');
@@ -148,7 +148,7 @@ fn extract_use_idents(use_line: &str) -> Vec<String> {
     }
 }
 
-fn ident_used_in(code: &str, ident: &str) -> bool {
+pub(crate) fn ident_used_in(code: &str, ident: &str) -> bool {
     for (i, _) in code.match_indices(ident) {
         let before = if i > 0 { code.as_bytes()[i - 1] } else { b' ' };
         let after_idx = i + ident.len();
