@@ -12,8 +12,12 @@ pub(crate) struct SymbolLocation {
 
 pub(crate) fn locate_symbol(db: &Path, symbol: &str, file_hint: Option<&str>) -> Result<SymbolLocation> {
     let graph = crate::commands::intel::load_or_build_graph()?;
+    let hint_normalized = file_hint.map(|f| f.replace('\\', "/"));
     let candidates: Vec<u32> = graph.resolve(symbol).into_iter()
-        .filter(|&i| file_hint.is_none_or(|f| graph.chunks[i as usize].file.ends_with(f)))
+        .filter(|&i| {
+            let cf = &graph.chunks[i as usize].file;
+            hint_normalized.as_ref().is_none_or(|f| cf.ends_with(f) || f.ends_with(cf))
+        })
         .collect();
     let leaf = symbol.rsplit("::").next().unwrap_or(symbol);
     if candidates.is_empty() {
@@ -25,7 +29,7 @@ pub(crate) fn locate_symbol(db: &Path, symbol: &str, file_hint: Option<&str>) ->
         if !abs_path.exists() { bail!("File not found: {}", abs_path.display()); }
         let rel = relative_display(db, file_path);
         let (start, end) = syn_locate(&abs_path, leaf, None)?;
-        return Ok(SymbolLocation { abs_path, rel_path: rel, start_line: start, end_line: end });
+        return Ok(SymbolLocation { abs_path, rel_path: rel, start_line: start - 1, end_line: end - 1 });
     }
     if candidates.len() > 1 {
         let locs: Vec<String> = candidates.iter()
@@ -36,15 +40,13 @@ pub(crate) fn locate_symbol(db: &Path, symbol: &str, file_hint: Option<&str>) ->
     let chunk = &graph.chunks[candidates[0] as usize];
     let abs_path = resolve_abs_path(db, &chunk.file)?;
     let rel = relative_display(db, &chunk.file);
-    let owner = chunk.name.rsplitn(3, "::").nth(1)
-        .filter(|s| s.starts_with(|c: char| c.is_uppercase()))
-        .map(str::to_owned);
-    let (start, end) = syn_locate(&abs_path, leaf, owner.as_deref())?;
-    Ok(SymbolLocation { abs_path, rel_path: rel, start_line: start, end_line: end })
+    let (start, end) = chunk.lines
+        .unwrap_or_else(|| syn_locate(&abs_path, leaf, None).unwrap_or((1, 1)));
+    Ok(SymbolLocation { abs_path, rel_path: rel, start_line: start - 1, end_line: end - 1 })
 }
 
 fn span_line(span: proc_macro2::Span, end: bool) -> usize {
-    (if end { span.end().line } else { span.start().line }).saturating_sub(1)
+    if end { span.end().line } else { span.start().line }
 }
 
 fn syn_locate(path: &Path, name: &str, owner: Option<&str>) -> Result<(usize, usize)> {
@@ -103,7 +105,7 @@ fn text_fallback(content: &str, name: &str) -> Option<(usize, usize)> {
         if depth <= 0 && i > 0 { end = start + i; break; }
     }
     if end == start { end = lines.len().saturating_sub(1).max(start); }
-    Some((start, end))
+    Some((start + 1, end + 1))
 }
 
 fn attr_start(attrs: &[syn::Attribute], fallback: proc_macro2::Span) -> usize {

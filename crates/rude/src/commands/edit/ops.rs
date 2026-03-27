@@ -22,6 +22,14 @@ impl Op<'_> {
             Op::Delete => format!("Deleted (L{}-{})", start + 1, end + 1),
         }
     }
+    fn sort_key(&self, start: usize, end: usize) -> (std::cmp::Reverse<usize>, u8) {
+        match self {
+            Op::After(_) => (std::cmp::Reverse(end + 1), 0),
+            Op::Delete => (std::cmp::Reverse(start), 1),
+            Op::Replace(_) => (std::cmp::Reverse(start), 1),
+            Op::Before(_) => (std::cmp::Reverse(start), 2),
+        }
+    }
 }
 
 pub fn apply_edits(ops: &[(&str, Op)], file: Option<&str>) -> Result<()> {
@@ -34,7 +42,10 @@ pub fn apply_edits(ops: &[(&str, Op)], file: Option<&str>) -> Result<()> {
     let mut locs: Vec<_> = ops.iter()
         .map(|(sym, op)| locate_symbol(db, sym, file).map(|loc| (loc, *sym, op)))
         .collect::<Result<_>>()?;
-    locs.sort_by(|a, b| b.0.start_line.cmp(&a.0.start_line));
+    if locs.iter().any(|l| l.0.abs_path != locs[0].0.abs_path) {
+        bail!("apply_edits: all symbols must be in the same file");
+    }
+    locs.sort_by(|a, b| a.2.sort_key(a.0.start_line, a.0.end_line).cmp(&b.2.sort_key(b.0.start_line, b.0.end_line)));
     let abs_path = locs[0].0.abs_path.clone();
     let rel_path = locs[0].0.rel_path.clone();
     splice_file(&abs_path, |lines| {
@@ -69,7 +80,11 @@ pub fn run_batch(manifest: PathBuf) -> Result<()> {
         by_file.entry(loc.abs_path.to_string_lossy().into_owned()).or_default().push((loc, op, body));
     }
     for (_, mut ops) in by_file {
-        ops.sort_by(|a, b| b.0.start_line.cmp(&a.0.start_line));
+        ops.sort_by(|a, b| {
+            let oa = str_to_op(&a.1, &a.2);
+            let ob = str_to_op(&b.1, &b.2);
+            oa.sort_key(a.0.start_line, a.0.end_line).cmp(&ob.sort_key(b.0.start_line, b.0.end_line))
+        });
         let path = ops[0].0.abs_path.clone();
         let rel = ops[0].0.rel_path.clone();
         splice_file(&path, |lines| {
@@ -102,9 +117,7 @@ pub fn delete_lines(file: String, start: usize, end: usize) -> Result<()> {
     check_range(start, end)?;
     let (abs, rel) = resolve_path(crate::db(), &file)?;
     splice_file(&abs, |lines| {
-        let mut after = end.min(lines.len());
-        while after < lines.len() && lines[after].trim().is_empty() { after += 1; }
-        lines.splice((start - 1)..after, Vec::<String>::new());
+        lines.splice((start - 1)..end.min(lines.len()), Vec::<String>::new());
         eprintln!("  Deleted L{start}-{end} from {rel}");
     })
 }

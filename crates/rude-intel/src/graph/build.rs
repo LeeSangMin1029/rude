@@ -103,6 +103,15 @@ impl CallGraph {
             let suffix = format!("::{lower}");
             results = self.name_index.iter().filter(|(n, _)| n.ends_with(&suffix)).map(|(_, idx)| *idx).collect();
         }
+        if results.is_empty() {
+            if let Some((owner, method)) = lower.rsplit_once("::") {
+                let owner_pat = format!("::{owner} as ");
+                let method_suffix = format!(">::{method}");
+                results = self.name_index.iter()
+                    .filter(|(n, _)| n.contains(&owner_pat) && n.ends_with(&method_suffix))
+                    .map(|(_, idx)| *idx).collect();
+            }
+        }
         results
     }
 

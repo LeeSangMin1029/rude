@@ -7,12 +7,19 @@ pub(crate) fn locked_edit<F: FnOnce(&str) -> Result<String>>(path: &Path, f: F) 
     let lock_path = path.with_extension("lock");
     let lock = File::create(&lock_path)?;
     lock.lock_exclusive()?;
+    let _cleanup = LockCleanup(&lock, &lock_path);
     let content = std::fs::read_to_string(path)?;
     let new = f(&content)?;
     std::fs::write(path, new)?;
-    lock.unlock()?;
-    let _ = std::fs::remove_file(&lock_path);
     Ok(())
+}
+
+struct LockCleanup<'a>(&'a File, &'a Path);
+impl Drop for LockCleanup<'_> {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+        let _ = std::fs::remove_file(self.1);
+    }
 }
 
 pub(crate) fn splice_file(path: &Path, f: impl FnOnce(&mut Vec<String>)) -> Result<()> {
