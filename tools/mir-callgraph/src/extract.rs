@@ -270,8 +270,19 @@ pub fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -
 
     // Fill calls per chunk
     fill_chunk_calls(&mut chunks, &edges);
-    // Phase 3: use items + dependency mapping via HIR
-    let (uses, use_deps) = collect_use_deps();
+    // Phase 3: use items + dependency mapping + accurate spans via HIR
+    let (uses, use_deps, hir_spans) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(collect_use_deps))
+        .unwrap_or_else(|e| { eprintln!("[mir-callgraph] HIR extraction failed: {e:?}"); (vec![], vec![], vec![]) });
+    let span_map: HashMap<(&str, usize), (usize, usize)> = hir_spans.iter()
+        .map(|(_, file, s, e)| ((file.as_str(), *s), (*s, *e))).collect();
+    for c in &mut chunks {
+        if c.start_line == c.end_line {
+            if let Some(&(s, e)) = span_map.get(&(c.file.as_str(), c.start_line)) {
+                c.start_line = s;
+                c.end_line = e;
+            }
+        }
+    }
     let t_mir = t_all.elapsed();
     let t_out = std::time::Instant::now();
     output::write_results(&crate_name, &edges, &chunks, &uses, &use_deps, fn_count, json, db_path);
@@ -281,9 +292,10 @@ pub fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -
     ControlFlow::Continue(())
 }
 
-fn collect_use_deps() -> (Vec<UseItem>, Vec<UseDep>) {
+fn collect_use_deps() -> (Vec<UseItem>, Vec<UseDep>, Vec<(String, String, usize, usize)>) {
     let mut uses = Vec::new();
     let mut deps = Vec::new();
+    let mut hir_spans: Vec<(String, String, usize, usize)> = Vec::new();
     rustc_middle::ty::tls::with(|tcx| {
         let source_map = tcx.sess.source_map();
         let mut def_to_use: HashMap<rustc_hir::def_id::DefId, Vec<(String, usize)>> = HashMap::new();
@@ -322,13 +334,11 @@ fn collect_use_deps() -> (Vec<UseItem>, Vec<UseDep>) {
             }
         }
         // Walk each function body to collect referenced DefIds
-        for owner_id in tcx.hir_crate_items(()).owners() {
-            let local_def_id = owner_id.def_id;
-            let item = tcx.hir_item(rustc_hir::ItemId { owner_id });
-            let has_body = matches!(item.kind, rustc_hir::ItemKind::Fn { .. } | rustc_hir::ItemKind::Static(..));
-            if !has_body { continue; }
-            let owner_span = tcx.def_span(local_def_id);
-            let fn_file = match source_map.span_to_filename(owner_span) {
+        for item_id in tcx.hir_crate_items(()).free_items() {
+            let item = tcx.hir_item(item_id);
+            let local_def_id = item.owner_id.def_id;
+            let item_span = item.span;
+            let fn_file = match source_map.span_to_filename(item_span) {
                 rustc_span::FileName::Real(ref name) => match name.local_path() {
                     Some(p) => format!("{}", p.display()).replace('\\', "/"),
                     None => continue,
@@ -337,7 +347,17 @@ fn collect_use_deps() -> (Vec<UseItem>, Vec<UseDep>) {
             };
             if !is_local_file(&fn_file) { continue; }
             let fn_name = strip_crate_prefix(&tcx.def_path_str(local_def_id.to_def_id()));
-            let body = tcx.hir_body_owned_by(local_def_id);
+            let start = source_map.lookup_char_pos(item_span.lo()).line;
+            let end = source_map.lookup_char_pos(item_span.hi()).line;
+            if start != end {
+                hir_spans.push((fn_name.clone(), fn_file.clone(), start, end));
+            }
+            // Collect use deps for function bodies
+            let has_body = matches!(item.kind, rustc_hir::ItemKind::Fn { .. } | rustc_hir::ItemKind::Static(..));
+            if !has_body { continue; }
+            let Ok(body) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                tcx.hir_body_owned_by(local_def_id)
+            })) else { continue };
             let mut collector = DefIdCollector { def_ids: Vec::new() };
             rustc_hir::intravisit::walk_body(&mut collector, &body);
             let mut seen_use_lines: std::collections::HashSet<(String, usize)> = std::collections::HashSet::new();
@@ -357,7 +377,7 @@ fn collect_use_deps() -> (Vec<UseItem>, Vec<UseDep>) {
             }
         }
     });
-    (uses, deps)
+    (uses, deps, hir_spans)
 }
 
 struct DefIdCollector {
