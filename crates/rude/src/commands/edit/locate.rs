@@ -42,7 +42,20 @@ pub(crate) fn locate_symbol(db: &Path, symbol: &str, file_hint: Option<&str>) ->
     let rel = relative_display(db, &chunk.file);
     let (start, end) = chunk.lines
         .unwrap_or_else(|| syn_locate(&abs_path, leaf, None).unwrap_or((1, 1)));
+    let start = expand_to_attrs(&abs_path, start);
     Ok(SymbolLocation { abs_path, rel_path: rel, start_line: start - 1, end_line: end - 1 })
+}
+
+fn expand_to_attrs(path: &Path, start: usize) -> usize {
+    let Ok(content) = std::fs::read_to_string(path) else { return start };
+    let lines: Vec<&str> = content.lines().collect();
+    let mut s = start.saturating_sub(1);
+    while s > 0 {
+        let prev = lines.get(s - 1).map(|l| l.trim()).unwrap_or("");
+        if prev.starts_with("#[") || prev.starts_with("///") || prev.starts_with("//!") { s -= 1; }
+        else { break; }
+    }
+    s + 1
 }
 
 fn span_line(span: proc_macro2::Span, end: bool) -> usize {

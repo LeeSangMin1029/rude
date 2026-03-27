@@ -160,7 +160,7 @@ pub fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -
 
     // ── Phase 1: HIR single pass — spans, use items, use deps ──
     let (hir_spans, uses, use_deps) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(collect_hir_data))
-        .unwrap_or_else(|e| { eprintln!("[mir-callgraph] HIR extraction failed: {e:?}"); Default::default() });
+        .unwrap_or_default();
     let span_map: HashMap<(&str, usize), usize> = hir_spans.iter()
         .map(|(file, start, end)| ((file.as_str(), *start), *end)).collect();
 
@@ -288,7 +288,7 @@ fn collect_hir_data() -> (Vec<(String, usize, usize)>, Vec<UseItem>, Vec<UseDep>
                     let Ok(body) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         tcx.hir_body_owned_by(local_def_id)
                     })) else { continue };
-                    let mut collector = DefIdCollector { def_ids: Vec::new() };
+                    let mut collector = DefIdCollector::new(tcx, local_def_id);
                     rustc_hir::intravisit::walk_body(&mut collector, &body);
                     let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
                     for def_id in &collector.def_ids {
@@ -310,11 +310,20 @@ fn collect_hir_data() -> (Vec<(String, usize, usize)>, Vec<UseItem>, Vec<UseDep>
     (spans, uses, deps)
 }
 
-struct DefIdCollector {
+struct DefIdCollector<'a, 'tcx> {
+    tcx: rustc_middle::ty::TyCtxt<'tcx>,
     def_ids: Vec<rustc_hir::def_id::DefId>,
+    typeck: Option<&'a rustc_middle::ty::TypeckResults<'tcx>>,
 }
 
-impl<'hir> rustc_hir::intravisit::Visitor<'hir> for DefIdCollector {
+impl<'a, 'tcx> DefIdCollector<'a, 'tcx> {
+    fn new(tcx: rustc_middle::ty::TyCtxt<'tcx>, owner: rustc_hir::def_id::LocalDefId) -> Self {
+        let typeck = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tcx.typeck(owner))).ok();
+        Self { tcx, def_ids: Vec::new(), typeck }
+    }
+}
+
+impl<'a, 'hir, 'tcx> rustc_hir::intravisit::Visitor<'hir> for DefIdCollector<'a, 'tcx> {
     fn visit_path(&mut self, path: &rustc_hir::Path<'hir>, _id: rustc_hir::HirId) {
         if let rustc_hir::def::Res::Def(_, def_id) = path.res {
             self.def_ids.push(def_id);
@@ -322,10 +331,23 @@ impl<'hir> rustc_hir::intravisit::Visitor<'hir> for DefIdCollector {
         rustc_hir::intravisit::walk_path(self, path);
     }
     fn visit_expr(&mut self, expr: &'hir rustc_hir::Expr<'hir>) {
-        if let rustc_hir::ExprKind::Path(rustc_hir::QPath::Resolved(_, path)) = &expr.kind {
-            if let rustc_hir::def::Res::Def(_, def_id) = path.res {
-                self.def_ids.push(def_id);
+        match &expr.kind {
+            rustc_hir::ExprKind::Path(rustc_hir::QPath::Resolved(_, path)) => {
+                if let rustc_hir::def::Res::Def(_, def_id) = path.res {
+                    self.def_ids.push(def_id);
+                }
             }
+            rustc_hir::ExprKind::MethodCall(..) => {
+                if let Some(typeck) = self.typeck {
+                    if let Some(def_id) = typeck.type_dependent_def_id(expr.hir_id) {
+                        self.def_ids.push(def_id);
+                        if let Some(assoc) = self.tcx.opt_associated_item(def_id) {
+                            self.def_ids.push(assoc.container_id(self.tcx));
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
         rustc_hir::intravisit::walk_expr(self, expr);
     }

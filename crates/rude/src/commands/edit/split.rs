@@ -69,13 +69,13 @@ pub fn split(symbols: String, to: String, dry_run: bool) -> Result<()> {
     super::apply_edits(&ops, None)?;
     insert_reexport(source_path, &reexport_line)?;
     eprintln!("Inserted re-export: {}", reexport_line);
-    let mod_file = [source_dir.join("lib.rs"), source_dir.join("mod.rs")]
+    let mod_file = [source_dir.join("lib.rs"), source_dir.join("mod.rs"), source_dir.join("main.rs")]
         .into_iter().find(|p| p.exists());
     if let Some(mod_file) = mod_file {
         insert_mod_decl(&mod_file, &mod_decl, module_name)?;
         eprintln!("Added '{}' to {}", mod_decl, mod_file.display());
     } else {
-        eprintln!("Warning: no lib.rs or mod.rs found in {}, skipping mod declaration", source_dir.display());
+        eprintln!("Warning: no lib.rs, mod.rs, or main.rs found in {}, skipping mod declaration", source_dir.display());
     }
     Ok(())
 }
