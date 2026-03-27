@@ -265,11 +265,12 @@ impl<'a> SymbolFinder<'a> {
 }
 
 impl<'a, 'ast> syn::visit::Visit<'ast> for SymbolFinder<'a> {
-    fn visit_item_fn(&mut self, f: &'ast syn::ItemFn) {
-        if self.result.is_none() && self.owner.is_none() && f.sig.ident == self.name {
-            self.result = Some((item_start(&f.attrs, f.sig.fn_token.span), end_line_of(f.block.brace_token.span.close())));
+    fn visit_item(&mut self, item: &'ast syn::Item) {
+        if self.result.is_some() { return; }
+        if self.owner.is_none() {
+            if let Some(r) = item_span(item, self.name) { self.result = Some(r); return; }
         }
-        syn::visit::visit_item_fn(self, f); // 중첩 함수 자동 재귀
+        syn::visit::visit_item(self, item);
     }
     fn visit_item_impl(&mut self, imp: &'ast syn::ItemImpl) {
         use syn::spanned::Spanned;
@@ -282,31 +283,6 @@ impl<'a, 'ast> syn::visit::Visit<'ast> for SymbolFinder<'a> {
     fn visit_impl_item_fn(&mut self, f: &'ast syn::ImplItemFn) {
         if self.result.is_none() && f.sig.ident == self.name && self.matches_owner() {
             self.result = Some((item_start(&f.attrs, f.sig.fn_token.span), end_line_of(f.block.brace_token.span.close())));
-        }
-    }
-    fn visit_item_struct(&mut self, s: &'ast syn::ItemStruct) {
-        if self.result.is_none() && self.owner.is_none() && s.ident == self.name {
-            self.result = item_span(&syn::Item::Struct(s.clone()), self.name);
-        }
-    }
-    fn visit_item_enum(&mut self, e: &'ast syn::ItemEnum) {
-        if self.result.is_none() && self.owner.is_none() && e.ident == self.name {
-            self.result = item_span(&syn::Item::Enum(e.clone()), self.name);
-        }
-    }
-    fn visit_item_trait(&mut self, t: &'ast syn::ItemTrait) {
-        if self.result.is_none() && self.owner.is_none() && t.ident == self.name {
-            self.result = item_span(&syn::Item::Trait(t.clone()), self.name);
-        }
-    }
-    fn visit_item_const(&mut self, c: &'ast syn::ItemConst) {
-        if self.result.is_none() && self.owner.is_none() && c.ident == self.name {
-            self.result = item_span(&syn::Item::Const(c.clone()), self.name);
-        }
-    }
-    fn visit_item_static(&mut self, s: &'ast syn::ItemStatic) {
-        if self.result.is_none() && self.owner.is_none() && s.ident == self.name {
-            self.result = item_span(&syn::Item::Static(s.clone()), self.name);
         }
     }
 }
