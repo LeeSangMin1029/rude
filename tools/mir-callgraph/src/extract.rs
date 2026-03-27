@@ -243,16 +243,13 @@ fn collect_hir_data() -> (Vec<(String, usize, usize)>, Vec<UseItem>, Vec<UseDep>
             let Some(file) = hir_file(sm, item.span) else { continue };
             if !is_local_file(&file) { continue; }
             match &item.kind {
+                rustc_hir::ItemKind::Use(_, rustc_hir::UseKind::ListStem) => continue,
                 rustc_hir::ItemKind::Use(path, kind) => {
                     let line = sm.lookup_char_pos(item.span.lo()).line;
                     let source = sm.span_to_snippet(item.span).unwrap_or_default();
-                    let kind_str = match kind {
-                        rustc_hir::UseKind::Single(_) => "single",
-                        rustc_hir::UseKind::Glob => "glob",
-                        rustc_hir::UseKind::ListStem => "list",
-                    };
                     let resolved_path: String = path.segments.iter()
                         .map(|seg| seg.ident.to_string()).collect::<Vec<_>>().join("::");
+                    let kind_str = if matches!(kind, rustc_hir::UseKind::Glob) { "glob" } else { "single" };
                     uses.push(UseItem { file: file.clone(), line, source, resolved: format!("{resolved_path} ({kind_str})") });
                     if let Some(rustc_hir::def::Res::Def(_, def_id)) = path.res.type_ns {
                         def_to_use.entry(def_id).or_default().push((file.clone(), line));

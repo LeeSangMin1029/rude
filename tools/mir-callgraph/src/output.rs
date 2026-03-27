@@ -55,7 +55,7 @@ fn write_sqlite(db_path: &str, crate_name: &str, edges: &[CallEdge], chunks: &[M
         );
         CREATE TABLE IF NOT EXISTS mir_uses (
             file TEXT, line INTEGER, source TEXT, resolved TEXT, crate_name TEXT,
-            UNIQUE(file, line, crate_name)
+            UNIQUE(file, resolved, crate_name)
         );
         CREATE TABLE IF NOT EXISTS mir_use_deps (
             fn_name TEXT, fn_file TEXT, use_file TEXT, use_line INTEGER, crate_name TEXT
