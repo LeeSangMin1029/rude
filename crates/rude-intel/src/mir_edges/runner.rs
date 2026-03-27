@@ -310,7 +310,7 @@ fn try_daemon_all(project_root: &Path, lib_files: &[PathBuf], out_dir: &Path, mi
 
 
 fn daemon_pipe_name(project_root: &Path) -> String {
-    let path = project_root.canonicalize().unwrap_or(project_root.to_path_buf());
+    let path = rude_util::safe_canonicalize(project_root);
     let bytes = path.as_os_str().as_encoded_bytes();
     let hash = xxhash_rust::xxh64::xxh64(bytes, 0);
     #[cfg(windows)]

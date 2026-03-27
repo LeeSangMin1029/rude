@@ -122,7 +122,7 @@ pub(crate) fn ingest_mir(
     for (file_key, indices) in &by_file {
         let normalized_file = normalize_path(file_key);
         let db_parent = db_path.parent().unwrap_or(Path::new("."));
-        let workspace = db_parent.canonicalize().unwrap_or_else(|_| db_parent.to_path_buf());
+        let workspace = rude_util::safe_canonicalize(&db_parent);
         let file_path = workspace.join(file_key);
         let source = if file_path.exists() {
             normalize_source(&file_path)

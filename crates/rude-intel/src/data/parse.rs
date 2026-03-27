@@ -87,7 +87,7 @@ use std::sync::OnceLock;
 static PROJECT_ROOT: OnceLock<String> = OnceLock::new();
 
 pub fn set_project_root(root: &std::path::Path) {
-    let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let canonical = rude_util::safe_canonicalize(root);
     let mut s = canonical.to_string_lossy().replace('\\', "/");
     if let Some(stripped) = s.strip_prefix("//?/") {
         s = stripped.to_owned();

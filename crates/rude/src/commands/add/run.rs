@@ -95,10 +95,7 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     if let Ok(mut config) = DbConfig::load(&engine) {
         config.code = true;
         config.embedded = false;
-        if let Ok(canonical) = input_path.canonicalize() {
-            let path_str = canonical.to_string_lossy();
-            config.input_path = Some(rude_util::strip_unc_prefix(&path_str).to_owned());
-        }
+        config.input_path = Some(rude_util::safe_canonicalize(&input_path).to_string_lossy().into_owned());
         let _ = config.save(&engine);
     }
 
@@ -180,7 +177,7 @@ fn run_sub_workspaces(
     let sub_workspaces = find_sub_workspaces(root);
     let abs_root = rude_util::safe_canonicalize(root);
     for ws in &sub_workspaces {
-        let abs_ws = rude_util::safe_canonicalize(&ws.canonicalize().unwrap_or(abs_root.join(ws)));
+        let abs_ws = rude_util::safe_canonicalize(ws);
         let ws_mir_db = abs_ws.join("target").join("mir-edges").join("mir.db");
         let has_changes = code_files.iter().any(|f| {
             let abs_f = if f.is_absolute() { f.to_path_buf() } else { abs_root.join(f) };
@@ -220,7 +217,7 @@ fn run_mir_cargo_wrapper(ws: &std::path::Path) -> Result<()> {
     std::fs::create_dir_all(&out_dir).ok();
     let abs_out = rude_util::safe_canonicalize(&out_dir);
     let abs_db = abs_out.join("mir.db");
-    let abs_bin = rude_util::safe_canonicalize(&bin.canonicalize().unwrap_or(bin));
+    let abs_bin = rude_util::safe_canonicalize(&bin);
     let status = std::process::Command::new("cargo")
         .arg("check").arg("--tests")
         .env("RUSTUP_TOOLCHAIN", "nightly")
