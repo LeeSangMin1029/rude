@@ -11,7 +11,11 @@ pub fn run(args: &[String]) {
 
     let tc_hash = Command::new("rustc").arg("+nightly").arg("--version")
         .output().ok().and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|v| v.trim().chars().rev().take(9).collect::<String>().chars().rev().collect::<String>())
+        .and_then(|v| {
+            let v = v.trim().trim_end_matches(')').trim();
+            let date = v.rsplit_once(' ')?.1;
+            Some(date.to_owned())
+        })
         .unwrap_or_else(|| "unknown".into());
     let target_dir = format!("target/mir-check-{tc_hash}");
     let mut cmd = Command::new("cargo");

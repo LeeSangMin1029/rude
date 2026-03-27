@@ -1,5 +1,30 @@
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use anyhow::{Result, bail};
+use fs2::FileExt;
+
+pub(crate) fn locked_edit<F: FnOnce(&str) -> Result<String>>(path: &Path, f: F) -> Result<()> {
+    let lock_path = path.with_extension("lock");
+    let lock = File::create(&lock_path)?;
+    lock.lock_exclusive()?;
+    let content = std::fs::read_to_string(path)?;
+    let new = f(&content)?;
+    std::fs::write(path, new)?;
+    lock.unlock()?;
+    let _ = std::fs::remove_file(&lock_path);
+    Ok(())
+}
+
+pub(crate) fn splice_file(path: &Path, f: impl FnOnce(&mut Vec<String>)) -> Result<()> {
+    locked_edit(path, |content| {
+        let mut lines: Vec<String> = content.lines().map(String::from).collect();
+        let trailing = content.ends_with('\n');
+        f(&mut lines);
+        let mut out = lines.join("\n");
+        if trailing { out.push('\n'); }
+        Ok(out)
+    })
+}
 
 pub(crate) fn resolve_abs_path(db: &Path, file: &str) -> Result<PathBuf> {
     let cwd = std::env::current_dir().unwrap_or_default();

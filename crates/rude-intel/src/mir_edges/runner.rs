@@ -16,7 +16,11 @@ fn mir_callgraph_bin_name() -> &'static str {
 
 pub fn mir_check_dir_name() -> String {
     nightly_rustc_version()
-        .map(|v| format!("mir-check-{}", &v[v.len().saturating_sub(9)..]))
+        .and_then(|v| {
+            let v = v.trim_end_matches(')').trim();
+            let date = v.rsplit_once(' ')?.1;
+            Some(format!("mir-check-{date}"))
+        })
         .unwrap_or_else(|| "mir-check".into())
 }
 

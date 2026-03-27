@@ -1,8 +1,8 @@
 use std::path::Path;
 use anyhow::{Context, Result, bail};
-use super::Op;
+use super::ops::Op;
 use super::locate::{SymbolLocation, locate_symbol};
-use super::file_ops::locked_edit;
+use super::file::locked_edit;
 
 pub fn split(symbols: String, to: String, dry_run: bool) -> Result<()> {
     let db = crate::db();
