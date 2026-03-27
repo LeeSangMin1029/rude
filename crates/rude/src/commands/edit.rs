@@ -195,7 +195,21 @@ pub(crate) fn locate_symbol(db: &Path, symbol: &str, file_hint: Option<&str>) ->
     let candidates: Vec<u32> = indices.into_iter()
         .filter(|&i| file_hint.is_none_or(|f| graph.chunks[i as usize].file.ends_with(f)))
         .collect();
-    if candidates.is_empty() { bail!("Symbol '{symbol}' not found"); }
+    let leaf = symbol.rsplit("::").next().unwrap_or(symbol);
+    // graph에 없으면 file_hint + syn으로 직접 찾기 (새로 삽입된 심볼 등)
+    if candidates.is_empty() {
+        let Some(hint) = file_hint else { bail!("Symbol '{symbol}' not found (use --file to search by syn)"); };
+        // graph에 없지만 파일에서 직접 찾기 — suffix 매칭으로 파일 경로 탐색
+        let matching_file = graph.chunks.iter()
+            .find(|c| c.file.ends_with(hint))
+            .map(|c| c.file.clone());
+        let file_path = matching_file.as_deref().unwrap_or(hint);
+        let abs_path = resolve_abs_path(db, file_path)?;
+        if !abs_path.exists() { bail!("File not found: {}", abs_path.display()); }
+        let rel = relative_display(db, file_path);
+        let (start, end) = syn_locate(&abs_path, leaf)?;
+        return Ok(SymbolLocation { abs_path, rel_path: rel, start_line: start, end_line: end });
+    }
     if candidates.len() > 1 {
         let locs: Vec<String> = candidates.iter()
             .map(|&i| { let c = &graph.chunks[i as usize]; format!("  {} [{}] {}:{}", c.name, c.kind,
@@ -205,8 +219,6 @@ pub(crate) fn locate_symbol(db: &Path, symbol: &str, file_hint: Option<&str>) ->
     let chunk = &graph.chunks[candidates[0] as usize];
     let abs_path = resolve_abs_path(db, &chunk.file)?;
     let rel = relative_display(db, &chunk.file);
-    // Use syn to find exact line range from actual file content (not cached MIR lines)
-    let leaf = symbol.rsplit("::").next().unwrap_or(symbol);
     let (start, end) = syn_locate(&abs_path, leaf)?;
     Ok(SymbolLocation { abs_path, rel_path: rel, start_line: start, end_line: end })
 }
