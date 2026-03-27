@@ -232,6 +232,7 @@ fn end_line_of(span: proc_macro2::Span) -> usize {
 }
 
 fn syn_locate(path: &Path, name: &str) -> Result<(usize, usize)> {
+    use syn::spanned::Spanned;
     let content = std::fs::read_to_string(path)?;
     let file = syn::parse_file(&content).context("syn parse failed")?;
     for item in &file.items {
@@ -240,7 +241,8 @@ fn syn_locate(path: &Path, name: &str) -> Result<(usize, usize)> {
             for sub in &imp.items {
                 if let syn::ImplItem::Fn(f) = sub {
                     if f.sig.ident == name {
-                        return Ok((line_of(f.sig.fn_token.span), end_line_of(f.block.brace_token.span.close())));
+                        let start = if f.attrs.is_empty() { line_of(f.sig.fn_token.span) } else { line_of(f.attrs[0].span()) };
+                        return Ok((start, end_line_of(f.block.brace_token.span.close())));
                     }
                 }
             }
@@ -249,12 +251,17 @@ fn syn_locate(path: &Path, name: &str) -> Result<(usize, usize)> {
     bail!("Symbol '{name}' not found by syn in {}", path.display())
 }
 
+fn item_start(attrs: &[syn::Attribute], fallback: proc_macro2::Span) -> usize {
+    use syn::spanned::Spanned;
+    if attrs.is_empty() { line_of(fallback) } else { line_of(attrs[0].span()) }
+}
+
 fn item_span(item: &syn::Item, name: &str) -> Option<(usize, usize)> {
     match item {
         syn::Item::Fn(f) if f.sig.ident == name =>
-            Some((line_of(f.sig.fn_token.span), end_line_of(f.block.brace_token.span.close()))),
+            Some((item_start(&f.attrs, f.sig.fn_token.span), end_line_of(f.block.brace_token.span.close()))),
         syn::Item::Struct(s) if s.ident == name => {
-            let start = line_of(s.struct_token.span);
+            let start = item_start(&s.attrs, s.struct_token.span);
             let end = match &s.fields {
                 syn::Fields::Named(n) => end_line_of(n.brace_token.span.close()),
                 syn::Fields::Unnamed(u) => end_line_of(u.paren_token.span.close()),
@@ -263,9 +270,15 @@ fn item_span(item: &syn::Item, name: &str) -> Option<(usize, usize)> {
             Some((start, end))
         }
         syn::Item::Enum(e) if e.ident == name =>
-            Some((line_of(e.enum_token.span), end_line_of(e.brace_token.span.close()))),
+            Some((item_start(&e.attrs, e.enum_token.span), end_line_of(e.brace_token.span.close()))),
         syn::Item::Trait(t) if t.ident == name =>
-            Some((line_of(t.trait_token.span), end_line_of(t.brace_token.span.close()))),
+            Some((item_start(&t.attrs, t.trait_token.span), end_line_of(t.brace_token.span.close()))),
+        syn::Item::Const(c) if c.ident == name =>
+            Some((item_start(&c.attrs, c.const_token.span), line_of(c.semi_token.span))),
+        syn::Item::Static(s) if s.ident == name =>
+            Some((item_start(&s.attrs, s.static_token.span), line_of(s.semi_token.span))),
+        syn::Item::Type(t) if t.ident == name =>
+            Some((item_start(&t.attrs, t.type_token.span), line_of(t.semi_token.span))),
         _ => None,
     }
 }
