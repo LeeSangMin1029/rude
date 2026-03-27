@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 
 use rude_db::file_index;
-use rude_db::file_utils::normalize_source;
+use rude_util::normalize_source;
 
 const IGNORED_DIRS: &[&str] = &[".git", "target", "node_modules", "__pycache__"];
 

@@ -25,7 +25,7 @@ pub fn mir_check_dir_name() -> String {
 }
 
 fn rude_home() -> Result<PathBuf> {
-    let home = rude_db::home_dir()
+    let home = rude_util::home_dir()
         .context("cannot determine home directory")?;
     Ok(home.join(".rude"))
 }

@@ -37,11 +37,11 @@ pub(crate) fn resolve_abs_path(db: &Path, file: &str) -> Result<PathBuf> {
     let cwd = std::env::current_dir().unwrap_or_default();
     let db_dir = db.parent().unwrap_or(Path::new("."));
     let p = PathBuf::from(file);
-    if p.is_absolute() { return Ok(rude_db::strip_unc_prefix_path(&p)); }
+    if p.is_absolute() { return Ok(rude_util::strip_unc_prefix_path(&p)); }
     let try_cwd = cwd.join(file);
     if try_cwd.exists() { return Ok(try_cwd); }
     let try_db = db_dir.canonicalize().unwrap_or(db_dir.to_path_buf()).join(file);
-    Ok(rude_db::strip_unc_prefix_path(&try_db))
+    Ok(rude_util::strip_unc_prefix_path(&try_db))
 }
 
 pub(crate) fn resolve_path(db: &Path, file: &str) -> Result<(PathBuf, String)> {
@@ -57,7 +57,7 @@ pub(crate) fn relative_display(db: &Path, file: &str) -> String {
         db.parent().unwrap_or(Path::new(".")).canonicalize().unwrap_or_default()
     };
     let norm = file.replace('\\', "/");
-    let root_s = rude_db::strip_unc_prefix(&root.to_string_lossy()).replace('\\', "/");
+    let root_s = rude_util::strip_unc_prefix(&root.to_string_lossy()).replace('\\', "/");
     norm.strip_prefix(&format!("{root_s}/")).unwrap_or(&norm).to_string()
 }
 

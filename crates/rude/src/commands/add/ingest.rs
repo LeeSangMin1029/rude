@@ -96,7 +96,7 @@ pub(crate) fn ingest_mir(
     file_metadata_map: &mut HashMap<String, (u64, u64, Vec<u64>)>,
     changed_sources: Option<&std::collections::HashSet<String>>,
 ) -> Result<(), anyhow::Error> {
-    use rude_db::file_utils::{generate_id, normalize_source};
+    use rude_util::{generate_id, normalize_source};
     use rude_intel::parse::normalize_path;
 
     // Prefer prod over test when the same name appears in the same file.
@@ -132,10 +132,10 @@ pub(crate) fn ingest_mir(
         if let Some(changed) = changed_sources {
             if !changed.contains(&source) { continue; }
         }
-        let mtime = rude_db::file_utils::get_file_mtime(&file_path).unwrap_or(0);
+        let mtime = rude_util::get_file_mtime(&file_path).unwrap_or(0);
         let size = rude_db::file_index::get_file_size(&file_path).unwrap_or(0);
         let ext = std::path::Path::new(file_key).extension().and_then(|e| e.to_str()).unwrap_or("");
-        let _lang = rude_db::lang_for_ext(ext);
+        let _lang = rude_util::lang_for_ext(ext);
 
         // Read file lines once; needed when sqlite stores empty body (no-body mode).
         let file_lines: Option<Vec<String>> = if indices.iter().any(|&i| deduped[i].body.is_empty()) {
@@ -206,7 +206,7 @@ pub(crate) fn write_chunks(
     // Update in-memory file index (chunks table skipped — all reads use kv_cache bincode).
     for (path, (mtime, size, chunk_ids)) in file_metadata_map {
         let hash = if include_content_hash {
-            Some(rude_db::file_utils::content_hash(std::path::Path::new(path)).unwrap_or(0))
+            Some(rude_util::content_hash(std::path::Path::new(path)).unwrap_or(0))
         } else {
             None
         };

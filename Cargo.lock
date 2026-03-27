@@ -694,6 +694,7 @@ dependencies = [
  "rayon",
  "rude-db",
  "rude-intel",
+ "rude-util",
  "serde",
  "serde_json",
  "syn",
@@ -707,11 +708,9 @@ name = "rude-db"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "ctrlc",
  "rusqlite",
  "serde",
  "serde_json",
- "walkdir",
 ]
 
 [[package]]
@@ -723,12 +722,22 @@ dependencies = [
  "fs2",
  "rayon",
  "rude-db",
+ "rude-util",
  "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
  "tracing",
  "xxhash-rust",
+]
+
+[[package]]
+name = "rude-util"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ctrlc",
+ "walkdir",
 ]
 
 [[package]]

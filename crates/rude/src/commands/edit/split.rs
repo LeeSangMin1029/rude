@@ -49,7 +49,7 @@ pub fn split(symbols: String, to: String, dry_run: bool) -> Result<()> {
         print_dry_run(&to, &new_file_content, &locs[0].rel_path, &reexport_line, source_dir, &mod_decl, &ranges);
         return Ok(());
     }
-    let root = rude_intel::helpers::find_project_root(db)
+    let root = rude_util::find_project_root(db)
         .context("Cannot determine project root from DB path")?;
     let target_path = root.join(&to);
     if target_path.exists() {

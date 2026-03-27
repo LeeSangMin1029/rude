@@ -10,7 +10,7 @@ fn main() {
 
 
 
-    rude_db::interrupt::install_handler();
+    rude_util::interrupt::install_handler();
 
     // 32 MB stack: graph build + deep recursion in SCIP parsing can exhaust default stack.
     let result = std::thread::Builder::new()
@@ -101,6 +101,12 @@ fn run() -> anyhow::Result<()> {
         }
         Commands::Split { symbols, to, dry_run } => {
             commands::edit::split(symbols, to, dry_run)
+        }
+        Commands::CleanImports { file } => {
+            commands::edit::clean_imports(file)
+        }
+        Commands::EnsureImport { file, import } => {
+            commands::edit::ensure_import_cmd(file, import)
         }
     }
 }

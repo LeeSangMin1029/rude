@@ -1,17 +1,19 @@
 use std::io::Write;
 
-use crate::types::{CallEdge, MirChunk};
+use crate::types::{CallEdge, MirChunk, UseItem, UseDep};
 
 pub fn write_results(
     crate_name: &str,
     edges: &[CallEdge],
     chunks: &[MirChunk],
+    uses: &[UseItem],
+    use_deps: &[UseDep],
     fn_count: usize,
     json: bool,
     db_path: &Option<String>,
 ) {
     if let Some(db) = db_path {
-        write_sqlite(db, crate_name, edges, chunks);
+        write_sqlite(db, crate_name, edges, chunks, uses, use_deps);
     } else if json {
         write_stdout(edges);
     }
@@ -25,7 +27,7 @@ pub fn write_results(
     }
 }
 
-fn write_sqlite(db_path: &str, crate_name: &str, edges: &[CallEdge], chunks: &[MirChunk]) {
+fn write_sqlite(db_path: &str, crate_name: &str, edges: &[CallEdge], chunks: &[MirChunk], uses: &[UseItem], use_deps: &[UseDep]) {
     if let Some(parent) = std::path::Path::new(db_path).parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -50,6 +52,13 @@ fn write_sqlite(db_path: &str, crate_name: &str, edges: &[CallEdge], chunks: &[M
             signature TEXT, visibility TEXT, is_test INTEGER,
             body TEXT, calls TEXT, type_refs TEXT, crate_name TEXT,
             UNIQUE(name, kind, crate_name)
+        );
+        CREATE TABLE IF NOT EXISTS mir_uses (
+            file TEXT, line INTEGER, source TEXT, resolved TEXT, crate_name TEXT,
+            UNIQUE(file, line, crate_name)
+        );
+        CREATE TABLE IF NOT EXISTS mir_use_deps (
+            fn_name TEXT, fn_file TEXT, use_file TEXT, use_line INTEGER, crate_name TEXT
         );
     ");
 
@@ -77,6 +86,24 @@ fn write_sqlite(db_path: &str, crate_name: &str, edges: &[CallEdge], chunks: &[M
                 c.signature, c.visibility, c.is_test as i32,
                 "", c.calls, c.type_refs, crate_name,
             ]);
+        }
+    }
+    {
+        let _ = tx.execute("DELETE FROM mir_uses WHERE crate_name = ?1", rusqlite::params![crate_name]);
+        let mut stmt = tx.prepare_cached(
+            "INSERT OR IGNORE INTO mir_uses VALUES (?1,?2,?3,?4,?5)"
+        ).unwrap();
+        for u in uses {
+            let _ = stmt.execute(rusqlite::params![u.file, u.line, u.source, u.resolved, crate_name]);
+        }
+    }
+    {
+        let _ = tx.execute("DELETE FROM mir_use_deps WHERE crate_name = ?1", rusqlite::params![crate_name]);
+        let mut stmt = tx.prepare_cached(
+            "INSERT INTO mir_use_deps VALUES (?1,?2,?3,?4,?5)"
+        ).unwrap();
+        for d in use_deps {
+            let _ = stmt.execute(rusqlite::params![d.fn_name, d.fn_file, d.use_file, d.use_line, crate_name]);
         }
     }
     let _ = tx.commit();

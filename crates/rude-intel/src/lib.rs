@@ -17,7 +17,6 @@ pub use graph::trace;
 
 pub use analysis::clones;
 pub use analysis::dupe_analyze;
-pub use analysis::helpers;
 pub use analysis::loader;
 pub use analysis::stats;
 

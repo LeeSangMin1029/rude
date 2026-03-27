@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use anyhow::Result;
 
 use rude_intel::graph;
-use rude_intel::helpers::{apply_alias, build_path_aliases, format_lines_opt, relative_path};
+use rude_util::{apply_alias, build_path_aliases, format_lines_opt, relative_path};
 use rude_intel::impact;
 use rude_intel::parse::ParsedChunk;
 use rude_intel::stats::build_stats;

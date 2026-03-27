@@ -8,6 +8,7 @@ license.workspace = true
 name = "rude_intel"
 
 [dependencies]
+rude-util = { path = "../rude-util" }
 rude-db = { path = "../rude-db" }
 anyhow = "1"
 rusqlite = { version = "0.34", features = ["bundled"] }

@@ -1,6 +1,6 @@
 //! Unit tests for `commands::intel::context` helper functions.
 
-use rude_intel::helpers::{format_lines_opt as format_lines, };
+use rude_util::{format_lines_opt as format_lines, };
 
 // ---------------------------------------------------------------------------
 // format_lines

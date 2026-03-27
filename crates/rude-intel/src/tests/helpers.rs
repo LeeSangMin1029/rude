@@ -1,4 +1,4 @@
-use crate::helpers::{
+use rude_util::{
     apply_alias, build_path_aliases, extract_crate_name, format_lines_opt, relative_path,
 };
 

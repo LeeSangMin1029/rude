@@ -45,6 +45,22 @@ impl RustcArgs {
     }
 }
 
+#[derive(Serialize)]
+pub struct UseItem {
+    pub file: String,
+    pub line: usize,
+    pub source: String,
+    pub resolved: String,
+}
+
+#[derive(Serialize)]
+pub struct UseDep {
+    pub fn_name: String,
+    pub fn_file: String,
+    pub use_file: String,
+    pub use_line: usize,
+}
+
 pub fn env_config() -> (bool, Option<String>) {
     (std::env::var("MIR_CALLGRAPH_JSON").is_ok(), std::env::var("MIR_CALLGRAPH_DB").ok())
 }

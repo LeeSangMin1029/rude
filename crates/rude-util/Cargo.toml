@@ -1,0 +1,10 @@
+[package]
+name = "rude-util"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = "1"
+walkdir = "2"
+ctrlc = "3"

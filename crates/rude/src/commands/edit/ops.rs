@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use super::file::{splice_file, resolve_path, check_line, check_range};
 use super::locate::locate_symbol;
+use super::imports;
 
 pub enum Op<'a> { Replace(&'a str), Before(&'a str), After(&'a str), Delete }
 
@@ -133,7 +134,7 @@ pub fn replace_lines(file: String, start: usize, end: usize, body: String) -> Re
 }
 
 pub fn create_file(file: String, body: String) -> Result<()> {
-    let root = rude_intel::helpers::find_project_root(crate::db())
+    let root = rude_util::find_project_root(crate::db())
         .context("Cannot determine project root")?;
     let path = root.join(&file);
     if path.exists() { bail!("File already exists: {}", path.display()); }
@@ -141,6 +142,16 @@ pub fn create_file(file: String, body: String) -> Result<()> {
     std::fs::write(&path, body.trim_end().to_owned() + "\n")?;
     eprintln!("  Created {file}");
     Ok(())
+}
+
+pub fn clean_imports(file: String) -> Result<()> {
+    let (abs, _) = resolve_path(crate::db(), &file)?;
+    imports::cleanup_unused_imports(&abs)
+}
+
+pub fn ensure_import_cmd(file: String, import: String) -> Result<()> {
+    let (abs, _) = resolve_path(crate::db(), &file)?;
+    imports::ensure_import(&abs, &import)
 }
 
 fn str_to_op<'a>(op: &str, body: &'a str) -> Op<'a> {

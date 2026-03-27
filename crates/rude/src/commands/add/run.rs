@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 
 use rude_db::file_index;
-use rude_db::file_utils::scan_files;
+use rude_util::scan_files;
 use rude_db::DbConfig;
-use rude_db::is_interrupted;
+use rude_util::is_interrupted;
 use rude_db::StorageEngine;
 
 use super::{ingest_mir, write_chunks, CodeChunkEntry};
@@ -27,7 +27,7 @@ macro_rules! prof {
 
 pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     let db_path = crate::db().to_path_buf();
-    use rude_db::file_utils::get_file_mtime;
+    use rude_util::get_file_mtime;
 
     rude_intel::parse::set_project_root(&input_path);
 
@@ -41,7 +41,7 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     }
 
     let current_sources: std::collections::HashSet<String> =
-        all_files.iter().map(|f| rude_db::file_utils::normalize_source(f)).collect();
+        all_files.iter().map(|f| rude_util::normalize_source(f)).collect();
 
     let file_idx_engine = if db_path.join("store.db").exists() {
         Some(StorageEngine::open(&db_path)
@@ -55,19 +55,19 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     };
     drop(file_idx_engine);
     let code_files: Vec<_> = all_files.iter().filter(|f| {
-        let source = rude_db::file_utils::normalize_source(f);
+        let source = rude_util::normalize_source(f);
         match file_idx.get_file(&source) {
             Some(entry) => {
                 if get_file_mtime(*f).is_none_or(|m| m == entry.mtime) { return false; }
                 entry.content_hash.is_none_or(|prev| {
-                    rude_db::file_utils::content_hash(f).is_ok_and(|cur| cur != prev)
+                    rude_util::content_hash(f).is_ok_and(|cur| cur != prev)
                 })
             }
             None => true,
         }
     }).collect();
     let source_cache: HashMap<std::path::PathBuf, String> = code_files.iter()
-        .map(|f| ((*f).clone(), rude_db::file_utils::normalize_source(f))).collect();
+        .map(|f| ((*f).clone(), rude_util::normalize_source(f))).collect();
 
     if code_files.is_empty() {
         println!("No files changed. Nothing to update.");
@@ -97,7 +97,7 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
         config.embedded = false;
         if let Ok(canonical) = input_path.canonicalize() {
             let path_str = canonical.to_string_lossy();
-            config.input_path = Some(rude_db::strip_unc_prefix(&path_str).to_owned());
+            config.input_path = Some(rude_util::strip_unc_prefix(&path_str).to_owned());
         }
         let _ = config.save(&engine);
     }
@@ -135,7 +135,7 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
                     .get_file(&source)
                     .map(|e| e.chunk_ids.clone())
                     .unwrap_or_default();
-                let hash = rude_db::file_utils::content_hash(f).unwrap_or(0);
+                let hash = rude_util::content_hash(f).unwrap_or(0);
                 file_idx.update_file(source, mtime, size, existing_chunk_ids, Some(hash));
             }
         }
@@ -178,9 +178,9 @@ fn run_sub_workspaces(
     root: &std::path::Path, main_mir_db: &std::path::Path, code_files: &[&PathBuf],
 ) -> Result<()> {
     let sub_workspaces = find_sub_workspaces(root);
-    let abs_root = root.canonicalize().unwrap_or(root.to_path_buf());
+    let abs_root = rude_util::safe_canonicalize(root);
     for ws in &sub_workspaces {
-        let abs_ws = ws.canonicalize().unwrap_or(abs_root.join(ws));
+        let abs_ws = rude_util::safe_canonicalize(&ws.canonicalize().unwrap_or(abs_root.join(ws)));
         let ws_mir_db = abs_ws.join("target").join("mir-edges").join("mir.db");
         let has_changes = code_files.iter().any(|f| {
             let abs_f = if f.is_absolute() { f.to_path_buf() } else { abs_root.join(f) };
@@ -212,22 +212,15 @@ fn run_sub_workspaces(
     Ok(())
 }
 
-fn strip_unc(p: PathBuf) -> PathBuf {
-    let s = p.to_string_lossy();
-    if let Some(rest) = s.strip_prefix(r"\\?\") {
-        PathBuf::from(rest)
-    } else {
-        p
-    }
-}
+
 
 fn run_mir_cargo_wrapper(ws: &std::path::Path) -> Result<()> {
     let bin = rude_intel::mir_edges::find_mir_callgraph_bin(None)?;
     let out_dir = ws.join("target").join("mir-edges");
     std::fs::create_dir_all(&out_dir).ok();
-    let abs_out = strip_unc(out_dir.canonicalize().unwrap_or(out_dir.clone()));
+    let abs_out = rude_util::safe_canonicalize(&out_dir);
     let abs_db = abs_out.join("mir.db");
-    let abs_bin = strip_unc(bin.canonicalize().unwrap_or(bin));
+    let abs_bin = rude_util::safe_canonicalize(&bin.canonicalize().unwrap_or(bin));
     let status = std::process::Command::new("cargo")
         .arg("check").arg("--tests")
         .env("RUSTUP_TOOLCHAIN", "nightly")
@@ -282,12 +275,12 @@ fn detect_sub_workspaces(root: &std::path::Path) -> Vec<PathBuf> {
         .args(["ls-files", "--cached", "--others", "--exclude-standard", "*/Cargo.toml"])
         .current_dir(root).output().ok();
     let Some(git_out) = git_output.filter(|o| o.status.success()) else { return Vec::new() };
-    let abs_root = strip_unc(root.canonicalize().unwrap_or(root.to_path_buf()));
+    let abs_root = rude_util::safe_canonicalize(root);
     String::from_utf8_lossy(&git_out.stdout).lines()
         .filter_map(|line| {
             let parent = PathBuf::from(line).parent()?.to_path_buf();
             if parent.as_os_str().is_empty() { return None; }
-            let abs_dir = strip_unc(abs_root.join(&parent));
+            let abs_dir = rude_util::safe_canonicalize(&abs_root.join(&parent));
             let dir_norm = norm(&abs_dir.to_string_lossy());
             if members.contains(&dir_norm) || dir_norm == ws_root { return None; }
             Some(root.join(parent))
@@ -304,7 +297,7 @@ fn lang_summary(files: &[&PathBuf]) -> String {
     let mut counts: HashMap<&str, usize> = HashMap::new();
     for f in files {
         let ext = f.extension().and_then(|e| e.to_str()).unwrap_or("");
-        *counts.entry(rude_db::lang_for_ext(ext)).or_default() += 1;
+        *counts.entry(rude_util::lang_for_ext(ext)).or_default() += 1;
     }
     let mut pairs: Vec<_> = counts.iter().collect();
     pairs.sort_by(|a, b| b.1.cmp(a.1));
@@ -395,11 +388,11 @@ fn scan_files_fast(input_path: &std::path::Path, exclude: &[String]) -> Vec<Path
             let files: Vec<PathBuf> = String::from_utf8_lossy(&out.stdout).lines()
                 .filter_map(|line| {
                     let p = input_path.join(line);
-                    rude_db::is_code_ext(p.extension().and_then(|e| e.to_str()).unwrap_or("")).then_some(p)
+                    rude_util::is_code_ext(p.extension().and_then(|e| e.to_str()).unwrap_or("")).then_some(p)
                 })
                 .collect();
             if !files.is_empty() { return files; }
         }
     }
-    scan_files(input_path, exclude, rude_db::is_code_ext)
+    scan_files(input_path, exclude, rude_util::is_code_ext)
 }

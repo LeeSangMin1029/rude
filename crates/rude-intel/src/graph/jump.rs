@@ -2,7 +2,7 @@
 use std::collections::HashSet;
 
 use crate::graph::build::CallGraph;
-use crate::analysis::helpers::{apply_alias, format_lines_opt, relative_path};
+use rude_util::{apply_alias, format_lines_opt, relative_path};
 
 pub struct FlowNode {
     pub idx: u32,

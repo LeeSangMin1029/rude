@@ -219,8 +219,8 @@ impl CallGraph {
     pub fn is_empty(&self) -> bool { self.chunks.is_empty() }
 
     pub fn global_aliases(&self) -> (std::collections::BTreeMap<String, String>, Vec<(String, String)>) {
-        let all: Vec<&str> = self.chunks.iter().map(|c| crate::helpers::relative_path(&c.file)).collect();
-        crate::helpers::build_path_aliases(&all)
+        let all: Vec<&str> = self.chunks.iter().map(|c| rude_util::relative_path(&c.file)).collect();
+        rude_util::build_path_aliases(&all)
     }
 }
 

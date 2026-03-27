@@ -7,7 +7,7 @@ use rustc_public::mir::visit::Location;
 use rustc_public::ty::{RigidTy, TyKind, Span, AdtKind};
 
 use crate::output;
-use crate::types::{CallEdge, MirChunk};
+use crate::types::{CallEdge, MirChunk, UseItem, UseDep};
 
 // ── Span helpers ────────────────────────────────────────────────────
 
@@ -270,13 +270,120 @@ pub fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -
 
     // Fill calls per chunk
     fill_chunk_calls(&mut chunks, &edges);
+    // Phase 3: use items + dependency mapping via HIR
+    let (uses, use_deps) = collect_use_deps();
     let t_mir = t_all.elapsed();
     let t_out = std::time::Instant::now();
-    output::write_results(&crate_name, &edges, &chunks, fn_count, json, db_path);
+    output::write_results(&crate_name, &edges, &chunks, &uses, &use_deps, fn_count, json, db_path);
     let t_db = t_out.elapsed();
     eprintln!("[prof:extract] {crate_name}: mir={:.0}us db={:.0}us fns={fn_count} chunks={}", t_mir.as_micros(), t_db.as_micros(), chunks.len());
 
     ControlFlow::Continue(())
+}
+
+fn collect_use_deps() -> (Vec<UseItem>, Vec<UseDep>) {
+    let mut uses = Vec::new();
+    let mut deps = Vec::new();
+    rustc_middle::ty::tls::with(|tcx| {
+        let source_map = tcx.sess.source_map();
+        let mut def_to_use: HashMap<rustc_hir::def_id::DefId, Vec<(String, usize)>> = HashMap::new();
+        for item_id in tcx.hir_crate_items(()).free_items() {
+            let item = tcx.hir_item(item_id);
+            let rustc_hir::ItemKind::Use(path, kind) = &item.kind else { continue };
+            let span = item.span;
+            let file = match source_map.span_to_filename(span) {
+                rustc_span::FileName::Real(ref name) => match name.local_path() {
+                    Some(p) => format!("{}", p.display()).replace('\\', "/"),
+                    None => continue,
+                },
+                _ => continue,
+            };
+            if !is_local_file(&file) { continue; }
+            let line = source_map.lookup_char_pos(span.lo()).line;
+            let source = source_map.span_to_snippet(span).unwrap_or_default();
+            let kind_str = match kind {
+                rustc_hir::UseKind::Single(_) => "single",
+                rustc_hir::UseKind::Glob => "glob",
+                rustc_hir::UseKind::ListStem => "list",
+            };
+            let resolved_path: String = path.segments.iter()
+                .map(|seg| seg.ident.to_string()).collect::<Vec<_>>().join("::");
+            uses.push(UseItem {
+                file: file.clone(),
+                line,
+                source,
+                resolved: format!("{resolved_path} ({kind_str})"),
+            });
+            if let Some(rustc_hir::def::Res::Def(_, def_id)) = path.res.type_ns {
+                def_to_use.entry(def_id).or_default().push((file.clone(), line));
+            }
+            if let Some(rustc_hir::def::Res::Def(_, def_id)) = path.res.value_ns {
+                def_to_use.entry(def_id).or_default().push((file, line));
+            }
+        }
+        // Walk each function body to collect referenced DefIds
+        for owner_id in tcx.hir_crate_items(()).owners() {
+            let local_def_id = owner_id.def_id;
+            let item = tcx.hir_item(rustc_hir::ItemId { owner_id });
+            let has_body = matches!(item.kind, rustc_hir::ItemKind::Fn { .. } | rustc_hir::ItemKind::Static(..));
+            if !has_body { continue; }
+            let owner_span = tcx.def_span(local_def_id);
+            let fn_file = match source_map.span_to_filename(owner_span) {
+                rustc_span::FileName::Real(ref name) => match name.local_path() {
+                    Some(p) => format!("{}", p.display()).replace('\\', "/"),
+                    None => continue,
+                },
+                _ => continue,
+            };
+            if !is_local_file(&fn_file) { continue; }
+            let fn_name = strip_crate_prefix(&tcx.def_path_str(local_def_id.to_def_id()));
+            let body = tcx.hir_body_owned_by(local_def_id);
+            let mut collector = DefIdCollector { def_ids: Vec::new() };
+            rustc_hir::intravisit::walk_body(&mut collector, &body);
+            let mut seen_use_lines: std::collections::HashSet<(String, usize)> = std::collections::HashSet::new();
+            for def_id in &collector.def_ids {
+                if let Some(use_locs) = def_to_use.get(def_id) {
+                    for (use_file, use_line) in use_locs {
+                        if use_file == &fn_file && seen_use_lines.insert((use_file.clone(), *use_line)) {
+                            deps.push(UseDep {
+                                fn_name: fn_name.clone(),
+                                fn_file: fn_file.clone(),
+                                use_file: use_file.clone(),
+                                use_line: *use_line,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    });
+    (uses, deps)
+}
+
+struct DefIdCollector {
+    def_ids: Vec<rustc_hir::def_id::DefId>,
+}
+
+impl<'hir> rustc_hir::intravisit::Visitor<'hir> for DefIdCollector {
+    fn visit_path(&mut self, path: &rustc_hir::Path<'hir>, _id: rustc_hir::HirId) {
+        if let rustc_hir::def::Res::Def(_, def_id) = path.res {
+            self.def_ids.push(def_id);
+        }
+        rustc_hir::intravisit::walk_path(self, path);
+    }
+    fn visit_expr(&mut self, expr: &'hir rustc_hir::Expr<'hir>) {
+        if let rustc_hir::ExprKind::Path(ref qpath) = expr.kind {
+            match qpath {
+                rustc_hir::QPath::Resolved(_, path) => {
+                    if let rustc_hir::def::Res::Def(_, def_id) = path.res {
+                        self.def_ids.push(def_id);
+                    }
+                }
+                _ => {}
+            }
+        }
+        rustc_hir::intravisit::walk_expr(self, expr);
+    }
 }
 
 fn collect_type_chunks(krate: &rustc_public::Crate, chunks: &mut Vec<MirChunk>) -> std::collections::HashSet<String> {

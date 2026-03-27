@@ -2,7 +2,7 @@
 use std::collections::BTreeMap;
 
 use crate::graph::index_tables::is_test_chunk;
-use crate::analysis::helpers::extract_crate_name;
+use rude_util::extract_crate_name;
 use crate::data::parse::ParsedChunk;
 
 pub fn build_stats(chunks: &[ParsedChunk]) -> BTreeMap<String, [usize; 4]> {

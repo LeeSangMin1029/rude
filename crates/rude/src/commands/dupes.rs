@@ -178,7 +178,7 @@ fn label(chunks: &[ParsedChunk], idx: usize) -> String {
     parse_label(chunks, idx).display()
 }
 
-use rude_intel::helpers::{apply_alias, build_path_aliases};
+use rude_util::{apply_alias, build_path_aliases};
 use rude_intel::parse::normalize_path;
 
 fn group_by_file(

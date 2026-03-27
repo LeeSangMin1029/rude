@@ -1,5 +1,5 @@
 use rude_intel::trace::bfs_shortest_path;
-use rude_intel::helpers::{format_lines_opt as format_lines, };
+use rude_util::{format_lines_opt as format_lines, };
 use rude_intel::graph::CallGraph;
 
 use super::helpers::chunk;

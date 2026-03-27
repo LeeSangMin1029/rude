@@ -10,8 +10,6 @@ pub fn set_interrupted() {
     INTERRUPTED.store(true, Ordering::SeqCst);
 }
 
-/// Install Ctrl+C handler that sets the interrupt flag.
-/// Shared by all binaries that need graceful shutdown.
 pub fn install_handler() {
     if let Err(e) = ctrlc::set_handler(move || {
         set_interrupted();

@@ -1,7 +1,7 @@
 
 use anyhow::Result;
 
-use rude_intel::helpers::{apply_alias, extract_crate_name, format_lines_opt, relative_path};
+use rude_util::{apply_alias, extract_crate_name, format_lines_opt, relative_path};
 
 use super::query::load_or_build_graph;
 

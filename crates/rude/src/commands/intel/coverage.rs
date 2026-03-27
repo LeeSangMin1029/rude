@@ -1,7 +1,7 @@
 
 use anyhow::Result;
 
-use rude_intel::helpers::extract_crate_name;
+use rude_util::extract_crate_name;
 
 pub fn run_coverage(
     _file_filter: Option<String>,

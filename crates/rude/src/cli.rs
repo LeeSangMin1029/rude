@@ -272,4 +272,19 @@ pub enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Remove unused imports from a file.
+    #[command(visible_alias = "ci")]
+    CleanImports {
+        /// File path.
+        file: String,
+    },
+    /// Add or merge an import statement into a file.
+    #[command(visible_alias = "ei")]
+    EnsureImport {
+        /// File path.
+        file: String,
+        /// Import to add (e.g. "use anyhow::Result" or "pub use foo::bar").
+        #[arg(long)]
+        import: String,
+    },
 }
