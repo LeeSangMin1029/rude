@@ -195,7 +195,7 @@ pub(crate) fn locate_symbol(db: &Path, symbol: &str, file_hint: Option<&str>) ->
         let abs_path = resolve_abs_path(db, file_path)?;
         if !abs_path.exists() { bail!("File not found: {}", abs_path.display()); }
         let rel = relative_display(db, file_path);
-        let (start, end) = syn_locate(&abs_path, leaf)?;
+        let (start, end) = syn_locate(&abs_path, leaf, None)?;
         return Ok(SymbolLocation { abs_path, rel_path: rel, start_line: start, end_line: end });
     }
     if candidates.len() > 1 {
@@ -207,8 +207,21 @@ pub(crate) fn locate_symbol(db: &Path, symbol: &str, file_hint: Option<&str>) ->
     let chunk = &graph.chunks[candidates[0] as usize];
     let abs_path = resolve_abs_path(db, &chunk.file)?;
     let rel = relative_display(db, &chunk.file);
-    let (start, end) = syn_locate(&abs_path, leaf)?;
+    let owner = extract_owner(&chunk.name);
+    let (start, end) = syn_locate(&abs_path, leaf, owner.as_deref())?;
     Ok(SymbolLocation { abs_path, rel_path: rel, start_line: start, end_line: end })
+}
+
+// "graph::build::CallGraph::build_only" → Some("CallGraph")
+fn extract_owner(full_path: &str) -> Option<String> {
+    let parts: Vec<&str> = full_path.rsplitn(3, "::").collect();
+    if parts.len() >= 2 {
+        let candidate = parts[1];
+        if candidate.chars().next().is_some_and(|c| c.is_uppercase()) {
+            return Some(candidate.to_owned());
+        }
+    }
+    None
 }
 
 fn line_of(span: proc_macro2::Span) -> usize {
@@ -219,24 +232,100 @@ fn end_line_of(span: proc_macro2::Span) -> usize {
     span.end().line.saturating_sub(1)
 }
 
-fn syn_locate(path: &Path, name: &str) -> Result<(usize, usize)> {
-    use syn::spanned::Spanned;
+fn syn_locate(path: &Path, name: &str, owner: Option<&str>) -> Result<(usize, usize)> {
     let content = std::fs::read_to_string(path)?;
-    let file = syn::parse_file(&content).context("syn parse failed")?;
-    for item in &file.items {
-        if let Some(r) = item_span(item, name) { return Ok(r); }
-        if let syn::Item::Impl(imp) = item {
-            for sub in &imp.items {
-                if let syn::ImplItem::Fn(f) = sub {
-                    if f.sig.ident == name {
-                        let start = if f.attrs.is_empty() { line_of(f.sig.fn_token.span) } else { line_of(f.attrs[0].span()) };
-                        return Ok((start, end_line_of(f.block.brace_token.span.close())));
-                    }
-                }
-            }
+    match syn::parse_file(&content) {
+        Ok(file) => {
+            let mut finder = SymbolFinder::new(name, owner);
+            syn::visit::visit_file(&mut finder, &file);
+            finder.result.ok_or_else(|| anyhow::anyhow!("Symbol '{name}' not found by syn in {}", path.display()))
+        }
+        Err(_) => text_fallback(&content, name)
+            .ok_or_else(|| anyhow::anyhow!("Symbol '{name}' not found (syn parse failed) in {}", path.display())),
+    }
+}
+
+struct SymbolFinder<'a> {
+    name: &'a str,
+    owner: Option<&'a str>,
+    current_impl: Option<String>,
+    result: Option<(usize, usize)>,
+}
+
+impl<'a> SymbolFinder<'a> {
+    fn new(name: &'a str, owner: Option<&'a str>) -> Self {
+        Self { name, owner, current_impl: None, result: None }
+    }
+    fn matches_owner(&self) -> bool {
+        match self.owner {
+            None => true,
+            Some(o) => self.current_impl.as_ref().is_some_and(|c| c == o),
         }
     }
-    bail!("Symbol '{name}' not found by syn in {}", path.display())
+}
+
+impl<'a, 'ast> syn::visit::Visit<'ast> for SymbolFinder<'a> {
+    fn visit_item_fn(&mut self, f: &'ast syn::ItemFn) {
+        if self.result.is_none() && self.owner.is_none() && f.sig.ident == self.name {
+            self.result = Some((item_start(&f.attrs, f.sig.fn_token.span), end_line_of(f.block.brace_token.span.close())));
+        }
+        syn::visit::visit_item_fn(self, f); // 중첩 함수 자동 재귀
+    }
+    fn visit_item_impl(&mut self, imp: &'ast syn::ItemImpl) {
+        use syn::spanned::Spanned;
+        let prev = self.current_impl.take();
+        let ty_str = imp.self_ty.span().source_text().unwrap_or_default();
+        self.current_impl = Some(ty_str.split('<').next().unwrap_or(&ty_str).trim().to_owned());
+        syn::visit::visit_item_impl(self, imp);
+        self.current_impl = prev;
+    }
+    fn visit_impl_item_fn(&mut self, f: &'ast syn::ImplItemFn) {
+        if self.result.is_none() && f.sig.ident == self.name && self.matches_owner() {
+            self.result = Some((item_start(&f.attrs, f.sig.fn_token.span), end_line_of(f.block.brace_token.span.close())));
+        }
+    }
+    fn visit_item_struct(&mut self, s: &'ast syn::ItemStruct) {
+        if self.result.is_none() && self.owner.is_none() && s.ident == self.name {
+            self.result = item_span(&syn::Item::Struct(s.clone()), self.name);
+        }
+    }
+    fn visit_item_enum(&mut self, e: &'ast syn::ItemEnum) {
+        if self.result.is_none() && self.owner.is_none() && e.ident == self.name {
+            self.result = item_span(&syn::Item::Enum(e.clone()), self.name);
+        }
+    }
+    fn visit_item_trait(&mut self, t: &'ast syn::ItemTrait) {
+        if self.result.is_none() && self.owner.is_none() && t.ident == self.name {
+            self.result = item_span(&syn::Item::Trait(t.clone()), self.name);
+        }
+    }
+    fn visit_item_const(&mut self, c: &'ast syn::ItemConst) {
+        if self.result.is_none() && self.owner.is_none() && c.ident == self.name {
+            self.result = item_span(&syn::Item::Const(c.clone()), self.name);
+        }
+    }
+    fn visit_item_static(&mut self, s: &'ast syn::ItemStatic) {
+        if self.result.is_none() && self.owner.is_none() && s.ident == self.name {
+            self.result = item_span(&syn::Item::Static(s.clone()), self.name);
+        }
+    }
+}
+
+fn text_fallback(content: &str, name: &str) -> Option<(usize, usize)> {
+    let lines: Vec<&str> = content.lines().collect();
+    let patterns = [format!("fn {name}"), format!("struct {name}"), format!("enum {name}"), format!("const {name}")];
+    let start = lines.iter().position(|l| patterns.iter().any(|p| l.contains(p.as_str())))?;
+    let mut depth: i32 = 0;
+    let mut end = start;
+    for (i, line) in lines[start..].iter().enumerate() {
+        for ch in line.chars() {
+            if ch == '{' { depth += 1; }
+            if ch == '}' { depth -= 1; }
+        }
+        if depth <= 0 && i > 0 { end = start + i; break; }
+    }
+    if end == start { end = lines.len().saturating_sub(1).max(start); }
+    Some((start, end))
 }
 
 fn item_start(attrs: &[syn::Attribute], fallback: proc_macro2::Span) -> usize {
