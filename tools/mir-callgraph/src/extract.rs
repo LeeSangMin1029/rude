@@ -251,11 +251,28 @@ fn collect_hir_data() -> (Vec<(String, usize, usize)>, Vec<UseItem>, Vec<UseDep>
                         .map(|seg| seg.ident.to_string()).collect::<Vec<_>>().join("::");
                     let kind_str = if matches!(kind, rustc_hir::UseKind::Glob) { "glob" } else { "single" };
                     uses.push(UseItem { file: file.clone(), line, source, resolved: format!("{resolved_path} ({kind_str})") });
-                    if let Some(rustc_hir::def::Res::Def(_, def_id)) = path.res.type_ns {
-                        def_to_use.entry(def_id).or_default().push((file.clone(), line));
+                    let loc = (file.clone(), line);
+                    if let Some(rustc_hir::def::Res::Def(dk, def_id)) = path.res.type_ns {
+                        def_to_use.entry(def_id).or_default().push(loc.clone());
+                        if matches!(dk, rustc_hir::def::DefKind::TyAlias | rustc_hir::def::DefKind::AssocTy) {
+                            if let Some(ty) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tcx.type_of(def_id).skip_binder())).ok() {
+                                if let rustc_middle::ty::TyKind::Adt(adt, _) = ty.kind() {
+                                    def_to_use.entry(adt.did()).or_default().push(loc.clone());
+                                    for v in adt.variants() {
+                                        for f in &v.fields { def_to_use.entry(f.did).or_default().push(loc.clone()); }
+                                        if let Some(ctor) = v.ctor { def_to_use.entry(ctor.1).or_default().push(loc.clone()); }
+                                    }
+                                }
+                            }
+                        }
+                        if matches!(dk, rustc_hir::def::DefKind::Trait) {
+                            for item in tcx.associated_items(def_id).in_definition_order() {
+                                def_to_use.entry(item.def_id).or_default().push(loc.clone());
+                            }
+                        }
                     }
                     if let Some(rustc_hir::def::Res::Def(_, def_id)) = path.res.value_ns {
-                        def_to_use.entry(def_id).or_default().push((file, line));
+                        def_to_use.entry(def_id).or_default().push(loc);
                     }
                 }
                 _ => {
