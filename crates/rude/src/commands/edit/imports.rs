@@ -10,6 +10,7 @@ pub(crate) fn cleanup_unused_imports(path: &Path) -> Result<()> {
         for (i, line) in lines.iter().enumerate() {
             let trimmed = line.trim();
             if !is_use_line(trimmed) { continue; }
+            if trimmed.starts_with("pub use ") || trimmed.starts_with("pub(crate) use ") { continue; }
             let idents = extract_use_idents(trimmed);
             if idents.is_empty() { continue; }
             let rest: String = lines.iter().enumerate()

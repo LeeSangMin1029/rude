@@ -45,7 +45,7 @@ pub fn split(symbols: String, to: String, dry_run: bool) -> Result<()> {
     let module_name = std::path::Path::new(&to)
         .file_stem().and_then(|s| s.to_str())
         .context("Cannot extract module name from --to path")?;
-    let reexport_line = format!("pub use {module_name}::{{{}}};", symbol_names.join(", "));
+    let reexport_line = format!("pub use crate::{module_name}::{{{}}};", symbol_names.join(", "));
     let mod_decl = format!("pub mod {module_name};");
     let source_dir = source_path.parent().context("source file has no parent directory")?;
     if dry_run {
