@@ -22,7 +22,6 @@ pub enum Commands {
     /// List symbols in the database (functions, structs, enums, impls).
     Symbols {
         /// Filter by symbol name (substring match).
-        #[arg(short, long)]
         name: Option<String>,
         /// Filter by kind (function, struct, enum, impl, trait, etc.).
         #[arg(short, long)]
@@ -105,9 +104,6 @@ pub enum Commands {
     /// Per-crate test coverage with per-function test counts.
     #[command(visible_alias = "cov")]
     Coverage {
-        /// BFS depth from test functions (0 = unlimited).
-        #[arg(long, default_value = "0")]
-        depth: u32,
         /// Filter by file path suffix (e.g. "add.rs" or "commands/intel").
         #[arg(long)]
         file: Option<String>,

@@ -43,7 +43,7 @@ pub fn run_dead(
             continue;
         }
         let name = &graph.chunks[i].name;
-        if name == "main" || name.ends_with("::main") || name.ends_with("::run") {
+        if name == "main" || name.ends_with("::main") {
             continue;
         }
         let file = &graph.chunks[i].file;

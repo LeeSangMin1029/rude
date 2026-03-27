@@ -4,7 +4,7 @@ use anyhow::Result;
 use rude_util::extract_crate_name;
 
 pub fn run_coverage(
-    _file_filter: Option<String>,
+    file_filter: Option<String>,
     refresh: bool,
 ) -> Result<()> {
     use std::collections::BTreeMap;
@@ -18,8 +18,12 @@ pub fn run_coverage(
 
     println!("=== test coverage (cargo llvm-cov) ===\n");
 
+    let filtered_files: Vec<&LlvmFileCov> = cov.files.iter()
+        .filter(|fc| file_filter.as_ref().is_none_or(|f| fc.filename.contains(f.as_str())))
+        .collect();
+
     let mut crate_cov: BTreeMap<String, (usize, usize, usize, usize)> = BTreeMap::new();
-    for fc in &cov.files {
+    for fc in &filtered_files {
         let crate_name = extract_crate_name(&fc.filename);
         let entry = crate_cov.entry(crate_name).or_default();
         entry.0 += fc.fn_total;

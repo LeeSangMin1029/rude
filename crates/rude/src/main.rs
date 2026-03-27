@@ -62,7 +62,7 @@ fn run() -> anyhow::Result<()> {
         }
         Commands::Dead { include_pub, file } => intel::run_dead(include_pub, file),
         Commands::Stats => intel::run_stats(),
-        Commands::Coverage { file, refresh, .. } => intel::run_coverage(file, refresh),
+        Commands::Coverage { file, refresh } => intel::run_coverage(file, refresh),
         Commands::Add { input, exclude } => commands::add::run(input, &exclude),
         Commands::Replace { symbol, file, body, body_file } => {
             let body = read_body(body, body_file)?;

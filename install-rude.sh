@@ -12,10 +12,13 @@ case "$OS" in
     *)                     EXT="" ;;
 esac
 
-if ! command -v rustup &>/dev/null; then
-    echo "Rust not found. Installing via rustup..."
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-    source "$HOME/.cargo/env"
+export PATH="$HOME/.cargo/bin:$PATH"
+if ! command -v cargo &>/dev/null; then
+    if ! command -v rustup &>/dev/null; then
+        echo "Rust not found. Installing via rustup..."
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+        source "$HOME/.cargo/env"
+    fi
 fi
 
 echo "Installing nightly toolchain..."
