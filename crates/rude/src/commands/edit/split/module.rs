@@ -1,8 +1,7 @@
 use std::path::Path;
 use anyhow::{Context, Result, bail};
 use crate::commands::edit::locate::{SymbolLocation, locate_symbol_in};
-use crate::commands::edit::file::locked_edit;
-use super::{sort_by_kind, is_header_line, filter_header, build_file_content};
+use super::{sort_by_kind, is_header_line, filter_header};
 
 pub fn split_module(file: String, targets: Vec<String>, dry_run: bool) -> Result<()> {
     let db = crate::db();
@@ -30,6 +29,7 @@ pub fn split_module(file: String, targets: Vec<String>, dry_run: bool) -> Result
         let d = abs_src.parent().unwrap().join(stem);
         (d.clone(), d.join("mod.rs"))
     };
+    // resolve all symbols
     let file_hint = Some(src_chunk.file.as_str());
     let mut all_locs: Vec<(usize, SymbolLocation)> = Vec::new();
     for (ti, (_, syms)) in parsed.iter().enumerate() {
@@ -39,14 +39,19 @@ pub fn split_module(file: String, targets: Vec<String>, dry_run: bool) -> Result
             all_locs.push((ti, loc));
         }
     }
+    // collect moved line ranges
+    let mut all_moved_ranges: Vec<(usize, usize)> = Vec::new();
+    // compute super:: replacement: if file becomes dir module, depth increases by 1
+    let crate_prefix = compute_crate_prefix(&abs_src, &root);
+    // collect inner attrs
     let inner_attrs: Vec<String> = source_content.lines()
         .take_while(|l| is_header_line(l.trim()))
         .filter(|l| l.trim().starts_with("#!["))
         .map(|l| l.to_string())
         .collect();
+    // build each target file
     struct TargetFile { rel_path: String, content: String, symbols: Vec<String> }
     let mut target_files: Vec<TargetFile> = Vec::new();
-    let mut all_moved_ranges: Vec<(usize, usize)> = Vec::new();
     for (ti, (target_name, syms)) in parsed.iter().enumerate() {
         let locs: Vec<&SymbolLocation> = all_locs.iter()
             .filter(|(idx, _)| *idx == ti)
@@ -57,33 +62,46 @@ pub fn split_module(file: String, targets: Vec<String>, dry_run: bool) -> Result
             .map(|(loc, name)| (loc.start_line, loc.end_line, name.as_str(), loc.kind.as_str()))
             .collect();
         sort_by_kind(&mut ranges);
+        // determine visibility for each symbol
+        let vis_map: std::collections::HashMap<&str, &str> = ranges.iter().map(|&(_, _, name, _)| {
+            let orig_vis = get_original_visibility(&source_lines, ranges.iter()
+                .find(|r| r.2 == name).map(|r| r.0).unwrap_or(0));
+            (name, orig_vis)
+        }).collect();
         let moved_body: String = ranges.iter()
             .flat_map(|&(start, end, _, _)| &source_lines[start..=end])
             .cloned().collect::<Vec<_>>().join("\n");
         let (_, use_lines) = filter_header(&source_content, &moved_body);
-        let content = build_file_content(&inner_attrs, &use_lines, &ranges, &source_lines);
+        // build content with super:: replacement and visibility fix
+        let mut parts: Vec<String> = Vec::new();
+        if !inner_attrs.is_empty() { parts.extend(inner_attrs.iter().cloned()); parts.push(String::new()); }
+        // fix use lines: super:: → crate::
+        let fixed_uses: Vec<String> = use_lines.iter()
+            .map(|l| fix_super_path(l, &crate_prefix, is_already_dir))
+            .collect();
+        if !fixed_uses.is_empty() { parts.extend(fixed_uses); parts.push(String::new()); }
+        for (ri, &(start, end, name, _)) in ranges.iter().enumerate() {
+            if ri > 0 { parts.push(String::new()); }
+            for (li, idx) in (start..=end).enumerate() {
+                let mut line = source_lines[idx].to_string();
+                // fix super:: paths in function body
+                if !is_already_dir && line.contains("super::") {
+                    line = fix_super_path(&line, &crate_prefix, false);
+                }
+                // fix visibility on first line of function
+                if li == 0 {
+                    let orig_vis = vis_map.get(name).copied().unwrap_or("");
+                    line = ensure_visibility(&line, orig_vis);
+                }
+                parts.push(line);
+            }
+        }
+        let content = parts.join("\n") + "\n";
         for &(start, end, _, _) in &ranges {
             all_moved_ranges.push((start, end));
         }
-        target_files.push(TargetFile {
-            rel_path: target_name.clone(),
-            content,
-            symbols: syms.clone(),
-        });
+        target_files.push(TargetFile { rel_path: target_name.clone(), content, symbols: syms.clone() });
     }
-    let remaining_symbols: Vec<String> = {
-        let moved_set: std::collections::HashSet<(usize, usize)> = all_moved_ranges.iter().copied().collect();
-        graph.chunks.iter()
-            .filter(|c| c.file == src_chunk.file)
-            .filter(|c| {
-                if let Some((s, e)) = c.lines {
-                    !moved_set.iter().any(|&(ms, me)| s.saturating_sub(1) >= ms && e.saturating_sub(1) <= me)
-                } else { true }
-            })
-            .filter(|c| c.kind == "function" && !c.name.contains("::"))
-            .map(|c| c.name.rsplit("::").next().unwrap_or(&c.name).to_string())
-            .collect()
-    };
     if dry_run {
         eprintln!("=== DRY RUN: split-module {} ===\n", file);
         if !is_already_dir { eprintln!("Step 1: Rename {} → {}/mod.rs\n", file, stem); }
@@ -92,20 +110,11 @@ pub fn split_module(file: String, targets: Vec<String>, dry_run: bool) -> Result
             for (i, line) in tf.content.lines().enumerate() { eprintln!("{:>4}| {line}", i + 1); }
             eprintln!();
         }
-        eprintln!("--- mod.rs (after cleanup) ---");
-        for tf in &target_files {
-            let mod_name = Path::new(&tf.rel_path).file_stem().and_then(|s| s.to_str()).unwrap_or("");
-            eprintln!("  mod {mod_name};");
-        }
-        for tf in &target_files {
-            let mod_name = Path::new(&tf.rel_path).file_stem().and_then(|s| s.to_str()).unwrap_or("");
-            eprintln!("  pub use {mod_name}::{{{}}};", tf.symbols.join(", "));
-        }
-        if !remaining_symbols.is_empty() {
-            eprintln!("\n  Remaining symbols in mod.rs: {}", remaining_symbols.join(", "));
-        }
+        eprintln!("--- mod.rs ---");
+        eprintln!("  (mod declarations + pub use + remaining code)");
         return Ok(());
     }
+    // execute: rename to dir if needed
     if !is_already_dir {
         std::fs::create_dir_all(&dir).with_context(|| format!("Failed to create {}", dir.display()))?;
         std::fs::rename(&abs_src, &mod_rs_path)
@@ -113,93 +122,138 @@ pub fn split_module(file: String, targets: Vec<String>, dry_run: bool) -> Result
         let rel_src = abs_src.strip_prefix(&root).unwrap_or(&abs_src);
         eprintln!("Renamed {} → {}/mod.rs", rel_src.display(), stem);
     }
+    // write target files
     for tf in &target_files {
         let target_abs = dir.join(&tf.rel_path);
         if target_abs.exists() { bail!("Target file already exists: {}", target_abs.display()); }
         std::fs::write(&target_abs, &tf.content)?;
         eprintln!("Created {}/{} ({} line(s))", stem, tf.rel_path, tf.content.lines().count());
     }
-    all_moved_ranges.sort_by(|a, b| b.0.cmp(&a.0));
-    crate::commands::edit::file::splice_file(&mod_rs_path, |lines| {
-        for &(start, end) in &all_moved_ranges {
-            let drain_end = end.min(lines.len().saturating_sub(1));
-            if start <= drain_end {
-                lines.drain(start..=drain_end);
-            }
-        }
-    })?;
-    locked_edit(&mod_rs_path, |content| {
-        let mut result: Vec<String> = Vec::new();
-        for line in content.lines() {
-            let t = line.trim();
-            if t.starts_with("#![") { result.push(line.to_string()); }
-        }
-        if !result.is_empty() { result.push(String::new()); }
-        for line in content.lines() {
-            let t = line.trim();
-            if (t.starts_with("mod ") || t.starts_with("pub mod ") || t.starts_with("pub(crate) mod ")) && t.ends_with(';') {
-                if !result.contains(&line.to_string()) { result.push(line.to_string()); }
-            }
-        }
-        for tf in &target_files {
-            let mod_name = Path::new(&tf.rel_path).file_stem().and_then(|s| s.to_str()).unwrap_or("");
-            let decl = format!("mod {mod_name};");
-            if !result.iter().any(|l| l.trim() == decl || l.trim() == format!("pub mod {mod_name};")) {
-                result.push(decl);
-            }
-        }
-        result.push(String::new());
-        for line in content.lines() {
-            let t = line.trim();
-            if t.starts_with("pub use ") || t.starts_with("pub(crate) use ") {
-                result.push(line.to_string());
-            }
-        }
-        for tf in &target_files {
-            let mod_name = Path::new(&tf.rel_path).file_stem().and_then(|s| s.to_str()).unwrap_or("");
-            let pub_syms: Vec<&str> = tf.symbols.iter()
-                .map(|s| s.as_str()).collect();
-            if pub_syms.len() == 1 {
-                result.push(format!("pub use {mod_name}::{};", pub_syms[0]));
-            } else if !pub_syms.is_empty() {
-                result.push(format!("pub use {mod_name}::{{{}}};", pub_syms.join(", ")));
-            }
-        }
-        // remaining code stays in mod.rs (shared utils, types, etc.)
-        let remaining_body: String = {
-            let lines: Vec<&str> = content.lines().collect();
-            let moved_set: std::collections::HashSet<(usize, usize)> = all_moved_ranges.iter().copied().collect();
-            let mut body_lines: Vec<String> = Vec::new();
-            let mut in_header = true;
-            for (i, &line) in lines.iter().enumerate() {
-                let t = line.trim();
-                if in_header {
-                    if t.starts_with("#![") || t.starts_with("use ") || t.starts_with("pub use ")
-                        || t.starts_with("pub(crate) use ") || t.starts_with("mod ") || t.starts_with("pub mod ")
-                        || t.starts_with("pub(crate) mod ") || t.starts_with("//") || t.is_empty()
-                        || t.starts_with("extern ") || t.starts_with("#[") { continue; }
-                    in_header = false;
-                }
-                let in_moved = moved_set.iter().any(|&(ms, me)| i >= ms && i <= me);
-                if !in_moved { body_lines.push(line.to_string()); }
-            }
-            while body_lines.last().is_some_and(|l| l.trim().is_empty()) { body_lines.pop(); }
-            while body_lines.first().is_some_and(|l| l.trim().is_empty()) { body_lines.remove(0); }
-            body_lines.join("\n")
-        };
-        if !remaining_body.is_empty() {
-            // add use statements needed by remaining code
-            let remaining_uses = filter_header(content, &remaining_body).1;
-            if !remaining_uses.is_empty() {
-                result.push(String::new());
-                result.extend(remaining_uses);
-            }
-            result.push(String::new());
-            result.extend(remaining_body.lines().map(|l| l.to_string()));
-        }
-        result.push(String::new());
-        Ok(result.join("\n"))
-    })?;
+    // rebuild mod.rs in one pass (no splice + locked_edit two-step)
+    let mod_content = build_mod_rs(
+        &source_content, &source_lines, &all_moved_ranges,
+        &target_files.iter().map(|tf| (tf.rel_path.as_str(), tf.symbols.as_slice())).collect::<Vec<_>>(),
+        &crate_prefix, is_already_dir,
+    );
+    std::fs::write(&mod_rs_path, &mod_content)?;
     eprintln!("Updated {}/mod.rs", stem);
     Ok(())
+}
+
+fn build_mod_rs(
+    source: &str, source_lines: &[&str], moved_ranges: &[(usize, usize)],
+    targets: &[(&str, &[String])],
+    crate_prefix: &str, is_already_dir: bool,
+) -> String {
+    let moved_set: std::collections::HashSet<(usize, usize)> = moved_ranges.iter().copied().collect();
+    let mut result: Vec<String> = Vec::new();
+    // 1. inner attrs
+    for line in source.lines() {
+        let t = line.trim();
+        if !is_header_line(t) { break; }
+        if t.starts_with("#![") { result.push(line.to_string()); }
+    }
+    if !result.is_empty() { result.push(String::new()); }
+    // 2. mod declarations (existing + new)
+    for line in source.lines() {
+        let t = line.trim();
+        if !is_header_line(t) { break; }
+        if (t.starts_with("mod ") || t.starts_with("pub mod ") || t.starts_with("pub(crate) mod ")) && t.ends_with(';') {
+            result.push(line.to_string());
+        }
+    }
+    for (target_name, _) in targets {
+        let mod_name = Path::new(target_name).file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let decl = format!("mod {mod_name};");
+        if !result.iter().any(|l| l.trim() == decl || l.trim() == format!("pub mod {mod_name};")) {
+            result.push(decl);
+        }
+    }
+    result.push(String::new());
+    // 3. pub use re-exports for moved pub symbols
+    for (target_name, syms) in targets {
+        let mod_name = Path::new(target_name).file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let pub_syms: Vec<&str> = syms.iter()
+            .filter(|s| {
+                let name = s.as_str();
+                source_lines.iter().any(|l| {
+                    let t = l.trim();
+                    (t.starts_with("pub fn ") || t.starts_with("pub(crate) fn ") || t.starts_with("pub struct ")
+                        || t.starts_with("pub enum ") || t.starts_with("pub trait "))
+                        && t.contains(name)
+                })
+            })
+            .map(|s| s.as_str()).collect();
+        if pub_syms.len() == 1 {
+            result.push(format!("pub use {mod_name}::{};", pub_syms[0]));
+        } else if !pub_syms.is_empty() {
+            result.push(format!("pub use {mod_name}::{{{}}};", pub_syms.join(", ")));
+        }
+    }
+    // 4. remaining code (not moved) with its use statements
+    let mut remaining_lines: Vec<String> = Vec::new();
+    let mut in_header = true;
+    for (i, &line) in source_lines.iter().enumerate() {
+        let t = line.trim();
+        if in_header {
+            if is_header_line(t) { continue; }
+            in_header = false;
+        }
+        let in_moved = moved_set.iter().any(|&(ms, me)| i >= ms && i <= me);
+        if !in_moved { remaining_lines.push(line.to_string()); }
+    }
+    while remaining_lines.last().is_some_and(|l| l.trim().is_empty()) { remaining_lines.pop(); }
+    while remaining_lines.first().is_some_and(|l| l.trim().is_empty()) { remaining_lines.remove(0); }
+    if !remaining_lines.is_empty() {
+        let body = remaining_lines.join("\n");
+        let remaining_uses = filter_header(source, &body).1;
+        if !remaining_uses.is_empty() {
+            result.push(String::new());
+            for u in &remaining_uses {
+                result.push(fix_super_path(u, crate_prefix, is_already_dir));
+            }
+        }
+        result.push(String::new());
+        for line in &remaining_lines {
+            result.push(fix_super_path(line, crate_prefix, is_already_dir));
+        }
+    }
+    result.push(String::new());
+    result.join("\n")
+}
+
+fn compute_crate_prefix(abs_src: &Path, root: &Path) -> String {
+    let rel = abs_src.strip_prefix(root).unwrap_or(abs_src);
+    let parts: Vec<&str> = rel.iter()
+        .filter_map(|c| c.to_str())
+        .filter(|&c| c != "src" && !c.ends_with(".rs"))
+        .collect();
+    if parts.is_empty() { "crate::".to_string() }
+    else { format!("crate::{}::", parts.join("::")) }
+}
+
+fn fix_super_path(line: &str, crate_prefix: &str, is_already_dir: bool) -> String {
+    if is_already_dir || !line.contains("super::") { return line.to_string(); }
+    line.replace("super::", crate_prefix)
+}
+
+fn get_original_visibility(source_lines: &[&str], start: usize) -> &'static str {
+    let line = source_lines.get(start).map(|l| l.trim()).unwrap_or("");
+    if line.starts_with("pub(crate) ") { "pub(crate)" }
+    else if line.starts_with("pub ") { "pub" }
+    else { "" }
+}
+
+fn ensure_visibility(line: &str, orig_vis: &str) -> String {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("pub ") || trimmed.starts_with("pub(") { return line.to_string(); }
+    if orig_vis.is_empty() {
+        // was private — make pub(super) so sibling sub-modules can call it
+        if trimmed.starts_with("fn ") {
+            let indent = &line[..line.len() - trimmed.len()];
+            return format!("{indent}pub(super) {trimmed}");
+        }
+        return line.to_string();
+    }
+    line.to_string()
 }
