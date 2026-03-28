@@ -9,6 +9,18 @@ pub fn mir_db_path(project_root: &Path) -> PathBuf {
     project_root.join("target").join("mir-edges").join("mir.db")
 }
 
+pub fn mir_crate_names(project_root: &Path) -> Vec<String> {
+    let mir_db = mir_db_path(project_root);
+    if !mir_db.exists() { return Vec::new(); }
+    rusqlite::Connection::open(&mir_db).ok()
+        .and_then(|conn| {
+            let mut stmt = conn.prepare("SELECT DISTINCT crate_name FROM mir_chunks").ok()?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(0)).ok()?;
+            Some(rows.filter_map(|r| r.ok()).collect())
+        })
+        .unwrap_or_default()
+}
+
 pub fn merge_mir_db(main_db: &Path, sub_db: &Path) -> Result<()> {
     let conn = rusqlite::Connection::open(main_db)?;
     let sub_path = sub_db.display().to_string().replace('\\', "/");

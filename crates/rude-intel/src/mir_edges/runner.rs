@@ -141,7 +141,7 @@ pub fn run_mir_callgraph_for(
         .env("MIR_CALLGRAPH_JSON", "1");
 
     for krate in crates {
-        cmd.arg("-p").arg(krate);
+        cmd.arg("-p").arg(krate.replace('_', "-"));
     }
 
     let status = cmd.status()

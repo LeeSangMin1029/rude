@@ -180,3 +180,12 @@ pub fn load_or_build_graph(db: &Path) -> Result<crate::graph::CallGraph> {
     let _ = g.save(db);
     Ok(g)
 }
+
+pub fn cached_crate_names(db: &Path) -> Vec<String> {
+    let Ok(engine) = rude_db::StorageEngine::open(db) else { return Vec::new() };
+    let config = bincode::config::standard();
+    engine.get_cache("chunks:_index").ok().flatten()
+        .and_then(|b| bincode::decode_from_slice::<Vec<String>, _>(&b, config).ok())
+        .map(|(v, _)| v)
+        .unwrap_or_default()
+}

@@ -7,7 +7,9 @@ pub mod config;
 static DB_PATH: OnceLock<PathBuf> = OnceLock::new();
 
 pub fn set_db(path: PathBuf) {
-    DB_PATH.set(rude_util::safe_canonicalize(&path)).expect("DB path already set");
+    let canonical = rude_util::safe_canonicalize(&path);
+    rude_intel::set_db(canonical.clone());
+    DB_PATH.set(canonical).expect("DB path already set");
 }
 
 pub fn db() -> &'static Path {

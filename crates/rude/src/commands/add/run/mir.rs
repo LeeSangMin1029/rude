@@ -8,6 +8,7 @@ pub fn run_mir_analysis(
     input_path: &std::path::Path,
     mir_db: &std::path::Path,
     code_files: &[&PathBuf],
+    missing_crates: &[String],
 ) -> Result<Vec<String>> {
     let has_cached_edges = mir_db.exists();
 
@@ -21,15 +22,39 @@ pub fn run_mir_analysis(
     let rust_changed: Vec<_> = code_files.iter()
         .filter(|f| f.extension().and_then(|e| e.to_str()) == Some("rs"))
         .collect();
-    let changed_crates = prof!("detect_changed_crates", rude_intel::mir_edges::detect_changed_crates(input_path, &rust_changed));
+    let mut changed_crates = prof!("detect_changed_crates", rude_intel::mir_edges::detect_changed_crates(input_path, &rust_changed));
+    for m in missing_crates {
+        if !changed_crates.iter().any(|c| c == m) { changed_crates.push(m.clone()); }
+    }
     if changed_crates.is_empty() { return Ok(Vec::new()); }
 
     let crate_refs: Vec<&str> = changed_crates.iter().map(|s| s.as_str()).collect();
     eprintln!("  [mir] incremental: {} crate(s) — {}", crate_refs.len(), crate_refs.join(", "));
-    prof!("clear_mir_db", rude_intel::mir_edges::clear_mir_db(input_path, &crate_refs).ok());
-    let rust_only = code_files.iter().all(|f| f.extension().and_then(|e| e.to_str()) == Some("rs"));
-    prof!("run_mir_direct", rude_intel::mir_edges::run_mir_direct(input_path, None, &crate_refs, rust_only)
-        .context("mir-callgraph incremental failed")?);
+    let truly_changed: Vec<&str> = crate_refs.iter()
+        .filter(|c| !missing_crates.iter().any(|m| m == *c))
+        .copied().collect();
+    if !truly_changed.is_empty() {
+        prof!("clear_mir_db", rude_intel::mir_edges::clear_mir_db(input_path, &truly_changed).ok());
+        let rust_only = code_files.iter().all(|f| f.extension().and_then(|e| e.to_str()) == Some("rs"));
+        prof!("run_mir_direct", rude_intel::mir_edges::run_mir_direct(input_path, None, &truly_changed, rust_only)
+            .context("mir-callgraph incremental failed")?);
+    }
+    // missing crates: check if they have mir.db data, if not do full cargo check
+    let missing_without_data: Vec<&str> = missing_crates.iter()
+        .filter(|m| {
+            let mir_db = rude_intel::mir_edges::mir_db_path(input_path);
+            !mir_db.exists() || {
+                let filter = [m.as_str()];
+                let edge_map = rude_intel::mir_edges::MirEdgeMap::from_sqlite(&mir_db, Some(&filter)).unwrap_or_default();
+                edge_map.total == 0
+            }
+        })
+        .map(|s| s.as_str()).collect();
+    if !missing_without_data.is_empty() {
+        eprintln!("  [mir] full rebuild for missing crates: {}", missing_without_data.join(", "));
+        rude_intel::mir_edges::run_mir_callgraph(input_path, None)
+            .context("mir-callgraph full rebuild failed")?;
+    }
     Ok(changed_crates)
 }
 

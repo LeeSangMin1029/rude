@@ -59,7 +59,8 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     let source_cache: HashMap<std::path::PathBuf, String> = code_files.iter()
         .map(|f| ((*f).clone(), rude_util::normalize_source(f))).collect();
 
-    if code_files.is_empty() {
+    let missing_crates = detect_missing_from_cache(&db_path, &input_path);
+    if code_files.is_empty() && missing_crates.is_empty() {
         println!("No files changed. Nothing to update.");
         return Ok(());
     }
@@ -97,7 +98,7 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     std::fs::create_dir_all(&mir_out_dir).ok();
     let mir_db = rude_intel::mir_edges::mir_db_path(&input_path);
 
-    let incremental_crates = prof!("mir_analysis", run_mir_analysis(&input_path, &mir_db, &code_files)?);
+    let incremental_crates = prof!("mir_analysis", run_mir_analysis(&input_path, &mir_db, &code_files, &missing_crates)?);
     prof!("sub_workspaces", run_sub_workspaces(&input_path, &mir_db, &code_files).ok());
 
     let mir_chunks = prof!("load_sqlite", rude_intel::mir_edges::MirEdgeMap::load_chunks_from_sqlite(
@@ -149,11 +150,22 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
         tracing::debug!("Use: rude context/blast/symbols/dupes {}", db_path.display());
         prof!("checkpoint", engine.checkpoint().ok());
         drop(engine);
-        let db_bg = db_path.clone();
-        let mir_bg = mir_out_dir.clone();
-        let inc_bg = incremental_crates.clone();
-        std::thread::spawn(move || prebuild_caches(&db_bg, &entries, &mir_bg, &inc_bg));
+        prebuild_caches(&db_path, &entries, &mir_out_dir, &incremental_crates);
     }
 
     Ok(())
+}
+
+fn detect_missing_from_cache(db_path: &std::path::Path, input_path: &std::path::Path) -> Vec<String> {
+    let cached_crates: std::collections::HashSet<String> = rude_intel::loader::cached_crate_names(db_path)
+        .into_iter().collect();
+    let mir_crates: std::collections::HashSet<String> = rude_intel::mir_edges::detect_missing_edge_crates(input_path)
+        .into_iter().collect();
+    // also check crates in mir.db but not in chunks cache
+    let all_mir = rude_intel::mir_edges::mir_crate_names(input_path);
+    all_mir.into_iter()
+        .filter(|c| !cached_crates.contains(c))
+        .chain(mir_crates)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter().collect()
 }
