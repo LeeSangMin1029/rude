@@ -7,12 +7,10 @@ use crate::data::parse::{self, ParsedChunk};
 
 const CHUNKS_CACHE_VERSION: u8 = 1;
 
-pub fn load_chunks(path: &Path) -> Result<Vec<ParsedChunk>> {
+pub fn load_chunks() -> Result<Vec<ParsedChunk>> {
+    let path = crate::db();
     if let Ok(engine) = rude_db::StorageEngine::open(path) {
-        // Ensure project root is set for path normalization (idempotent).
         ensure_project_root_with_engine(&engine);
-
-        // Try cache hit from sqlite kv_cache.
         if let Some(chunks) = load_chunks_from_cache_with_engine(&engine) {
             eprintln!("  chunks cache hit: {} chunks", chunks.len());
             return Ok(chunks);
@@ -20,10 +18,8 @@ pub fn load_chunks(path: &Path) -> Result<Vec<ParsedChunk>> {
     } else {
         ensure_project_root(path);
     }
-
-    // Cache miss — load from mir.db
     let chunks = load_chunks_from_mir_db(path)?;
-    save_chunks_cache(path, &chunks);
+    save_chunks_cache(&chunks);
     Ok(chunks)
 }
 
@@ -37,9 +33,12 @@ pub fn load_chunks_from_mir_db(db_path: &Path) -> Result<Vec<ParsedChunk>> {
     Ok(parsed)
 }
 
-#[tracing::instrument(skip_all)]
-pub fn save_chunks_cache(db: &Path, chunks: &[ParsedChunk]) {
-    let Ok(engine) = rude_db::StorageEngine::open(db) else { return };
+pub fn save_chunks_cache(chunks: &[ParsedChunk]) {
+    let Ok(engine) = rude_db::StorageEngine::open(crate::db()) else { return };
+    save_chunks_cache_with_engine(&engine, chunks);
+}
+
+pub fn save_chunks_cache_with_engine(engine: &rude_db::StorageEngine, chunks: &[ParsedChunk]) {
     let config = bincode::config::standard();
     let mut bytes = vec![CHUNKS_CACHE_VERSION];
     if let Ok(cb) = bincode::encode_to_vec(chunks, config) {
@@ -49,23 +48,21 @@ pub fn save_chunks_cache(db: &Path, chunks: &[ParsedChunk]) {
 }
 
 #[tracing::instrument(skip_all)]
-pub fn save_chunks_cache_for(db: &Path, chunks: &[ParsedChunk], changed_crates: Option<&[&str]>) {
+pub fn save_chunks_cache_for(chunks: &[ParsedChunk], changed_crates: Option<&[&str]>) {
+    let db = crate::db();
     let Ok(engine) = rude_db::StorageEngine::open(db) else { return };
     let config = bincode::config::standard();
-
     let mut by_crate: std::collections::HashMap<&str, Vec<ParsedChunk>> = std::collections::HashMap::new();
     for c in chunks {
         let key = if c.crate_name.is_empty() { "(root)" } else { &c.crate_name };
         by_crate.entry(key).or_default().push(c.clone());
     }
-
     let crate_names_snapshot: Vec<String> = by_crate.keys().map(|s| s.to_string()).collect();
     for (name, mut crate_chunks) in by_crate {
         if let Some(changed) = changed_crates {
             if !changed.iter().any(|c| c.replace('-', "_") == name.replace('-', "_")) { continue; }
         }
         let key = format!("chunks:{name}");
-        // Merge: keep existing chunks not present in new set (e.g. test chunks when only lib updated)
         if changed_crates.is_some() {
             if let Ok(Some(existing_bytes)) = engine.get_cache(&key) {
                 if existing_bytes.first() == Some(&CHUNKS_CACHE_VERSION) {
@@ -89,7 +86,6 @@ pub fn save_chunks_cache_for(db: &Path, chunks: &[ParsedChunk], changed_crates: 
             let _ = engine.set_cache(&key, &bytes);
         }
     }
-    // Update crate index (merge with existing if incremental)
     let mut all_names: std::collections::HashSet<String> = crate_names_snapshot.into_iter().collect();
     if changed_crates.is_some() {
         if let Ok(Some(idx_bytes)) = engine.get_cache("chunks:_index") {
@@ -104,14 +100,13 @@ pub fn save_chunks_cache_for(db: &Path, chunks: &[ParsedChunk], changed_crates: 
     }
 }
 
-pub fn load_chunks_from_cache(db: &Path) -> Option<Vec<ParsedChunk>> {
-    let engine = rude_db::StorageEngine::open(db).ok()?;
+pub fn load_chunks_from_cache() -> Option<Vec<ParsedChunk>> {
+    let engine = rude_db::StorageEngine::open(crate::db()).ok()?;
     load_chunks_from_cache_with_engine(&engine)
 }
 
 pub fn load_chunks_from_cache_with_engine(engine: &rude_db::StorageEngine) -> Option<Vec<ParsedChunk>> {
     let config = bincode::config::standard();
-    // 크레이트별 캐시 시도
     if let Ok(Some(idx_bytes)) = engine.get_cache("chunks:_index") {
         if let Ok((crate_names, _)) = bincode::decode_from_slice::<Vec<String>, _>(&idx_bytes, config) {
             let mut all = Vec::new();
@@ -130,7 +125,6 @@ pub fn load_chunks_from_cache_with_engine(engine: &rude_db::StorageEngine) -> Op
             }
         }
     }
-    // monolithic fallback
     let bytes = engine.get_cache("chunks").ok()??;
     if bytes.first() != Some(&CHUNKS_CACHE_VERSION) { return None; }
     let (chunks, _) = bincode::decode_from_slice::<Vec<ParsedChunk>, _>(&bytes[1..], config).ok()?;
@@ -151,14 +145,12 @@ fn ensure_project_root_with_engine(engine: &rude_db::StorageEngine) {
         }
     }
 }
-pub fn load_or_build_graph(db: &Path) -> Result<crate::graph::CallGraph> {
-    if let Some(g) = crate::graph::CallGraph::load(db) {
+pub fn load_or_build_graph() -> Result<crate::graph::CallGraph> {
+    let db = crate::db();
+    if let Some(g) = crate::graph::CallGraph::load() {
         return Ok(g);
     }
-
-    let chunks = load_chunks(db)?;
-
-    // Try MIR edges first (100% accurate), fall back to name-resolve.
+    let chunks = load_chunks()?;
     let mir_edges_dir = db.parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(std::path::Path::new("."))
@@ -169,23 +161,33 @@ pub fn load_or_build_graph(db: &Path) -> Result<crate::graph::CallGraph> {
     } else {
         None
     };
-
     if mir_edges.as_ref().map_or(false, |m| m.total > 0) {
         eprintln!("[graph] Rebuilding with MIR edges ({} total)...", mir_edges.as_ref().unwrap().total);
     } else {
         eprintln!("[graph] Building graph (name-resolve fallback)...");
     }
-    let g = crate::graph::CallGraph::build_only(chunks, mir_edges.as_ref(), None, db);
-
-    let _ = g.save(db);
+    let g = crate::graph::CallGraph::build_only(chunks, mir_edges.as_ref(), None);
+    let _ = g.save();
     Ok(g)
 }
 
-pub fn cached_crate_names(db: &Path) -> Vec<String> {
+pub fn cached_crate_names() -> Vec<String> {
+    let db = crate::db();
     let Ok(engine) = rude_db::StorageEngine::open(db) else { return Vec::new() };
     let config = bincode::config::standard();
     engine.get_cache("chunks:_index").ok().flatten()
         .and_then(|b| bincode::decode_from_slice::<Vec<String>, _>(&b, config).ok())
         .map(|(v, _)| v)
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+pub fn save_chunks_cache_at(db: &Path, chunks: &[ParsedChunk]) {
+    let Ok(engine) = rude_db::StorageEngine::open(db) else { return };
+    let config = bincode::config::standard();
+    let mut bytes = vec![CHUNKS_CACHE_VERSION];
+    if let Ok(cb) = bincode::encode_to_vec(chunks, config) {
+        bytes.extend_from_slice(&cb);
+        let _ = engine.set_cache("chunks", &bytes);
+    }
 }

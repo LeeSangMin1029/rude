@@ -12,8 +12,8 @@ pub(crate) struct TaggedEntry {
     pub call_line: u32,
 }
 
-pub(crate) fn load_or_build_graph() -> Result<graph::CallGraph> {
-    rude_intel::loader::load_or_build_graph(crate::db())
+pub(crate) fn load_or_build_graph() -> anyhow::Result<rude_intel::graph::CallGraph> {
+    rude_intel::loader::load_or_build_graph()
 }
 
 pub(super) fn resolve_symbol(graph: &graph::CallGraph, symbol: &str) -> Option<Vec<u32>> {

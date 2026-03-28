@@ -9,7 +9,7 @@ use std::path::Path;
 use std::sync::{Arc, Barrier};
 
 use crate::graph::CallGraph;
-use crate::loader::{load_chunks, save_chunks_cache};
+use crate::loader::{save_chunks_cache_with_engine, load_chunks_from_cache_with_engine};
 use crate::parse::ParsedChunk;
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -37,17 +37,10 @@ fn setup_test_db(dir: &Path) -> Vec<ParsedChunk> {
         test_chunk("mod_a::helper", "src/a.rs", &["mod_a::foo"]),
         test_chunk("mod_d::entry", "src/d.rs", &["mod_a::foo", "mod_b::bar"]),
     ];
-
-    // Initialize store.db with schema (needed for StorageEngine::open + kv_cache table)
-    let _engine = rude_db::StorageEngine::open_exclusive(dir).unwrap();
-
-    // Save chunks cache to sqlite kv_cache
-    save_chunks_cache(dir, &chunks);
-
-    // Build and save graph to sqlite kv_cache
+    let engine = rude_db::StorageEngine::open_exclusive(dir).unwrap();
+    save_chunks_cache_with_engine(&engine, &chunks);
     let graph = CallGraph::build(&chunks);
-    graph.save(dir).unwrap();
-
+    graph.save_with_engine(&engine).unwrap();
     chunks
 }
 
@@ -68,10 +61,10 @@ fn concurrent_reads_return_consistent_results() {
             std::thread::spawn(move || {
                 barrier.wait();
                 // All threads read simultaneously
-                let chunks = load_chunks(&db).unwrap();
+                let e = rude_db::StorageEngine::open(&db).unwrap(); let chunks = load_chunks_from_cache_with_engine(&e).unwrap();
                 assert_eq!(chunks.len(), expected_count);
 
-                let graph = CallGraph::load(&db).unwrap();
+                let graph = { let e = rude_db::StorageEngine::open(&db).unwrap(); CallGraph::load_with_engine(&e) }.unwrap();
                 let seeds = graph.resolve("mod_a::foo");
                 assert!(!seeds.is_empty(), "resolve should find mod_a::foo");
                 (chunks.len(), seeds.len())
@@ -106,7 +99,7 @@ fn read_during_cache_write_does_not_panic() {
         std::thread::spawn(move || {
             barrier.wait();
             for _ in 0..iterations {
-                save_chunks_cache(&db, &chunks);
+                { let e = rude_db::StorageEngine::open(&db).unwrap(); save_chunks_cache_with_engine(&e, &chunks); };
             }
         })
     };
@@ -120,14 +113,10 @@ fn read_during_cache_write_does_not_panic() {
             let mut success = 0;
             let mut graceful_fail = 0;
             for _ in 0..iterations {
-                match load_chunks(&db) {
-                    Ok(c) => {
-                        assert_eq!(c.len(), expected_count);
-                        success += 1;
-                    }
-                    Err(_) => {
-                        graceful_fail += 1;
-                    }
+                let e_r = rude_db::StorageEngine::open(&db).unwrap();
+                match load_chunks_from_cache_with_engine(&e_r) {
+                    Some(c) => { assert_eq!(c.len(), expected_count); success += 1; }
+                    None => { graceful_fail += 1; }
                 }
             }
             (success, graceful_fail)
@@ -167,7 +156,7 @@ fn concurrent_cache_writes_produce_valid_output() {
         std::thread::spawn(move || {
             barrier.wait();
             for _ in 0..iterations {
-                save_chunks_cache(&db, &chunks);
+                { let e = rude_db::StorageEngine::open(&db).unwrap(); save_chunks_cache_with_engine(&e, &chunks); };
             }
         })
     };
@@ -178,7 +167,7 @@ fn concurrent_cache_writes_produce_valid_output() {
         std::thread::spawn(move || {
             barrier.wait();
             for _ in 0..iterations {
-                save_chunks_cache(&db, &chunks);
+                { let e = rude_db::StorageEngine::open(&db).unwrap(); save_chunks_cache_with_engine(&e, &chunks); };
             }
         })
     };
@@ -187,8 +176,7 @@ fn concurrent_cache_writes_produce_valid_output() {
     writer_b.join().unwrap();
 
     // Final cache must be valid — one of the two chunk sets
-    use crate::loader::load_chunks_from_cache;
-    let result = load_chunks_from_cache(db).expect("cache corrupted after concurrent writes");
+    let result = { let e = rude_db::StorageEngine::open(db).unwrap(); load_chunks_from_cache_with_engine(&e) }.expect("cache corrupted after concurrent writes");
     assert!(
         result.len() == 10 || result.len() == 20,
         "unexpected chunk count {} — cache may contain interleaved data",
@@ -218,7 +206,7 @@ fn concurrent_graph_save_and_load() {
                 barrier.wait();
                 for _ in 0..iterations {
                     let g = CallGraph::build(&chunks);
-                    let _ = g.save(&db);
+                    let _ = g.save_with_engine(&rude_db::StorageEngine::open(&db).unwrap());
                 }
             })
         })
@@ -234,7 +222,7 @@ fn concurrent_graph_save_and_load() {
                 let mut success = 0;
                 let mut miss = 0;
                 for _ in 0..iterations {
-                    match CallGraph::load(&db) {
+                    match { let e = rude_db::StorageEngine::open(&db).unwrap(); CallGraph::load_with_engine(&e) } {
                         Some(g) => {
                             assert!(!g.chunks.is_empty());
                             success += 1;
@@ -493,10 +481,10 @@ fn ten_agents_concurrent_reads() {
                 barrier.wait();
                 // Each agent does multiple reads
                 for _ in 0..20 {
-                    let chunks = load_chunks(&db).unwrap();
+                    let e = rude_db::StorageEngine::open(&db).unwrap(); let chunks = load_chunks_from_cache_with_engine(&e).unwrap();
                     assert_eq!(chunks.len(), expected_count);
 
-                    let graph = CallGraph::load(&db).unwrap();
+                    let graph = { let e = rude_db::StorageEngine::open(&db).unwrap(); CallGraph::load_with_engine(&e) }.unwrap();
                     let seeds = graph.resolve("mod_a::foo");
                     assert!(!seeds.is_empty());
                 }

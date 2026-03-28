@@ -135,13 +135,12 @@ impl CallGraph {
     }
 
     pub fn rebuild(
-        db: &Path,
         chunks: Vec<ParsedChunk>,
         mir_edges: Option<&MirEdgeMap>,
         incremental: Option<IncrementalArgs<'_>>,
     ) -> Result<Self> {
-        let graph = Self::build_only(chunks, mir_edges, incremental, db);
-        graph.save(db)?;
+        let graph = Self::build_only(chunks, mir_edges, incremental);
+        graph.save()?;
         Ok(graph)
     }
 
@@ -150,8 +149,8 @@ impl CallGraph {
         chunks: Vec<ParsedChunk>,
         mir_edges: Option<&MirEdgeMap>,
         incremental: Option<IncrementalArgs<'_>>,
-        db: &Path,
     ) -> Self {
+        let db = crate::db();
         let t0 = std::time::Instant::now();
         let index = ChunkIndex::build(&chunks);
         let mir_db_path = crate::mir_edges::mir_db_path(db.parent().unwrap_or(db));
@@ -178,8 +177,8 @@ impl CallGraph {
     }
 
 
-    pub fn save_background(self, db: &Path) {
-        let db = db.to_path_buf();
+    pub fn save_background(self) {
+        let db = crate::db().to_path_buf();
         std::thread::spawn(move || {
             if let Ok(bytes) = bincode::encode_to_vec(&self.edges, bincode::config::standard()) {
                 if let Ok(engine) = rude_db::StorageEngine::open(&db) {
@@ -189,8 +188,8 @@ impl CallGraph {
         });
     }
 
-    pub fn save(&self, db: &Path) -> Result<()> {
-        let engine = rude_db::StorageEngine::open(db)?;
+    pub fn save(&self) -> Result<()> {
+        let engine = rude_db::StorageEngine::open(crate::db())?;
         self.save_with_engine(&engine)
     }
 
@@ -200,8 +199,8 @@ impl CallGraph {
         engine.set_cache("graph", &bytes)
     }
 
-    pub fn load(db: &Path) -> Option<Self> {
-        let engine = rude_db::StorageEngine::open(db).ok()?;
+    pub fn load() -> Option<Self> {
+        let engine = rude_db::StorageEngine::open(crate::db()).ok()?;
         Self::load_with_engine(&engine)
     }
 
@@ -214,6 +213,7 @@ impl CallGraph {
         if compute_chunks_order_hash(&chunks) != edges.chunks_hash { return None; }
         Some(Self { chunks, edges })
     }
+
 
     pub fn len(&self) -> usize { self.chunks.len() }
     pub fn is_empty(&self) -> bool { self.chunks.is_empty() }

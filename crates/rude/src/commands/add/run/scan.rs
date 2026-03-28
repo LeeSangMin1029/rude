@@ -53,7 +53,7 @@ pub fn merge_chunks_cache(
     let new_chunks: Vec<rude_intel::parse::ParsedChunk> = new_entries.iter()
         .map(|e| e.chunk.clone())
         .collect();
-    if let Some(mut existing) = rude_intel::loader::load_chunks_from_cache(db_path) {
+    if let Some(mut existing) = rude_intel::loader::load_chunks_from_cache() {
         let new_files: std::collections::HashSet<&str> =
             new_chunks.iter().map(|c| c.file.as_str()).collect();
         existing.retain(|c| !new_files.contains(c.file.as_str()));
@@ -74,15 +74,15 @@ pub fn prebuild_caches(
     if incremental_crates.is_empty() {
         let chunks = merge_chunks_cache(db_path, new_entries);
         eprintln!("    [cache] {} chunks", chunks.len());
-        rude_intel::loader::save_chunks_cache(db_path, &chunks);
-        rude_intel::loader::save_chunks_cache_for(db_path, &chunks, None);
-        let graph = rude_intel::graph::CallGraph::build_only(chunks, None, None, db_path);
-        let _ = graph.save(db_path);
+        rude_intel::loader::save_chunks_cache(&chunks);
+        rude_intel::loader::save_chunks_cache_for(&chunks, None);
+        let graph = rude_intel::graph::CallGraph::build_only(chunks, None, None);
+        let _ = graph.save();
     } else {
         let new_chunks: Vec<rude_intel::parse::ParsedChunk> = new_entries.iter()
             .map(|e| e.chunk.clone()).collect();
         let changed: Vec<&str> = incremental_crates.iter().map(|s| s.as_str()).collect();
-        rude_intel::loader::save_chunks_cache_for(db_path, &new_chunks, Some(&changed));
+        rude_intel::loader::save_chunks_cache_for(&new_chunks, Some(&changed));
         eprintln!("    [cache] updated {} chunks for {} crate(s)", new_chunks.len(), changed.len());
         if let Ok(engine) = rude_db::StorageEngine::open(db_path) {
             let _ = engine.set_cache("graph", &[]);

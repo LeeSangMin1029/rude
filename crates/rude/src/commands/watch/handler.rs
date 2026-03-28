@@ -103,16 +103,16 @@ fn rebuild_graph_cache(
     mir_edge_map: &rude_intel::mir_edges::MirEdgeMap,
     changed_crates: &[String],
 ) -> Result<()> {
-    let chunks = rude_intel::loader::load_chunks(db_path)?;
+    let chunks = rude_intel::loader::load_chunks()?;
 
-    rude_intel::loader::save_chunks_cache(db_path, &chunks);
+    rude_intel::loader::save_chunks_cache(&chunks);
 
     let incremental = rude_intel::graph::IncrementalArgs {
         changed_crates,
         mir_edge_dir: mir_out_dir,
     };
     let graph = rude_intel::graph::CallGraph::rebuild(
-        db_path, chunks, Some(mir_edge_map), Some(incremental),
+        chunks, Some(mir_edge_map), Some(incremental),
     )?;
     eprintln!(
         "[watch] graph: {} nodes, {} edges",

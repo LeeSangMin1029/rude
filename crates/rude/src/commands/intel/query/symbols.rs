@@ -48,7 +48,7 @@ fn looks_like_file_path(s: &str) -> bool {
 
 fn print_trait_impls_if_relevant(name: Option<&str>) -> Result<()> {
     let Some(name) = name else { return Ok(()) };
-    let Some(graph) = graph::CallGraph::load(crate::db()) else { return Ok(()) };
+    let Some(graph) = graph::CallGraph::load() else { return Ok(()) };
     for idx in graph.resolve(name) {
         let i = idx as usize;
         let impls = &graph.trait_impls[i];

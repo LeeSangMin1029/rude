@@ -157,7 +157,7 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
 }
 
 fn detect_missing_from_cache(db_path: &std::path::Path, input_path: &std::path::Path) -> Vec<String> {
-    let cached_crates: std::collections::HashSet<String> = rude_intel::loader::cached_crate_names(db_path)
+    let cached_crates: std::collections::HashSet<String> = rude_intel::loader::cached_crate_names()
         .into_iter().collect();
     let mir_crates: std::collections::HashSet<String> = rude_intel::mir_edges::detect_missing_edge_crates(input_path)
         .into_iter().collect();
