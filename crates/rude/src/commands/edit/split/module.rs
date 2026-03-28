@@ -102,7 +102,7 @@ pub fn split_module(file: String, targets: Vec<String>, dry_run: bool) -> Result
             if oti == ti { continue; }
             let other_mod = Path::new(other_target.as_str()).file_stem().and_then(|s| s.to_str()).unwrap_or("");
             let used: Vec<&str> = other_syms.iter()
-                .filter(|s| moved_body.contains(s.as_str()))
+                .filter(|s| contains_word(&moved_body, s.as_str()))
                 .map(|s| s.as_str()).collect();
             if !used.is_empty() {
                 cross_imports.push(format!("use super::{other_mod}::{{{}}};", used.join(", ")));
@@ -121,7 +121,7 @@ pub fn split_module(file: String, targets: Vec<String>, dry_run: bool) -> Result
                 })
                 .filter(|c| c.kind == "function")
                 .map(|c| c.name.rsplit("::").next().unwrap_or(&c.name))
-                .filter(|name| moved_body.contains(name))
+                .filter(|name| contains_word(&moved_body, name))
                 .collect();
             if !remaining_in_mod.is_empty() {
                 cross_imports.push(format!("use super::{{{}}};", remaining_in_mod.join(", ")));
@@ -266,7 +266,7 @@ fn build_mod_rs(
         for (target_name, syms) in targets {
             let mod_name = Path::new(target_name).file_stem().and_then(|s| s.to_str()).unwrap_or("");
             let used: Vec<&str> = syms.iter()
-                .filter(|s| body.contains(s.as_str()))
+                .filter(|s| contains_word(&body, s.as_str()))
                 .map(|s| s.as_str()).collect();
             if !used.is_empty() {
                 result.push(format!("use {mod_name}::{{{}}};", used.join(", ")));
@@ -294,12 +294,65 @@ fn compute_crate_prefix(abs_src: &Path, _root: &Path) -> String {
 }
 
 fn fix_paths(line: &str, crate_prefix: &str, is_already_dir: bool) -> String {
+    if is_already_dir { return line.to_string(); }
+    let trimmed = line.trim();
+    // skip comments and string literals containing paths
+    if trimmed.starts_with("//") || trimmed.starts_with("///") { return line.to_string(); }
+    // for lines with string literals, only replace outside quotes
+    if line.contains('"') {
+        return replace_outside_strings(line, &[("super::", crate_prefix), ("self::", "super::")]);
+    }
     let mut result = line.to_string();
-    if !is_already_dir {
-        if result.contains("super::") { result = result.replace("super::", crate_prefix); }
-        if result.contains("self::") { result = result.replace("self::", "super::"); }
+    if result.contains("super::") { result = result.replace("super::", crate_prefix); }
+    if result.contains("self::") { result = result.replace("self::", "super::"); }
+    result
+}
+
+fn replace_outside_strings(line: &str, replacements: &[(&str, &str)]) -> String {
+    let mut result = String::with_capacity(line.len());
+    let mut in_string = false;
+    let mut chars = line.chars().peekable();
+    let mut buf = String::new();
+    while let Some(ch) = chars.next() {
+        if ch == '"' && !buf.ends_with('\\') {
+            if in_string {
+                result.push('"');
+                in_string = false;
+            } else {
+                // flush buf with replacements
+                let mut replaced = buf.clone();
+                for &(from, to) in replacements {
+                    replaced = replaced.replace(from, to);
+                }
+                result.push_str(&replaced);
+                buf.clear();
+                result.push('"');
+                in_string = true;
+            }
+        } else if in_string {
+            result.push(ch);
+        } else {
+            buf.push(ch);
+        }
+    }
+    if !buf.is_empty() {
+        let mut replaced = buf;
+        for &(from, to) in replacements {
+            replaced = replaced.replace(from, to);
+        }
+        result.push_str(&replaced);
     }
     result
+}
+
+fn contains_word(haystack: &str, needle: &str) -> bool {
+    for (i, _) in haystack.match_indices(needle) {
+        let after = i + needle.len();
+        let before_ok = i == 0 || !haystack.as_bytes()[i - 1].is_ascii_alphanumeric() && haystack.as_bytes()[i - 1] != b'_';
+        let after_ok = after >= haystack.len() || !haystack.as_bytes()[after].is_ascii_alphanumeric() && haystack.as_bytes()[after] != b'_';
+        if before_ok && after_ok { return true; }
+    }
+    false
 }
 
 fn get_original_visibility(source_lines: &[&str], start: usize) -> &'static str {
