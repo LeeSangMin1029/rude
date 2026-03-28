@@ -119,7 +119,7 @@ pub fn split_module(file: String, targets: Vec<String>, dry_run: bool) -> Result
                     let leaf = c.name.rsplit("::").next().unwrap_or(&c.name);
                     !all_moved_syms.contains(leaf)
                 })
-                .filter(|c| c.kind == "function")
+                .filter(|c| matches!(c.kind.as_str(), "function" | "struct" | "enum" | "trait"))
                 .map(|c| c.name.rsplit("::").next().unwrap_or(&c.name))
                 .filter(|name| contains_word(&moved_body, name))
                 .collect();
@@ -223,25 +223,32 @@ fn build_mod_rs(
         }
     }
     result.push(String::new());
-    // 3. pub use re-exports for moved pub symbols
+    // 3. re-exports for moved pub/pub(crate) symbols, preserving original visibility
     for (target_name, syms) in targets {
         let mod_name = Path::new(target_name).file_stem().and_then(|s| s.to_str()).unwrap_or("");
-        let pub_syms: Vec<&str> = syms.iter()
-            .filter(|s| {
-                let name = s.as_str();
-                source_lines.iter().any(|l| {
-                    let t = l.trim();
-                    (t.starts_with("pub fn ") || t.starts_with("pub(crate) fn ") || t.starts_with("pub struct ")
-                        || t.starts_with("pub enum ") || t.starts_with("pub trait "))
-                        && t.contains(name)
-                })
-            })
-            .map(|s| s.as_str()).collect();
-        if pub_syms.len() == 1 {
-            result.push(format!("pub use {mod_name}::{};", pub_syms[0]));
-        } else if !pub_syms.is_empty() {
-            result.push(format!("pub use {mod_name}::{{{}}};", pub_syms.join(", ")));
+        let mut pub_syms: Vec<&str> = Vec::new();
+        let mut pub_crate_syms: Vec<&str> = Vec::new();
+        for s in syms.iter() {
+            let name = s.as_str();
+            let vis = source_lines.iter().find_map(|l| {
+                let t = l.trim();
+                if !t.contains(name) { return None; }
+                if t.starts_with("pub(crate) fn ") || t.starts_with("pub(crate) struct ")
+                    || t.starts_with("pub(crate) enum ") || t.starts_with("pub(crate) trait ") { Some("pub(crate)") }
+                else if t.starts_with("pub fn ") || t.starts_with("pub struct ")
+                    || t.starts_with("pub enum ") || t.starts_with("pub trait ") { Some("pub") }
+                else { None }
+            });
+            match vis {
+                Some("pub(crate)") => pub_crate_syms.push(name),
+                Some("pub") => pub_syms.push(name),
+                _ => {}
+            }
         }
+        if pub_syms.len() == 1 { result.push(format!("pub use {mod_name}::{};", pub_syms[0])); }
+        else if !pub_syms.is_empty() { result.push(format!("pub use {mod_name}::{{{}}};", pub_syms.join(", "))); }
+        if pub_crate_syms.len() == 1 { result.push(format!("pub(crate) use {mod_name}::{};", pub_crate_syms[0])); }
+        else if !pub_crate_syms.is_empty() { result.push(format!("pub(crate) use {mod_name}::{{{}}};", pub_crate_syms.join(", "))); }
     }
     // 4. remaining code (not moved) with its use statements
     let mut remaining_lines: Vec<String> = Vec::new();
