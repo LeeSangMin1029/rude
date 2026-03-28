@@ -36,7 +36,8 @@ fn run() -> anyhow::Result<()> {
     use commands::intel;
 
     let cli = Cli::parse();
-    rude_cli::set_db(resolve_db(cli.db)?);
+    let is_add = matches!(cli.command, Commands::Add { .. });
+    rude_cli::set_db(resolve_db(cli.db, is_add)?);
 
     let is_write = matches!(cli.command,
         Commands::Add { .. } | Commands::Replace { .. } | Commands::InsertAfter { .. } |
@@ -133,17 +134,23 @@ fn init_tracing() -> Option<tracing_chrome::FlushGuard> {
 
 const DB_NAME: &str = ".code.db";
 
-fn resolve_db(explicit: Option<std::path::PathBuf>) -> anyhow::Result<std::path::PathBuf> {
+fn resolve_db(explicit: Option<std::path::PathBuf>, create_if_missing: bool) -> anyhow::Result<std::path::PathBuf> {
     if let Some(p) = explicit {
         return Ok(p);
     }
     let mut dir = std::env::current_dir()?;
+    let cwd = dir.clone();
     loop {
         let candidate = dir.join(DB_NAME);
         if candidate.exists() {
             return Ok(candidate);
         }
         if !dir.pop() { break; }
+    }
+    if create_if_missing {
+        let db = cwd.join(DB_NAME);
+        std::fs::create_dir_all(&db)?;
+        return Ok(db);
     }
     anyhow::bail!("No {DB_NAME} found (searched from cwd upward). Pass db path explicitly.")
 }
