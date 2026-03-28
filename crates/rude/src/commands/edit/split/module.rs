@@ -186,6 +186,12 @@ pub fn split_module(file: String, targets: Vec<String>, dry_run: bool) -> Result
     );
     std::fs::write(&mod_rs_path, &mod_content)?;
     eprintln!("Updated {}/mod.rs", stem);
+    // clean unused imports in all generated files
+    for tf in &target_files {
+        let target_abs = dir.join(&tf.rel_path);
+        crate::commands::edit::imports::cleanup_unused_imports(&target_abs).ok();
+    }
+    crate::commands::edit::imports::cleanup_unused_imports(&mod_rs_path).ok();
     Ok(())
 }
 
