@@ -236,8 +236,8 @@ pub enum Commands {
         #[arg(long)]
         file: String,
         /// Minimum total lines for a cluster to be a split candidate.
-        #[arg(long, default_value = "50")]
-        min_lines: usize,
+        #[arg(long)]
+        min_lines: Option<usize>,
     },
     /// Watch for file changes and auto-update the code database
     Watch {

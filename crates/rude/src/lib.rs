@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 pub mod commands;
+pub mod config;
 
 static DB_PATH: OnceLock<PathBuf> = OnceLock::new();
 

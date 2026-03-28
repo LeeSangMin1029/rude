@@ -38,6 +38,7 @@ fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let is_add = matches!(cli.command, Commands::Add { .. });
     rude_cli::set_db(resolve_db(cli.db, is_add)?);
+    rude_cli::config::load(rude_cli::db());
 
     let is_write = matches!(cli.command,
         Commands::Add { .. } | Commands::Replace { .. } | Commands::InsertAfter { .. } |
@@ -94,7 +95,10 @@ fn run() -> anyhow::Result<()> {
         Commands::Batch { manifest } => {
             commands::edit::run_batch(manifest)
         }
-        Commands::Cluster { file, min_lines } => commands::intel::run_cluster(file, min_lines),
+        Commands::Cluster { file, min_lines } => {
+            let min = min_lines.unwrap_or(rude_cli::config::get().cluster.min_lines);
+            commands::intel::run_cluster(file, min)
+        }
         Commands::Watch { input } => commands::watch::run(input),
         Commands::CreateFile { file, body, body_file } => {
             let body = read_body(body, body_file)?;
