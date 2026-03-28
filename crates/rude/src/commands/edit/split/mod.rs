@@ -39,9 +39,13 @@ fn filter_header(source: &str, body: &str) -> (Vec<String>, Vec<String>) {
         if trimmed.starts_with("#![") {
             inner_attrs.push(line.to_string());
         } else if trimmed.starts_with("use ") || trimmed.starts_with("pub use ") {
-            let idents = crate::commands::edit::imports::extract_use_idents(trimmed);
-            if idents.iter().any(|id| crate::commands::edit::imports::ident_used_in(body, id)) {
+            if trimmed.contains("::*") {
                 use_lines.push(line.to_string());
+            } else {
+                let idents = crate::commands::edit::imports::extract_use_idents(trimmed);
+                if idents.iter().any(|id| crate::commands::edit::imports::ident_used_in(body, id)) {
+                    use_lines.push(line.to_string());
+                }
             }
         }
     }

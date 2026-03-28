@@ -39,9 +39,26 @@ pub fn split_module(file: String, targets: Vec<String>, dry_run: bool) -> Result
             all_locs.push((ti, loc));
         }
     }
-    // collect moved line ranges
+    // warn if struct/trait and its impl are in different targets
+    {
+        let type_names: std::collections::HashMap<&str, usize> = all_locs.iter()
+            .filter(|(_, loc)| matches!(loc.kind.as_str(), "struct" | "enum" | "trait"))
+            .map(|(ti, loc)| {
+                let leaf = loc.rel_path.rsplit("::").next().unwrap_or(&loc.rel_path);
+                (leaf, *ti)
+            }).collect();
+        for (ti, loc) in &all_locs {
+            if loc.kind == "impl" {
+                for (type_name, type_ti) in &type_names {
+                    if loc.rel_path.contains(type_name) && ti != type_ti {
+                        eprintln!("  warning: impl for '{type_name}' (target {}) is separated from its type definition (target {})",
+                            parsed[*ti].0, parsed[*type_ti].0);
+                    }
+                }
+            }
+        }
+    }
     let mut all_moved_ranges: Vec<(usize, usize)> = Vec::new();
-    // compute super:: replacement: if file becomes dir module, depth increases by 1
     let crate_prefix = compute_crate_prefix(&abs_src, &root);
     // collect inner attrs
     let inner_attrs: Vec<String> = source_content.lines()
@@ -75,7 +92,7 @@ pub fn split_module(file: String, targets: Vec<String>, dry_run: bool) -> Result
         let mut parts: Vec<String> = Vec::new();
         if !inner_attrs.is_empty() { parts.extend(inner_attrs.iter().cloned()); parts.push(String::new()); }
         let fixed_uses: Vec<String> = use_lines.iter()
-            .map(|l| fix_super_path(l, &crate_prefix, is_already_dir))
+            .map(|l| fix_paths(l, &crate_prefix, is_already_dir))
             .collect();
         if !fixed_uses.is_empty() { parts.extend(fixed_uses); }
         // add cross-module imports for symbols referenced but in other targets or mod.rs
@@ -118,7 +135,7 @@ pub fn split_module(file: String, targets: Vec<String>, dry_run: bool) -> Result
                 let mut line = source_lines[idx].to_string();
                 // fix super:: paths in function body
                 if !is_already_dir && line.contains("super::") {
-                    line = fix_super_path(&line, &crate_prefix, false);
+                    line = fix_paths(&line, &crate_prefix, false);
                 }
                 // fix visibility on first line of function
                 if li == 0 {
@@ -242,7 +259,7 @@ fn build_mod_rs(
         if !remaining_uses.is_empty() {
             result.push(String::new());
             for u in &remaining_uses {
-                result.push(fix_super_path(u, crate_prefix, is_already_dir));
+                result.push(fix_paths(u, crate_prefix, is_already_dir));
             }
         }
         // import moved symbols that remaining code references
@@ -257,7 +274,7 @@ fn build_mod_rs(
         }
         result.push(String::new());
         for line in &remaining_lines {
-            result.push(fix_super_path(line, crate_prefix, is_already_dir));
+            result.push(fix_paths(line, crate_prefix, is_already_dir));
         }
     }
     result.push(String::new());
@@ -276,9 +293,13 @@ fn compute_crate_prefix(abs_src: &Path, _root: &Path) -> String {
     else { format!("crate::{}::", parts.join("::")) }
 }
 
-fn fix_super_path(line: &str, crate_prefix: &str, is_already_dir: bool) -> String {
-    if is_already_dir || !line.contains("super::") { return line.to_string(); }
-    line.replace("super::", crate_prefix)
+fn fix_paths(line: &str, crate_prefix: &str, is_already_dir: bool) -> String {
+    let mut result = line.to_string();
+    if !is_already_dir {
+        if result.contains("super::") { result = result.replace("super::", crate_prefix); }
+        if result.contains("self::") { result = result.replace("self::", "super::"); }
+    }
+    result
 }
 
 fn get_original_visibility(source_lines: &[&str], start: usize) -> &'static str {
