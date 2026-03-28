@@ -13,7 +13,7 @@ pub fn run(args: &[String]) {
         .skip_while(|a| *a != "--event").skip(1).next()
         .cloned();
 
-    eprintln!("[daemon] starting on {pipe_name}");
+    eprintln!("[daemon] starting");
 
     let pipe = match pipe::create(&pipe_name) {
         Ok(p) => p,
@@ -23,7 +23,7 @@ pub fn run(args: &[String]) {
     if let Some(ref ev) = event_name {
         signal_event(ev);
     }
-    eprintln!("[daemon] ready");
+    // ready signal is via named event, not stderr
 
     let mut count = 0usize;
     loop {

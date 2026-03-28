@@ -35,7 +35,7 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     println!("Database:      {}", db_path.display());
 
     let all_files = prof!("scan_files", scan_files_fast(&input_path, exclude));
-    if !prof() { eprintln!("  scan: ({} files)", all_files.len()); }
+    if !prof() { tracing::debug!("scan: {} files", all_files.len()); }
     if all_files.is_empty() {
         anyhow::bail!("No supported code files found in {}", input_path.display());
     }
@@ -158,7 +158,7 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
         println!("No changes. Database is up to date.");
     } else {
         println!("\nDone! Code DB ready: {}", db_path.display());
-        println!("Use: rude context/blast/symbols/dupes {}", db_path.display());
+        tracing::debug!("Use: rude context/blast/symbols/dupes {}", db_path.display());
         prof!("checkpoint", engine.checkpoint().ok());
         drop(engine);
         let db_bg = db_path.clone();

@@ -337,7 +337,7 @@ fn try_daemon(
 
     let response = daemon_rpc(&pipe_name, &request)?;
     if response.contains("\"ok\":true") {
-        eprintln!("  [mir] daemon: {}", response.trim());
+        tracing::debug!("[mir] daemon: {}", response.trim());
         Some(())
     } else {
         eprintln!("  [mir] daemon error: {}", response.trim());
@@ -459,8 +459,18 @@ pub fn start_daemon(project_root: &Path, mir_callgraph_bin: Option<&Path>) -> Re
         .env("MIR_CALLGRAPH_DB", super::sqlite::mir_db_path(project_root))
         .env("MIR_CALLGRAPH_JSON", "1")
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::inherit());
-    cmd.spawn().context("failed to start daemon")?;
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().context("failed to start daemon")?;
+    if let Some(stderr) = child.stderr.take() {
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
+                if line.contains("$message_type") { continue; }
+                if line.starts_with("[daemon] starting") { continue; }
+                eprintln!("{line}");
+            }
+        });
+    }
     wait_for_event(&event_name, 6000);
     Ok(())
 }

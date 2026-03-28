@@ -216,7 +216,7 @@ pub fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -
     let t_out = std::time::Instant::now();
     output::write_results(&crate_name, &edges, &chunks, &uses, &use_deps, fn_count, json, db_path);
     let t_db = t_out.elapsed();
-    eprintln!("[prof:extract] {crate_name}: mir={:.0}us db={:.0}us fns={fn_count} chunks={}", t_mir.as_micros(), t_db.as_micros(), chunks.len());
+    eprintln!("[mir-callgraph] {crate_name}: {} edges, {} chunks ({fn_count} fns)", edges.len(), chunks.len());
     ControlFlow::Continue(())
 }
 
