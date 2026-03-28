@@ -1,86 +1,12 @@
-
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
 
 use anyhow::{Context, Result};
-use notify::{Event, EventKind, RecursiveMode, Watcher};
 
 use rude_db::file_index;
 use rude_util::normalize_source;
 
-const IGNORED_DIRS: &[&str] = &[".git", "target", "node_modules", "__pycache__"];
-
-pub fn run(input_path: PathBuf) -> Result<()> {
-    let db_path = crate::db().to_path_buf();
-    // Set project root for path normalization (absolute → relative).
-    rude_intel::parse::set_project_root(&input_path);
-
-    println!("[watch] Watching {} for changes...", input_path.display());
-    println!("[watch] DB: {}", db_path.display());
-    println!("[watch] Press Ctrl+C to stop\n");
-
-    // Initial full build if DB doesn't exist
-    if !db_path.exists() {
-        eprintln!("[watch] No DB found, running initial add...");
-        super::add::run(input_path.clone(), &[])?;
-        eprintln!("[watch] Initial build complete\n");
-    }
-
-    let (tx, rx) = mpsc::channel::<PathBuf>();
-
-    let sender = tx.clone();
-    let mut watcher = notify::recommended_watcher(move |res: notify::Result<Event>| {
-        let Ok(event) = res else { return };
-
-        if !matches!(
-            event.kind,
-            EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
-        ) {
-            return;
-        }
-
-        for path in event.paths {
-            if is_rust_source(&path) && !is_in_ignored_dir(&path) {
-                let _ = sender.send(path);
-            }
-        }
-    })
-    .context("failed to create file watcher")?;
-
-    watcher
-        .watch(&input_path, RecursiveMode::Recursive)
-        .with_context(|| format!("failed to watch {}", input_path.display()))?;
-
-    // Event loop — blocks on recv(), no polling
-    let mut pending = HashSet::new();
-
-    loop {
-        // Block until first event (CPU 0% while waiting)
-        match rx.recv() {
-            Ok(path) => {
-                pending.insert(path);
-            }
-            Err(_) => {
-                eprintln!("[watch] Channel closed, stopping");
-                break;
-            }
-        }
-
-        // Drain any additional events that arrived in the same batch
-        while let Ok(path) = rx.try_recv() {
-            pending.insert(path);
-        }
-
-        // Process all pending changes
-        let changed: Vec<PathBuf> = pending.drain().collect();
-        process_changes(&changed, &db_path, &input_path);
-    }
-
-    Ok(())
-}
-
-fn process_changes(changed: &[PathBuf], db_path: &Path, input_path: &Path) {
+pub(super) fn process_changes(changed: &[PathBuf], db_path: &Path, input_path: &Path) {
     let t = std::time::Instant::now();
     let file_names: Vec<String> = changed
         .iter()
@@ -94,7 +20,6 @@ fn process_changes(changed: &[PathBuf], db_path: &Path, input_path: &Path) {
         file_names.join(", ")
     );
 
-    // 1. Detect changed crates
     let crates = rude_intel::mir_edges::detect_changed_crates(input_path, changed);
     if crates.is_empty() {
         eprintln!("[watch] no crate detected for changed files");
@@ -102,15 +27,12 @@ fn process_changes(changed: &[PathBuf], db_path: &Path, input_path: &Path) {
     }
     eprintln!("[watch] crate(s): {}", crates.join(", "));
 
-    // 2. Run mir-callgraph for changed crates only
     let crate_refs: Vec<&str> = crates.iter().map(|s| s.as_str()).collect();
     if let Err(e) = rude_intel::mir_edges::run_mir_direct(input_path, None, &crate_refs, true) {
         eprintln!("[watch] mir-callgraph failed: {e}");
         return;
     }
 
-    // 3. Load MIR chunks from sqlite
-    let mir_out_dir = input_path.join("target").join("mir-edges");
     let mir_db = rude_intel::mir_edges::mir_db_path(input_path);
     let mir_chunks = match rude_intel::mir_edges::MirEdgeMap::load_chunks_from_sqlite(&mir_db, None) {
         Ok(c) => c,
@@ -120,12 +42,11 @@ fn process_changes(changed: &[PathBuf], db_path: &Path, input_path: &Path) {
         }
     };
 
-    // 4. Create chunk entries from changed files only
     let changed_sources: HashSet<String> = changed.iter().map(|f| normalize_source(f)).collect();
 
     let mut entries = Vec::new();
     let mut file_metadata_map = HashMap::new();
-    if let Err(e) = super::add::ingest_mir(
+    if let Err(e) = crate::commands::add::ingest_mir(
         &mir_chunks,
         db_path,
         &mut entries,
@@ -141,13 +62,12 @@ fn process_changes(changed: &[PathBuf], db_path: &Path, input_path: &Path) {
         return;
     }
 
-    // 5. Write to DB
     if let Err(e) = update_db(db_path, &entries, &file_metadata_map) {
         eprintln!("[watch] DB update failed: {e}");
         return;
     }
 
-    // 7. Rebuild graph cache (incremental: only re-resolve changed crates)
+    let mir_out_dir = input_path.join("target").join("mir-edges");
     let mir_edge_map = rude_intel::mir_edges::MirEdgeMap::from_sqlite(&mir_db, None).unwrap_or_default();
     if let Err(e) = rebuild_graph_cache(db_path, &mir_out_dir, &mir_edge_map, &crates) {
         eprintln!("[watch] graph rebuild failed: {e}");
@@ -163,14 +83,14 @@ fn process_changes(changed: &[PathBuf], db_path: &Path, input_path: &Path) {
 
 fn update_db(
     db_path: &Path,
-    entries: &[super::add::CodeChunkEntry],
+    entries: &[crate::commands::add::CodeChunkEntry],
     file_metadata_map: &HashMap<String, (u64, u64, Vec<u64>)>,
 ) -> Result<()> {
     let engine = rude_db::StorageEngine::open_exclusive(db_path)
         .context("failed to open DB for writing")?;
 
     let mut file_idx = file_index::load_file_index(&engine)?;
-    super::add::write_chunks(entries, file_metadata_map, &mut file_idx, false)?;
+    crate::commands::add::write_chunks(entries, file_metadata_map, &mut file_idx, false)?;
     engine.checkpoint()?;
     file_index::save_file_index(&engine, &file_idx)?;
 
@@ -185,7 +105,6 @@ fn rebuild_graph_cache(
 ) -> Result<()> {
     let chunks = rude_intel::loader::load_chunks(db_path)?;
 
-    // Save chunks cache before building graph (graph.load reads chunks from cache)
     rude_intel::loader::save_chunks_cache(db_path, &chunks);
 
     let incremental = rude_intel::graph::IncrementalArgs {
@@ -202,18 +121,4 @@ fn rebuild_graph_cache(
     );
 
     Ok(())
-}
-
-fn is_rust_source(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext == "rs")
-}
-
-fn is_in_ignored_dir(path: &Path) -> bool {
-    path.components().any(|c| {
-        c.as_os_str()
-            .to_str()
-            .is_some_and(|s| IGNORED_DIRS.contains(&s))
-    })
 }
