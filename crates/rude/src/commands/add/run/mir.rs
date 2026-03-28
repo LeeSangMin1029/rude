@@ -29,7 +29,7 @@ pub fn run_mir_analysis(
     if changed_crates.is_empty() { return Ok(Vec::new()); }
 
     let crate_refs: Vec<&str> = changed_crates.iter().map(|s| s.as_str()).collect();
-    eprintln!("  [mir] incremental: {} crate(s) — {}", crate_refs.len(), crate_refs.join(", "));
+    tracing::debug!("[mir] incremental: {} crate(s) — {}", crate_refs.len(), crate_refs.join(", "));
     let truly_changed: Vec<&str> = crate_refs.iter()
         .filter(|c| !missing_crates.iter().any(|m| m == *c))
         .copied().collect();
@@ -51,7 +51,7 @@ pub fn run_mir_analysis(
         })
         .map(|s| s.as_str()).collect();
     if !missing_without_data.is_empty() {
-        eprintln!("  [mir] full rebuild for missing crates: {}", missing_without_data.join(", "));
+        tracing::debug!("[mir] full rebuild for missing crates: {}", missing_without_data.join(", "));
         rude_intel::mir_edges::run_mir_callgraph(input_path, None)
             .context("mir-callgraph full rebuild failed")?;
     }
@@ -71,7 +71,7 @@ pub fn run_sub_workspaces(
             abs_f.starts_with(&abs_ws)
         });
         if has_changes {
-            eprintln!("  [mir] sub-workspace: {}", ws.display());
+            tracing::debug!("[mir] sub-workspace: {}", ws.display());
             let ws_args_dir = abs_ws.join("target").join("mir-edges").join("rustc-args");
             if ws_args_dir.exists() {
                 let changed_ws: Vec<PathBuf> = code_files.iter().filter_map(|f| {

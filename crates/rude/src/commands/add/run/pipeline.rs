@@ -106,7 +106,7 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     ).context("failed to load MIR chunks")?);
 
     prof!("ingest_mir", ingest_mir(&mir_chunks, &db_path, &mut entries, &mut file_metadata_map, None)?);
-    eprintln!("  chunk: {:.1}s ({} chunks)", t0.elapsed().as_secs_f64(), entries.len());
+    tracing::debug!("chunk: {:.1}s ({} chunks)", t0.elapsed().as_secs_f64(), entries.len());
 
     println!("Symbols: {} (functions, structs, enums, ...)", entries.len());
     let inserted = prof!("write_chunks", write_chunks(&entries, &file_metadata_map, &mut file_idx, true)?);

@@ -500,7 +500,13 @@ pub fn split_module_auto(file: String, dry_run: bool) -> Result<()> {
         if !syms.is_empty() { eprintln!("  {fname}: {}", syms.join(", ")); }
     }
     let remaining: Vec<&str> = file_chunks.iter()
-        .filter(|(idx, _, _, _)| !assigned.contains_key(idx))
+        .filter(|(idx, name, _, _)| {
+            !assigned.contains_key(idx)
+                && !name.contains("Serialize") && !name.contains("Deserialize")
+                && !name.contains("__") && !name.contains("visit_")
+                && !name.contains("expecting") && !name.contains("deserialize")
+                && !name.contains('<') && !name.contains('>')
+        })
         .map(|(_, name, _, _)| *name)
         .collect();
     if !remaining.is_empty() { eprintln!("  mod.rs: {}", remaining.join(", ")); }
