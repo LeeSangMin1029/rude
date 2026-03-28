@@ -143,6 +143,8 @@ pub fn run_mir_callgraph_for(
     for krate in crates {
         cmd.arg("-p").arg(krate.replace('_', "-"));
     }
+    cmd.stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
 
     let status = cmd.status()
         .with_context(|| format!("failed to run mir-callgraph: {}", bin.display()))?;
@@ -282,7 +284,9 @@ pub fn run_mir_direct(
                 .arg("--args-file").arg(args_file)
                 .env("MIR_CALLGRAPH_OUT", &out_dir)
                 .env("MIR_CALLGRAPH_DB", &mir_db)
-                .env("MIR_CALLGRAPH_JSON", "1");
+                .env("MIR_CALLGRAPH_JSON", "1")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
             match cmd.spawn() {
                 Ok(child) => children.push((args_file.clone(), child)),
                 Err(e) => { eprintln!("  [mir] failed to spawn direct: {e}"); had_error = true; }

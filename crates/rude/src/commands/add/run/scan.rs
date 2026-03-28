@@ -70,7 +70,7 @@ pub fn prebuild_caches(
 ) {
     if incremental_crates.is_empty() {
         let chunks = merge_chunks_cache(new_entries);
-        eprintln!("    [cache] {} chunks", chunks.len());
+        tracing::debug!("[cache] {} chunks", chunks.len());
         rude_intel::loader::save_chunks_cache(&chunks);
         rude_intel::loader::save_chunks_cache_for(&chunks, None);
         let graph = rude_intel::graph::CallGraph::build_only(chunks, None, None);
@@ -80,7 +80,7 @@ pub fn prebuild_caches(
             .map(|e| e.chunk.clone()).collect();
         let changed: Vec<&str> = incremental_crates.iter().map(|s| s.as_str()).collect();
         rude_intel::loader::save_chunks_cache_for(&new_chunks, Some(&changed));
-        eprintln!("    [cache] updated {} chunks for {} crate(s)", new_chunks.len(), changed.len());
+        tracing::debug!("[cache] updated {} chunks for {} crate(s)", new_chunks.len(), changed.len());
         if let Ok(engine) = rude_db::StorageEngine::open(crate::db()) {
             let _ = engine.set_cache("graph", &[]);
         }

@@ -12,7 +12,7 @@ pub fn load_chunks() -> Result<Vec<ParsedChunk>> {
     if let Ok(engine) = rude_db::StorageEngine::open(path) {
         ensure_project_root_with_engine(&engine);
         if let Some(chunks) = load_chunks_from_cache_with_engine(&engine) {
-            eprintln!("  chunks cache hit: {} chunks", chunks.len());
+            tracing::debug!("chunks cache hit: {} chunks", chunks.len());
             return Ok(chunks);
         }
     } else {
@@ -162,9 +162,9 @@ pub fn load_or_build_graph() -> Result<crate::graph::CallGraph> {
         None
     };
     if mir_edges.as_ref().map_or(false, |m| m.total > 0) {
-        eprintln!("[graph] Rebuilding with MIR edges ({} total)...", mir_edges.as_ref().unwrap().total);
+        tracing::debug!("[graph] Rebuilding with MIR edges ({} total)...", mir_edges.as_ref().unwrap().total);
     } else {
-        eprintln!("[graph] Building graph (name-resolve fallback)...");
+        tracing::debug!("[graph] Building graph (name-resolve fallback)...");
     }
     let g = crate::graph::CallGraph::build_only(chunks, mir_edges.as_ref(), None);
     let _ = g.save();

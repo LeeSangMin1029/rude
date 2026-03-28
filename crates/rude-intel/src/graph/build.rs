@@ -73,7 +73,7 @@ impl CallGraph {
         let fn_trait_impl = index_tables::build_fn_trait_impl(&names, &kinds);
 
         let chunks_hash = compute_chunks_order_hash(&chunks);
-        eprintln!("      [graph] assemble: {:.1}ms", t.elapsed().as_secs_f64() * 1000.0);
+        tracing::debug!("[graph] assemble: {:.1}ms", t.elapsed().as_secs_f64() * 1000.0);
 
         Self {
             chunks,
@@ -172,7 +172,7 @@ impl CallGraph {
                 (edge_resolve::ResolvedEdges::empty(chunks.len()), "no-mir")
             }
         };
-        eprintln!("      [graph] {label}: {:.1}ms ({} chunks)", t0.elapsed().as_secs_f64() * 1000.0, chunks.len());
+        tracing::debug!("[graph] {label}: {:.1}ms ({} chunks)", t0.elapsed().as_secs_f64() * 1000.0, chunks.len());
         Self::assemble(chunks, &index, adj)
     }
 
