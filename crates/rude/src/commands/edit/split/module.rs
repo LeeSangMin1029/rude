@@ -2,7 +2,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use crate::commands::edit::locate::{SymbolLocation, locate_symbol_in};
 use crate::commands::edit::file::locked_edit;
-use super::common::*;
+use super::{sort_by_kind, is_header_line, filter_header, build_file_content};
 
 pub fn split_module(file: String, targets: Vec<String>, dry_run: bool) -> Result<()> {
     let db = crate::db();
@@ -165,18 +165,37 @@ pub fn split_module(file: String, targets: Vec<String>, dry_run: bool) -> Result
                 result.push(format!("pub use {mod_name}::{{{}}};", pub_syms.join(", ")));
             }
         }
-        let remaining: Vec<&str> = content.lines()
-            .filter(|l| {
-                let t = l.trim();
-                !t.is_empty() && !t.starts_with("#![") && !t.starts_with("use ")
-                    && !t.starts_with("pub use ") && !t.starts_with("pub(crate) use ")
-                    && !t.starts_with("mod ") && !t.starts_with("pub mod ") && !t.starts_with("pub(crate) mod ")
-                    && !t.starts_with("//")
-            })
-            .collect();
-        if !remaining.is_empty() {
+        // remaining code stays in mod.rs (shared utils, types, etc.)
+        let remaining_body: String = {
+            let lines: Vec<&str> = content.lines().collect();
+            let moved_set: std::collections::HashSet<(usize, usize)> = all_moved_ranges.iter().copied().collect();
+            let mut body_lines: Vec<String> = Vec::new();
+            let mut in_header = true;
+            for (i, &line) in lines.iter().enumerate() {
+                let t = line.trim();
+                if in_header {
+                    if t.starts_with("#![") || t.starts_with("use ") || t.starts_with("pub use ")
+                        || t.starts_with("pub(crate) use ") || t.starts_with("mod ") || t.starts_with("pub mod ")
+                        || t.starts_with("pub(crate) mod ") || t.starts_with("//") || t.is_empty()
+                        || t.starts_with("extern ") || t.starts_with("#[") { continue; }
+                    in_header = false;
+                }
+                let in_moved = moved_set.iter().any(|&(ms, me)| i >= ms && i <= me);
+                if !in_moved { body_lines.push(line.to_string()); }
+            }
+            while body_lines.last().is_some_and(|l| l.trim().is_empty()) { body_lines.pop(); }
+            while body_lines.first().is_some_and(|l| l.trim().is_empty()) { body_lines.remove(0); }
+            body_lines.join("\n")
+        };
+        if !remaining_body.is_empty() {
+            // add use statements needed by remaining code
+            let remaining_uses = filter_header(content, &remaining_body).1;
+            if !remaining_uses.is_empty() {
+                result.push(String::new());
+                result.extend(remaining_uses);
+            }
             result.push(String::new());
-            for &line in &remaining { result.push(line.to_string()); }
+            result.extend(remaining_body.lines().map(|l| l.to_string()));
         }
         result.push(String::new());
         Ok(result.join("\n"))

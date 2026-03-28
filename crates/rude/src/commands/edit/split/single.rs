@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use std::path::Path;
 use crate::commands::edit::locate::{SymbolLocation, locate_symbol};
 use crate::commands::edit::ops::Op;
-use super::common::*;
+use super::{sort_by_kind, filter_header, build_file_content, find_mod_file, insert_reexport, insert_mod_decl};
 
 pub fn split(symbols: String, to: String, dry_run: bool) -> Result<()> {
     let db = crate::db();
