@@ -268,6 +268,19 @@ pub enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Split a file into a directory module with sub-files.
+    #[command(visible_alias = "sm")]
+    SplitModule {
+        /// Source file path suffix (e.g. "src/commands/dupes.rs").
+        #[arg(long)]
+        file: String,
+        /// Target assignments: target.rs:sym1,sym2 (repeatable).
+        #[arg(required = true)]
+        targets: Vec<String>,
+        /// Preview changes without modifying files.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Remove unused imports from a file.
     #[command(visible_alias = "ci")]
     CleanImports {

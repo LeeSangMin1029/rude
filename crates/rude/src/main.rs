@@ -102,6 +102,9 @@ fn run() -> anyhow::Result<()> {
         Commands::Split { symbols, to, dry_run } => {
             commands::edit::split(symbols, to, dry_run)
         }
+        Commands::SplitModule { file, targets, dry_run } => {
+            commands::edit::split_module(file, targets, dry_run)
+        }
         Commands::CleanImports { file } => {
             commands::edit::clean_imports(file)
         }

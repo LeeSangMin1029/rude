@@ -8,10 +8,15 @@ pub(crate) struct SymbolLocation {
     pub(crate) rel_path: String,
     pub(crate) start_line: usize,
     pub(crate) end_line: usize,
+    pub(crate) kind: String,
 }
 
 pub(crate) fn locate_symbol(db: &Path, symbol: &str, file_hint: Option<&str>) -> Result<SymbolLocation> {
     let graph = crate::commands::intel::load_or_build_graph()?;
+    locate_symbol_in(&graph, db, symbol, file_hint)
+}
+
+pub(crate) fn locate_symbol_in(graph: &rude_intel::graph::CallGraph, db: &Path, symbol: &str, file_hint: Option<&str>) -> Result<SymbolLocation> {
     let hint_normalized = file_hint.map(|f| f.replace('\\', "/"));
     let candidates: Vec<u32> = graph.resolve(symbol).into_iter()
         .filter(|&i| {
@@ -29,7 +34,7 @@ pub(crate) fn locate_symbol(db: &Path, symbol: &str, file_hint: Option<&str>) ->
         if !abs_path.exists() { bail!("File not found: {}", abs_path.display()); }
         let rel = relative_display(db, file_path);
         let (start, end) = syn_locate(&abs_path, leaf, None)?;
-        return Ok(SymbolLocation { abs_path, rel_path: rel, start_line: start - 1, end_line: end - 1 });
+        return Ok(SymbolLocation { abs_path, rel_path: rel, start_line: start - 1, end_line: end - 1, kind: "function".into() });
     }
     if candidates.len() > 1 {
         let locs: Vec<String> = candidates.iter()
@@ -40,10 +45,11 @@ pub(crate) fn locate_symbol(db: &Path, symbol: &str, file_hint: Option<&str>) ->
     let chunk = &graph.chunks[candidates[0] as usize];
     let abs_path = resolve_abs_path(db, &chunk.file)?;
     let rel = relative_display(db, &chunk.file);
+    let kind = chunk.kind.clone();
     let (start, end) = chunk.lines
         .unwrap_or_else(|| syn_locate(&abs_path, leaf, None).unwrap_or((1, 1)));
     let start = expand_to_attrs(&abs_path, start);
-    Ok(SymbolLocation { abs_path, rel_path: rel, start_line: start - 1, end_line: end - 1 })
+    Ok(SymbolLocation { abs_path, rel_path: rel, start_line: start - 1, end_line: end - 1, kind })
 }
 
 fn expand_to_attrs(path: &Path, start: usize) -> usize {
