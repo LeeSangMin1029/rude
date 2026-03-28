@@ -72,14 +72,46 @@ pub fn split_module(file: String, targets: Vec<String>, dry_run: bool) -> Result
             .flat_map(|&(start, end, _, _)| &source_lines[start..=end])
             .cloned().collect::<Vec<_>>().join("\n");
         let (_, use_lines) = filter_header(&source_content, &moved_body);
-        // build content with super:: replacement and visibility fix
         let mut parts: Vec<String> = Vec::new();
         if !inner_attrs.is_empty() { parts.extend(inner_attrs.iter().cloned()); parts.push(String::new()); }
-        // fix use lines: super:: → crate::
         let fixed_uses: Vec<String> = use_lines.iter()
             .map(|l| fix_super_path(l, &crate_prefix, is_already_dir))
             .collect();
-        if !fixed_uses.is_empty() { parts.extend(fixed_uses); parts.push(String::new()); }
+        if !fixed_uses.is_empty() { parts.extend(fixed_uses); }
+        // add cross-module imports for symbols referenced but in other targets or mod.rs
+        let mut cross_imports: Vec<String> = Vec::new();
+        // check which symbols from other targets or remaining are used in this target's body
+        for (oti, (other_target, other_syms)) in parsed.iter().enumerate() {
+            if oti == ti { continue; }
+            let other_mod = Path::new(other_target.as_str()).file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            let used: Vec<&str> = other_syms.iter()
+                .filter(|s| moved_body.contains(s.as_str()))
+                .map(|s| s.as_str()).collect();
+            if !used.is_empty() {
+                cross_imports.push(format!("use super::{other_mod}::{{{}}};", used.join(", ")));
+            }
+        }
+        // check remaining symbols (in mod.rs) used by this target
+        {
+            let all_moved_syms: std::collections::HashSet<&str> = parsed.iter()
+                .flat_map(|(_, syms)| syms.iter().map(|s| s.as_str()))
+                .collect();
+            let remaining_in_mod: Vec<&str> = graph.chunks.iter()
+                .filter(|c| c.file == src_chunk.file)
+                .filter(|c| {
+                    let leaf = c.name.rsplit("::").next().unwrap_or(&c.name);
+                    !all_moved_syms.contains(leaf)
+                })
+                .filter(|c| c.kind == "function")
+                .map(|c| c.name.rsplit("::").next().unwrap_or(&c.name))
+                .filter(|name| moved_body.contains(name))
+                .collect();
+            if !remaining_in_mod.is_empty() {
+                cross_imports.push(format!("use super::{{{}}};", remaining_in_mod.join(", ")));
+            }
+        }
+        if !cross_imports.is_empty() { parts.extend(cross_imports); }
+        if !parts.is_empty() && !parts.last().is_some_and(|l| l.is_empty()) { parts.push(String::new()); }
         for (ri, &(start, end, name, _)) in ranges.iter().enumerate() {
             if ri > 0 { parts.push(String::new()); }
             for (li, idx) in (start..=end).enumerate() {
@@ -222,11 +254,13 @@ fn build_mod_rs(
     result.join("\n")
 }
 
-fn compute_crate_prefix(abs_src: &Path, root: &Path) -> String {
-    let rel = abs_src.strip_prefix(root).unwrap_or(abs_src);
-    let parts: Vec<&str> = rel.iter()
-        .filter_map(|c| c.to_str())
-        .filter(|&c| c != "src" && !c.ends_with(".rs"))
+fn compute_crate_prefix(abs_src: &Path, _root: &Path) -> String {
+    let path_str = abs_src.to_string_lossy().replace('\\', "/");
+    let after_src = path_str.rsplit_once("/src/")
+        .map(|(_, after)| after)
+        .unwrap_or("");
+    let parts: Vec<&str> = after_src.split('/')
+        .filter(|c| !c.ends_with(".rs") && !c.is_empty())
         .collect();
     if parts.is_empty() { "crate::".to_string() }
     else { format!("crate::{}::", parts.join("::")) }
