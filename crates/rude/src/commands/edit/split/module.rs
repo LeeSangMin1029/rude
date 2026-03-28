@@ -245,6 +245,16 @@ fn build_mod_rs(
                 result.push(fix_super_path(u, crate_prefix, is_already_dir));
             }
         }
+        // import moved symbols that remaining code references
+        for (target_name, syms) in targets {
+            let mod_name = Path::new(target_name).file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            let used: Vec<&str> = syms.iter()
+                .filter(|s| body.contains(s.as_str()))
+                .map(|s| s.as_str()).collect();
+            if !used.is_empty() {
+                result.push(format!("use {mod_name}::{{{}}};", used.join(", ")));
+            }
+        }
         result.push(String::new());
         for line in &remaining_lines {
             result.push(fix_super_path(line, crate_prefix, is_already_dir));
