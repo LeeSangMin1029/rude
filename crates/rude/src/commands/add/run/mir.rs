@@ -1,0 +1,150 @@
+use std::path::PathBuf;
+
+use anyhow::{Context, Result};
+
+use super::scan::prof;
+
+pub fn run_mir_analysis(
+    input_path: &std::path::Path,
+    mir_db: &std::path::Path,
+    code_files: &[&PathBuf],
+) -> Result<Vec<String>> {
+    let has_cached_edges = mir_db.exists();
+
+    if !has_cached_edges {
+        rude_intel::mir_edges::clear_mir_db(input_path, &[]).ok();
+        rude_intel::mir_edges::run_mir_callgraph(input_path, None)
+            .context("mir-callgraph failed — ensure nightly rustc and mir-callgraph are installed")?;
+        return Ok(Vec::new());
+    }
+
+    let rust_changed: Vec<_> = code_files.iter()
+        .filter(|f| f.extension().and_then(|e| e.to_str()) == Some("rs"))
+        .collect();
+    let changed_crates = prof!("detect_changed_crates", rude_intel::mir_edges::detect_changed_crates(input_path, &rust_changed));
+    if changed_crates.is_empty() { return Ok(Vec::new()); }
+
+    let crate_refs: Vec<&str> = changed_crates.iter().map(|s| s.as_str()).collect();
+    eprintln!("  [mir] incremental: {} crate(s) — {}", crate_refs.len(), crate_refs.join(", "));
+    prof!("clear_mir_db", rude_intel::mir_edges::clear_mir_db(input_path, &crate_refs).ok());
+    let rust_only = code_files.iter().all(|f| f.extension().and_then(|e| e.to_str()) == Some("rs"));
+    prof!("run_mir_direct", rude_intel::mir_edges::run_mir_direct(input_path, None, &crate_refs, rust_only)
+        .context("mir-callgraph incremental failed")?);
+    Ok(changed_crates)
+}
+
+pub fn run_sub_workspaces(
+    root: &std::path::Path, main_mir_db: &std::path::Path, code_files: &[&PathBuf],
+) -> Result<()> {
+    let sub_workspaces = find_sub_workspaces(root);
+    let abs_root = rude_util::safe_canonicalize(root);
+    for ws in &sub_workspaces {
+        let abs_ws = rude_util::safe_canonicalize(ws);
+        let ws_mir_db = abs_ws.join("target").join("mir-edges").join("mir.db");
+        let has_changes = code_files.iter().any(|f| {
+            let abs_f = if f.is_absolute() { f.to_path_buf() } else { abs_root.join(f) };
+            abs_f.starts_with(&abs_ws)
+        });
+        if has_changes {
+            eprintln!("  [mir] sub-workspace: {}", ws.display());
+            let ws_args_dir = abs_ws.join("target").join("mir-edges").join("rustc-args");
+            if ws_args_dir.exists() {
+                let changed_ws: Vec<PathBuf> = code_files.iter().filter_map(|f| {
+                    let abs_f = if f.is_absolute() { f.to_path_buf() } else { abs_root.join(f) };
+                    abs_f.strip_prefix(&abs_ws).ok().map(|rel| abs_ws.join(rel))
+                }).collect();
+                let refs: Vec<&PathBuf> = changed_ws.iter().collect();
+                let crates = rude_intel::mir_edges::detect_changed_crates(&abs_ws, &refs);
+                if !crates.is_empty() {
+                    let refs: Vec<&str> = crates.iter().map(|s| s.as_str()).collect();
+                    rude_intel::mir_edges::clear_mir_db(&abs_ws, &refs).ok();
+                    rude_intel::mir_edges::run_mir_direct(&abs_ws, None, &refs, true).ok();
+                }
+            } else {
+                run_mir_cargo_wrapper(&abs_ws).ok();
+            }
+        }
+        if ws_mir_db.exists() {
+            rude_intel::mir_edges::merge_mir_db(main_mir_db, &ws_mir_db).ok();
+        }
+    }
+    Ok(())
+}
+
+fn run_mir_cargo_wrapper(ws: &std::path::Path) -> Result<()> {
+    let bin = rude_intel::mir_edges::find_mir_callgraph_bin(None)?;
+    let out_dir = ws.join("target").join("mir-edges");
+    std::fs::create_dir_all(&out_dir).ok();
+    let abs_out = rude_util::safe_canonicalize(&out_dir);
+    let abs_db = abs_out.join("mir.db");
+    let abs_bin = rude_util::safe_canonicalize(&bin);
+    let status = std::process::Command::new("cargo")
+        .arg("check").arg("--tests")
+        .env("RUSTUP_TOOLCHAIN", "nightly")
+        .arg("--target-dir").arg(ws.join("target").join(rude_intel::mir_edges::mir_check_dir_name()))
+        .current_dir(ws)
+        .env("RUSTC_WRAPPER", &abs_bin)
+        .env("MIR_CALLGRAPH_OUT", &abs_out)
+        .env("MIR_CALLGRAPH_DB", &abs_db)
+        .env("MIR_CALLGRAPH_JSON", "1")
+        .status()
+        .context("failed to run cargo check for sub-workspace")?;
+    if !status.success() {
+        eprintln!("  [mir] sub-workspace cargo check failed: {status}");
+    }
+    Ok(())
+}
+
+fn find_sub_workspaces(root: &std::path::Path) -> Vec<PathBuf> {
+    let cache_file = root.join("target").join("mir-edges").join(".sub-workspaces");
+    let toml_mtime = std::fs::metadata(root.join("Cargo.toml"))
+        .and_then(|m| m.modified()).ok();
+    let cache_mtime = std::fs::metadata(&cache_file)
+        .and_then(|m| m.modified()).ok();
+    if let (Some(t), Some(c)) = (toml_mtime, cache_mtime) {
+        if c > t {
+            if let Ok(content) = std::fs::read_to_string(&cache_file) {
+                return content.lines().filter(|l| !l.is_empty()).map(PathBuf::from).collect();
+            }
+        }
+    }
+    let result = detect_sub_workspaces(root);
+    let text: String = result.iter().filter_map(|p| p.to_str()).collect::<Vec<_>>().join("\n");
+    let _ = std::fs::write(&cache_file, text);
+    result
+}
+
+fn detect_sub_workspaces(root: &std::path::Path) -> Vec<PathBuf> {
+    let meta_output = std::process::Command::new("cargo")
+        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .current_dir(root).output().ok();
+    let Some(out) = meta_output.filter(|o| o.status.success()) else { return Vec::new() };
+    let Ok(meta) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else { return Vec::new() };
+    let norm = |s: &str| s.replace('\\', "/").to_lowercase();
+    let ws_root = meta.get("workspace_root").and_then(|v| v.as_str()).map(norm).unwrap_or_default();
+    let members: std::collections::HashSet<String> = meta.get("packages")
+        .and_then(|p| p.as_array())
+        .map(|pkgs| pkgs.iter().filter_map(|p| {
+            Some(norm(&PathBuf::from(p.get("manifest_path")?.as_str()?).parent()?.to_string_lossy()))
+        }).collect())
+        .unwrap_or_default();
+    let git_output = std::process::Command::new("git")
+        .args(["ls-files", "--cached", "--others", "--exclude-standard", "*/Cargo.toml"])
+        .current_dir(root).output().ok();
+    let Some(git_out) = git_output.filter(|o| o.status.success()) else { return Vec::new() };
+    let abs_root = rude_util::safe_canonicalize(root);
+    String::from_utf8_lossy(&git_out.stdout).lines()
+        .filter_map(|line| {
+            let parent = PathBuf::from(line).parent()?.to_path_buf();
+            if parent.as_os_str().is_empty() { return None; }
+            let abs_dir = rude_util::safe_canonicalize(&abs_root.join(&parent));
+            let dir_norm = norm(&abs_dir.to_string_lossy());
+            if members.contains(&dir_norm) || dir_norm == ws_root { return None; }
+            Some(root.join(parent))
+        })
+        .collect()
+}
+
+pub fn to_crate_filter(crates: &[String]) -> Option<Vec<&str>> {
+    if crates.is_empty() { None } else { Some(crates.iter().map(String::as_str).collect()) }
+}
