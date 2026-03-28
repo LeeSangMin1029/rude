@@ -69,7 +69,7 @@ pub(super) fn process_changes(changed: &[PathBuf], db_path: &Path, input_path: &
 
     let mir_out_dir = input_path.join("target").join("mir-edges");
     let mir_edge_map = rude_intel::mir_edges::MirEdgeMap::from_sqlite(&mir_db, None).unwrap_or_default();
-    if let Err(e) = rebuild_graph_cache(db_path, &mir_out_dir, &mir_edge_map, &crates) {
+    if let Err(e) = rebuild_graph_cache(&mir_out_dir, &mir_edge_map, &crates) {
         eprintln!("[watch] graph rebuild failed: {e}");
         return;
     }
@@ -98,7 +98,6 @@ fn update_db(
 }
 
 fn rebuild_graph_cache(
-    db_path: &Path,
     mir_out_dir: &Path,
     mir_edge_map: &rude_intel::mir_edges::MirEdgeMap,
     changed_crates: &[String],

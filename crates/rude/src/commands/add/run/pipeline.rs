@@ -59,7 +59,7 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     let source_cache: HashMap<std::path::PathBuf, String> = code_files.iter()
         .map(|f| ((*f).clone(), rude_util::normalize_source(f))).collect();
 
-    let missing_crates = detect_missing_from_cache(&db_path, &input_path);
+    let missing_crates = detect_missing_from_cache(&input_path);
     if code_files.is_empty() && missing_crates.is_empty() {
         println!("No files changed. Nothing to update.");
         return Ok(());
@@ -150,13 +150,13 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
         tracing::debug!("Use: rude context/blast/symbols/dupes {}", db_path.display());
         prof!("checkpoint", engine.checkpoint().ok());
         drop(engine);
-        prebuild_caches(&db_path, &entries, &mir_out_dir, &incremental_crates);
+        prebuild_caches(&entries, &incremental_crates);
     }
 
     Ok(())
 }
 
-fn detect_missing_from_cache(db_path: &std::path::Path, input_path: &std::path::Path) -> Vec<String> {
+fn detect_missing_from_cache(input_path: &std::path::Path) -> Vec<String> {
     let cached_crates: std::collections::HashSet<String> = rude_intel::loader::cached_crate_names()
         .into_iter().collect();
     let mir_crates: std::collections::HashSet<String> = rude_intel::mir_edges::detect_missing_edge_crates(input_path)

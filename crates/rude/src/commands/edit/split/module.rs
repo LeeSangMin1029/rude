@@ -475,8 +475,6 @@ pub fn split_module_auto(file: String, dry_run: bool) -> Result<()> {
     }
     // compute total lines per group, dissolve small groups back to mod.rs
     let min_group_lines = crate::config::get().cluster.min_lines;
-    let abs = crate::commands::edit::file::resolve_abs_path(db, &src_file).ok();
-    let source_for_lines = abs.and_then(|p| std::fs::read_to_string(&p).ok()).unwrap_or_default();
     for gi in 0..groups.len() {
         let total: usize = groups[gi].1.iter().filter_map(|sym| {
             graph.chunks.iter().find(|c| c.file == src_file && c.name.ends_with(sym))

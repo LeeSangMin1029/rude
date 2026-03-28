@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use anyhow::Result;
 
 use rude_intel::graph;
 use rude_util::{apply_alias, format_lines_opt, relative_path};
