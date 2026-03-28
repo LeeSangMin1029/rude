@@ -373,6 +373,142 @@ fn get_original_visibility(source_lines: &[&str], start: usize) -> &'static str 
     else { "" }
 }
 
+pub fn split_module_auto(file: String, dry_run: bool) -> Result<()> {
+    let db = crate::db();
+    let graph = crate::commands::intel::load_or_build_graph()?;
+    let src_chunk = graph.chunks.iter()
+        .find(|c| c.file.ends_with(&file) || file.ends_with(&c.file))
+        .with_context(|| format!("No file matching '{file}' in DB"))?;
+    let src_file = src_chunk.file.clone();
+    // collect all functions in this file
+    let file_chunks: Vec<(u32, &str, &str, bool)> = graph.chunks.iter().enumerate()
+        .filter(|(_, c)| c.file == src_file)
+        .filter(|(_, c)| matches!(c.kind.as_str(), "function" | "struct" | "enum" | "trait" | "impl"))
+        .map(|(i, c)| {
+            let leaf = c.name.rsplit("::").next().unwrap_or(&c.name);
+            let is_pub = c.kind == "function" && {
+                let abs = crate::commands::edit::file::resolve_abs_path(db, &c.file).ok();
+                abs.and_then(|p| std::fs::read_to_string(&p).ok()).map_or(false, |content| {
+                    if let Some((s, _)) = c.lines {
+                        content.lines().nth(s.saturating_sub(1)).map_or(false, |l| {
+                            let t = l.trim();
+                            t.starts_with("pub fn ") || t.starts_with("pub(crate) fn ")
+                        })
+                    } else { false }
+                })
+            };
+            (i as u32, leaf, c.kind.as_str(), is_pub)
+        })
+        .collect();
+    // find entry points: pub/pub(crate) functions called from outside this file
+    let entry_points: Vec<u32> = file_chunks.iter()
+        .filter(|(_, leaf, kind, is_pub)| {
+            *kind == "function" && *is_pub && !leaf.contains("::")
+        })
+        .map(|(idx, _, _, _)| *idx)
+        .collect();
+    if entry_points.is_empty() {
+        eprintln!("No pub entry points found in {file}. Nothing to split.");
+        return Ok(());
+    }
+    // build groups: for each entry point, find private fns it exclusively calls
+    let file_idx_set: std::collections::HashSet<u32> = file_chunks.iter().map(|(i, _, _, _)| *i).collect();
+    let mut assigned: std::collections::HashMap<u32, usize> = std::collections::HashMap::new(); // chunk_idx → group_idx
+    // first pass: assign entry points to their own groups
+    let mut groups: Vec<(String, Vec<String>)> = Vec::new(); // (filename, symbols)
+    for &ep in &entry_points {
+        let name = graph.chunks[ep as usize].name.rsplit("::").next().unwrap_or(&graph.chunks[ep as usize].name);
+        let gi = groups.len();
+        groups.push((format!("{name}.rs"), vec![name.to_string()]));
+        assigned.insert(ep, gi);
+    }
+    // second pass: for each non-pub function, find which entry points call it
+    let private_fns: Vec<u32> = file_chunks.iter()
+        .filter(|(_, _, kind, is_pub)| *kind == "function" && !*is_pub)
+        .map(|(idx, _, _, _)| *idx)
+        .collect();
+    for &pf in &private_fns {
+        let callers_in_file: Vec<u32> = graph.callers[pf as usize].iter()
+            .filter(|&&c| file_idx_set.contains(&c))
+            .copied()
+            .collect();
+        // find which groups call this function
+        let caller_groups: std::collections::HashSet<usize> = callers_in_file.iter()
+            .filter_map(|c| assigned.get(c))
+            .copied()
+            .collect();
+        if caller_groups.len() == 1 {
+            let gi = *caller_groups.iter().next().unwrap();
+            let name = graph.chunks[pf as usize].name.rsplit("::").next().unwrap_or(&graph.chunks[pf as usize].name);
+            groups[gi].1.push(name.to_string());
+            assigned.insert(pf, gi);
+        }
+        // if called by 0 or 2+ groups → stays in mod.rs (not assigned)
+    }
+    // third pass: assign struct/enum/trait to groups if used exclusively by one group
+    let types: Vec<u32> = file_chunks.iter()
+        .filter(|(_, _, kind, _)| matches!(*kind, "struct" | "enum" | "trait"))
+        .map(|(idx, _, _, _)| *idx)
+        .collect();
+    for &ti in &types {
+        let type_name = graph.chunks[ti as usize].name.rsplit("::").next().unwrap_or(&graph.chunks[ti as usize].name);
+        // check which groups reference this type (by name in source)
+        let abs = crate::commands::edit::file::resolve_abs_path(db, &src_file).ok();
+        let source = abs.and_then(|p| std::fs::read_to_string(&p).ok()).unwrap_or_default();
+        let mut using_groups: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for (gi, (_, syms)) in groups.iter().enumerate() {
+            for sym in syms {
+                if let Some(loc) = graph.chunks.iter().enumerate()
+                    .find(|(_, c)| c.file == src_file && c.name.ends_with(sym)) {
+                    if let Some((s, e)) = loc.1.lines {
+                        let body: String = source.lines().skip(s.saturating_sub(1)).take(e - s.saturating_sub(1) + 1).collect::<Vec<_>>().join("\n");
+                        if contains_word(&body, type_name) { using_groups.insert(gi); }
+                    }
+                }
+            }
+        }
+        if using_groups.len() == 1 {
+            let gi = *using_groups.iter().next().unwrap();
+            groups[gi].1.push(type_name.to_string());
+            assigned.insert(ti, gi);
+        }
+    }
+    // compute total lines per group, dissolve small groups back to mod.rs
+    let min_group_lines = crate::config::get().cluster.min_lines;
+    let abs = crate::commands::edit::file::resolve_abs_path(db, &src_file).ok();
+    let source_for_lines = abs.and_then(|p| std::fs::read_to_string(&p).ok()).unwrap_or_default();
+    for gi in 0..groups.len() {
+        let total: usize = groups[gi].1.iter().filter_map(|sym| {
+            graph.chunks.iter().find(|c| c.file == src_file && c.name.ends_with(sym))
+                .and_then(|c| c.lines.map(|(s, e)| e - s + 1))
+        }).sum();
+        if total < min_group_lines {
+            for sym_idx in file_chunks.iter().filter(|(_, name, _, _)| groups[gi].1.contains(&name.to_string())).map(|(i, _, _, _)| *i) {
+                assigned.remove(&sym_idx);
+            }
+            groups[gi].1.clear();
+        }
+    }
+    groups.retain(|(_, syms)| !syms.is_empty());
+    let targets: Vec<String> = groups.iter()
+        .map(|(fname, syms)| format!("{fname}:{}", syms.join(",")))
+        .collect();
+    if targets.is_empty() {
+        eprintln!("No groups formed. Nothing to split.");
+        return Ok(());
+    }
+    eprintln!("=== auto-plan for {file} ===");
+    for (fname, syms) in &groups {
+        if !syms.is_empty() { eprintln!("  {fname}: {}", syms.join(", ")); }
+    }
+    let remaining: Vec<&str> = file_chunks.iter()
+        .filter(|(idx, _, _, _)| !assigned.contains_key(idx))
+        .map(|(_, name, _, _)| *name)
+        .collect();
+    if !remaining.is_empty() { eprintln!("  mod.rs: {}", remaining.join(", ")); }
+    split_module(file, targets, dry_run)
+}
+
 fn ensure_visibility(line: &str, orig_vis: &str) -> String {
     let trimmed = line.trim_start();
     if trimmed.starts_with("pub ") || trimmed.starts_with("pub(") { return line.to_string(); }

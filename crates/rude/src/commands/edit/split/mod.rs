@@ -2,7 +2,7 @@ mod single;
 mod module;
 
 pub use single::split;
-pub use module::split_module;
+pub use module::{split_module, split_module_auto};
 
 use std::path::{Path, PathBuf};
 use anyhow::Result;

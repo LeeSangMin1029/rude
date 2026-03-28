@@ -275,8 +275,10 @@ pub enum Commands {
         #[arg(long)]
         file: String,
         /// Target assignments: target.rs:sym1,sym2 (repeatable).
-        #[arg(required = true)]
         targets: Vec<String>,
+        /// Auto-plan split using call graph analysis (no targets needed).
+        #[arg(long)]
+        auto: bool,
         /// Preview changes without modifying files.
         #[arg(long)]
         dry_run: bool,
