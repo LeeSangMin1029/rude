@@ -152,15 +152,13 @@ pub fn split_module(file: String, targets: Vec<String>, dry_run: bool) -> Result
         target_files.push(TargetFile { rel_path: target_name.clone(), content, symbols: syms.clone() });
     }
     if dry_run {
-        eprintln!("=== DRY RUN: split-module {} ===\n", file);
-        if !is_already_dir { eprintln!("Step 1: Rename {} → {}/mod.rs\n", file, stem); }
+        eprintln!("=== DRY RUN: split-module {} ===", file);
+        if !is_already_dir { eprintln!("  rename {} → {}/mod.rs", file, stem); }
         for tf in &target_files {
-            eprintln!("--- {} ({} line(s), {} symbols) ---", tf.rel_path, tf.content.lines().count(), tf.symbols.len());
-            for (i, line) in tf.content.lines().enumerate() { eprintln!("{:>4}| {line}", i + 1); }
-            eprintln!();
+            eprintln!("  create {}/{} ({} lines, {} symbols: {})",
+                stem, tf.rel_path, tf.content.lines().count(), tf.symbols.len(), tf.symbols.join(", "));
         }
-        eprintln!("--- mod.rs ---");
-        eprintln!("  (mod declarations + pub use + remaining code)");
+        eprintln!("  mod.rs: mod declarations + pub use + remaining code");
         return Ok(());
     }
     // execute: rename to dir if needed
