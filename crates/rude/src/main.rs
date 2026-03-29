@@ -142,12 +142,22 @@ fn init_tracing() -> Option<tracing_chrome::FlushGuard> {
 
 const DB_NAME: &str = ".code.db";
 
-fn resolve_db(explicit: Option<std::path::PathBuf>, create_if_missing: bool) -> anyhow::Result<std::path::PathBuf> {
+fn resolve_db(explicit: Option<std::path::PathBuf>, is_add: bool) -> anyhow::Result<std::path::PathBuf> {
     if let Some(p) = explicit {
         return Ok(p);
     }
-    let mut dir = std::env::current_dir()?;
-    let cwd = dir.clone();
+    let cwd = std::env::current_dir()?;
+    // add command: prefer CWD, only search upward if CWD has no .code.db and no Cargo.toml
+    if is_add {
+        let cwd_db = cwd.join(DB_NAME);
+        if cwd_db.exists() { return Ok(cwd_db); }
+        // if CWD has Cargo.toml, this is a project root — create DB here
+        if cwd.join("Cargo.toml").exists() {
+            std::fs::create_dir_all(&cwd_db)?;
+            return Ok(cwd_db);
+        }
+    }
+    let mut dir = cwd.clone();
     loop {
         let candidate = dir.join(DB_NAME);
         if candidate.exists() {
@@ -155,7 +165,7 @@ fn resolve_db(explicit: Option<std::path::PathBuf>, create_if_missing: bool) -> 
         }
         if !dir.pop() { break; }
     }
-    if create_if_missing {
+    if is_add {
         let db = cwd.join(DB_NAME);
         std::fs::create_dir_all(&db)?;
         return Ok(db);
