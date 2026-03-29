@@ -24,12 +24,27 @@ pub fn mir_crate_names(project_root: &Path) -> Vec<String> {
 pub fn merge_mir_db(main_db: &Path, sub_db: &Path) -> Result<()> {
     let conn = rusqlite::Connection::open(main_db)?;
     let sub_path = sub_db.display().to_string().replace('\\', "/");
-    conn.execute_batch(&format!(
-        "ATTACH DATABASE '{sub_path}' AS sub;
-         INSERT OR REPLACE INTO mir_edges SELECT * FROM sub.mir_edges;
-         INSERT OR REPLACE INTO mir_chunks SELECT * FROM sub.mir_chunks;
-         DETACH DATABASE sub;"
-    ))?;
+    // only merge crates that have source files in the sub-workspace (not external deps)
+    let sub_root = sub_db.parent().and_then(|p| p.parent()).and_then(|p| p.parent());
+    let local_crates: Vec<String> = if let Some(root) = sub_root {
+        super::workspace::detect_workspace_crate_names(root)
+    } else { Vec::new() };
+    if local_crates.is_empty() {
+        conn.execute_batch(&format!(
+            "ATTACH DATABASE '{sub_path}' AS sub;
+             INSERT OR REPLACE INTO mir_edges SELECT * FROM sub.mir_edges;
+             INSERT OR REPLACE INTO mir_chunks SELECT * FROM sub.mir_chunks;
+             DETACH DATABASE sub;"
+        ))?;
+    } else {
+        let placeholders = local_crates.iter().map(|c| format!("'{}'", c.replace('\'', "''"))).collect::<Vec<_>>().join(",");
+        conn.execute_batch(&format!(
+            "ATTACH DATABASE '{sub_path}' AS sub;
+             INSERT OR REPLACE INTO mir_edges SELECT * FROM sub.mir_edges WHERE crate_name IN ({placeholders});
+             INSERT OR REPLACE INTO mir_chunks SELECT * FROM sub.mir_chunks WHERE crate_name IN ({placeholders});
+             DETACH DATABASE sub;"
+        ))?;
+    }
     Ok(())
 }
 

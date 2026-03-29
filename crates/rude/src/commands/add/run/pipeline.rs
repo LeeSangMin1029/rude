@@ -24,7 +24,17 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     println!("Indexing code: {}", input_path.display());
     println!("Database:      {}", db_path.display());
 
-    let all_files = prof!("scan_files", scan_files_fast(&input_path, exclude));
+    let sub_workspaces = super::mir::find_sub_workspaces(&input_path);
+    let all_files = prof!("scan_files", {
+        let files = scan_files_fast(&input_path, exclude);
+        if sub_workspaces.is_empty() { files } else {
+            let abs_subs: Vec<std::path::PathBuf> = sub_workspaces.iter().map(|w| rude_util::safe_canonicalize(w)).collect();
+            files.into_iter().filter(|f| {
+                let abs = if f.is_absolute() { f.clone() } else { rude_util::safe_canonicalize(f) };
+                !abs_subs.iter().any(|sw| abs.starts_with(sw))
+            }).collect()
+        }
+    });
     if !is_profiling() { tracing::debug!("scan: {} files", all_files.len()); }
     if all_files.is_empty() {
         anyhow::bail!("No supported code files found in {}", input_path.display());

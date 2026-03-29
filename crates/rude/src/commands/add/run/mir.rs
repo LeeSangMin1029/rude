@@ -88,6 +88,8 @@ pub fn run_sub_workspaces(
             } else {
                 run_mir_cargo_wrapper(&abs_ws).ok();
             }
+        } else if !ws_mir_db.exists() {
+            run_mir_cargo_wrapper(&abs_ws).ok();
         }
         if ws_mir_db.exists() {
             rude_intel::mir_edges::merge_mir_db(main_mir_db, &ws_mir_db).ok();
@@ -120,7 +122,7 @@ fn run_mir_cargo_wrapper(ws: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-fn find_sub_workspaces(root: &std::path::Path) -> Vec<PathBuf> {
+pub fn find_sub_workspaces(root: &std::path::Path) -> Vec<PathBuf> {
     let cache_file = root.join("target").join("mir-edges").join(".sub-workspaces");
     let toml_mtime = std::fs::metadata(root.join("Cargo.toml"))
         .and_then(|m| m.modified()).ok();

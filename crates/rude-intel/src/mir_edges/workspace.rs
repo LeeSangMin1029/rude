@@ -247,6 +247,20 @@ pub(super) fn parse_workspace_members(content: &str, project_root: &Path) -> Vec
     expanded
 }
 
+pub fn detect_workspace_crate_names(root: &Path) -> Vec<String> {
+    let toml = root.join("Cargo.toml");
+    let Ok(content) = std::fs::read_to_string(&toml) else { return Vec::new() };
+    let members = parse_workspace_members(&content, root);
+    if members.is_empty() {
+        extract_package_name(&content).into_iter().map(|n| n.replace('-', "_")).collect()
+    } else {
+        members.iter().filter_map(|dir| {
+            let member_toml = root.join(dir).join("Cargo.toml");
+            std::fs::read_to_string(&member_toml).ok().and_then(|c| extract_package_name(&c))
+        }).map(|n| n.replace('-', "_")).collect()
+    }
+}
+
 pub(super) fn extract_package_name(content: &str) -> Option<String> {
     let mut in_package = false;
     for line in content.lines() {
