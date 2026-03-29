@@ -21,30 +21,49 @@ pub fn mir_crate_names(project_root: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-pub fn merge_mir_db(main_db: &Path, sub_db: &Path) -> Result<()> {
+pub fn merge_mir_db(main_db: &Path, sub_db: &Path, main_root: &Path, sub_root: &Path) -> Result<()> {
     let conn = rusqlite::Connection::open(main_db)?;
     let sub_path = sub_db.display().to_string().replace('\\', "/");
-    // only merge crates that have source files in the sub-workspace (not external deps)
-    let sub_root = sub_db.parent().and_then(|p| p.parent()).and_then(|p| p.parent());
-    let local_crates: Vec<String> = if let Some(root) = sub_root {
-        super::workspace::detect_workspace_crate_names(root)
-    } else { Vec::new() };
-    if local_crates.is_empty() {
+    let local_crates = super::workspace::detect_workspace_crate_names(sub_root);
+    let file_prefix = sub_root.strip_prefix(main_root).ok()
+        .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default();
+    conn.execute_batch(&format!("ATTACH DATABASE '{sub_path}' AS sub;"))?;
+    let placeholders = if local_crates.is_empty() { String::new() }
+        else { local_crates.iter().map(|c| format!("'{}'", c.replace('\'', "''"))).collect::<Vec<_>>().join(",") };
+    let crate_filter = if placeholders.is_empty() { String::new() }
+        else { format!(" WHERE crate_name IN ({placeholders})") };
+    conn.execute_batch(&format!(
+        "INSERT OR REPLACE INTO mir_edges SELECT * FROM sub.mir_edges{crate_filter};"
+    ))?;
+    if file_prefix.is_empty() {
         conn.execute_batch(&format!(
-            "ATTACH DATABASE '{sub_path}' AS sub;
-             INSERT OR REPLACE INTO mir_edges SELECT * FROM sub.mir_edges;
-             INSERT OR REPLACE INTO mir_chunks SELECT * FROM sub.mir_chunks;
-             DETACH DATABASE sub;"
+            "INSERT OR REPLACE INTO mir_chunks SELECT * FROM sub.mir_chunks{crate_filter};"
         ))?;
     } else {
-        let placeholders = local_crates.iter().map(|c| format!("'{}'", c.replace('\'', "''"))).collect::<Vec<_>>().join(",");
-        conn.execute_batch(&format!(
-            "ATTACH DATABASE '{sub_path}' AS sub;
-             INSERT OR REPLACE INTO mir_edges SELECT * FROM sub.mir_edges WHERE crate_name IN ({placeholders});
-             INSERT OR REPLACE INTO mir_chunks SELECT * FROM sub.mir_chunks WHERE crate_name IN ({placeholders});
-             DETACH DATABASE sub;"
+        // rewrite file paths: prepend sub-workspace relative path
+        let mut stmt = conn.prepare(&format!(
+            "SELECT name, file, kind, start_line, end_line, signature, visibility, is_test, body, calls, type_refs, crate_name FROM sub.mir_chunks{crate_filter}"
         ))?;
+        let mut insert = conn.prepare(
+            "INSERT OR REPLACE INTO mir_chunks (name, file, kind, start_line, end_line, signature, visibility, is_test, body, calls, type_refs, crate_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let file: String = row.get(1)?;
+            let prefixed = format!("{file_prefix}/{file}");
+            Ok((row.get::<_, String>(0)?, prefixed, row.get::<_, String>(2)?,
+                row.get::<_, u32>(3)?, row.get::<_, u32>(4)?,
+                row.get::<_, Option<String>>(5)?, row.get::<_, Option<String>>(6)?,
+                row.get::<_, bool>(7)?, row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?, row.get::<_, Option<String>>(10)?,
+                row.get::<_, String>(11)?))
+        })?;
+        for row in rows {
+            let r = row?;
+            insert.execute(rusqlite::params![r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7, r.8, r.9, r.10, r.11])?;
+        }
     }
+    conn.execute_batch("DETACH DATABASE sub;")?;
     Ok(())
 }
 

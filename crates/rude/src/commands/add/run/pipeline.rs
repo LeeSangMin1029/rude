@@ -24,21 +24,7 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     println!("Indexing code: {}", input_path.display());
     println!("Database:      {}", db_path.display());
 
-    let sub_workspaces = super::mir::find_sub_workspaces(&input_path);
-    let all_files = prof!("scan_files", {
-        let files = scan_files_fast(&input_path, exclude);
-        if sub_workspaces.is_empty() { files } else {
-            let sub_prefixes: Vec<String> = sub_workspaces.iter()
-                .filter_map(|w| w.strip_prefix(&input_path).ok().or_else(|| Some(w.as_path())))
-                .map(|p| p.to_string_lossy().replace('\\', "/"))
-                .collect();
-            files.into_iter().filter(|f| {
-                let rel = f.strip_prefix(&input_path).unwrap_or(f);
-                let rel_str = rel.to_string_lossy().replace('\\', "/");
-                !sub_prefixes.iter().any(|sp| rel_str.starts_with(sp))
-            }).collect()
-        }
-    });
+    let all_files = prof!("scan_files", scan_files_fast(&input_path, exclude));
     if !is_profiling() { tracing::debug!("scan: {} files", all_files.len()); }
     if all_files.is_empty() {
         anyhow::bail!("No supported code files found in {}", input_path.display());

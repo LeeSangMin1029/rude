@@ -92,7 +92,7 @@ pub fn run_sub_workspaces(
             run_mir_cargo_wrapper(&abs_ws).ok();
         }
         if ws_mir_db.exists() {
-            rude_intel::mir_edges::merge_mir_db(main_mir_db, &ws_mir_db).ok();
+            rude_intel::mir_edges::merge_mir_db(main_mir_db, &ws_mir_db, &abs_root, &abs_ws).ok();
         }
     }
     Ok(())

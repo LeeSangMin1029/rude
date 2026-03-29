@@ -77,6 +77,9 @@ pub(crate) fn ingest_mir(
             let mut parsed_chunk = mc.to_parsed();
             parsed_chunk.file = normalized_file.clone();
             parsed_chunk.chunk_index = idx;
+            if parsed_chunk.crate_name.is_empty() {
+                parsed_chunk.crate_name = crate_name_from_path(&file_path);
+            }
 
             if parsed_chunk.text.is_empty() {
                 if let Some(ref lines) = file_lines {
@@ -124,4 +127,28 @@ pub(crate) fn ingest_mir(
     }
 
     Ok(())
+}
+
+fn crate_name_from_path(file_path: &Path) -> String {
+    let mut dir = file_path.parent();
+    while let Some(d) = dir {
+        let toml = d.join("Cargo.toml");
+        if toml.exists() {
+            if let Ok(content) = std::fs::read_to_string(&toml) {
+                let mut in_package = false;
+                for line in content.lines() {
+                    let t = line.trim();
+                    if t.starts_with('[') { in_package = t == "[package]"; continue; }
+                    if in_package && t.starts_with("name") {
+                        if let Some(name) = t.split('"').nth(1) {
+                            return name.replace('-', "_");
+                        }
+                    }
+                }
+            }
+            break;
+        }
+        dir = d.parent();
+    }
+    String::new()
 }

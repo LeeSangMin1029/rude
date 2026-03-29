@@ -264,7 +264,10 @@ pub fn run_mir_direct(
     };
     kill_previous_test_bg(&out_dir);
 
-    let all_files = lib_files;
+    let mut all_files = lib_files;
+    for t in &test_files {
+        if !all_files.iter().any(|f| f == t) { all_files.push(t.clone()); }
+    }
     if let Some(()) = try_daemon_all(project_root, &all_files, &out_dir, &mir_db) {
         return Ok(());
     }
