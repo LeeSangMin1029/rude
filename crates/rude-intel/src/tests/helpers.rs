@@ -13,13 +13,10 @@ fn format_lines_opt_none() {
 }
 
 #[test]
-fn relative_path_strips_crates_prefix() {
-    assert_eq!(relative_path("/home/user/project/crates/foo/src/lib.rs"), "crates/foo/src/lib.rs");
-}
-
-#[test]
-fn relative_path_strips_src_prefix() {
-    assert_eq!(relative_path("/home/user/project/src/main.rs"), "src/main.rs");
+fn relative_path_passthrough() {
+    assert_eq!(relative_path("/home/user/project/crates/foo/src/lib.rs"), "/home/user/project/crates/foo/src/lib.rs");
+    assert_eq!(relative_path("crates/foo/src/lib.rs"), "crates/foo/src/lib.rs");
+    assert_eq!(relative_path("tools/mir-callgraph/src/extract.rs"), "tools/mir-callgraph/src/extract.rs");
 }
 
 #[test]
@@ -30,10 +27,11 @@ fn relative_path_no_anchor() {
 #[test]
 fn extract_crate_name_from_path() {
     assert_eq!(extract_crate_name("crates/rude-core/src/lib.rs"), "rude-core");
+    assert_eq!(extract_crate_name("tools/mir-callgraph/src/extract.rs"), "mir-callgraph");
 }
 
 #[test]
-fn extract_crate_name_no_crates() {
+fn extract_crate_name_root() {
     assert_eq!(extract_crate_name("src/main.rs"), "(root)");
 }
 

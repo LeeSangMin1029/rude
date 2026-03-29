@@ -50,7 +50,9 @@ pub fn merge_mir_db(main_db: &Path, sub_db: &Path, main_root: &Path, sub_root: &
         )?;
         let rows = stmt.query_map([], |row| {
             let file: String = row.get(1)?;
-            let prefixed = format!("{file_prefix}/{file}");
+            let is_absolute = file.starts_with('/') || (file.len() > 2 && file.as_bytes()[1] == b':');
+            let already_prefixed = file.starts_with(&file_prefix);
+            let prefixed = if is_absolute || already_prefixed { file } else { format!("{file_prefix}/{file}") };
             Ok((row.get::<_, String>(0)?, prefixed, row.get::<_, String>(2)?,
                 row.get::<_, u32>(3)?, row.get::<_, u32>(4)?,
                 row.get::<_, Option<String>>(5)?, row.get::<_, Option<String>>(6)?,

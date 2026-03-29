@@ -38,12 +38,5 @@ pub fn find_project_root(db: &Path) -> Option<PathBuf> {
     None
 }
 
-pub fn relative_path(path: &str) -> &str {
-    if let Some(idx) = path.find("crates/") {
-        &path[idx..]
-    } else if let Some(idx) = path.find("src/") {
-        &path[idx..]
-    } else {
-        path
-    }
-}
+#[inline]
+pub fn relative_path(path: &str) -> &str { path }
