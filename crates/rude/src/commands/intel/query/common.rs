@@ -54,9 +54,17 @@ pub(super) fn print_tagged(
             let call_site = if e.call_line > 0 { format!(" → :{}", e.call_line) } else { String::new() };
             println!("  [{}] {} {kind_tag}{}{test_marker}{call_site}", e.tag, format_lines_opt(graph.chunks[i].lines), graph.chunks[i].name);
             if e.sig { if let Some(s) = &graph.chunks[i].signature { println!("    {s}"); } }
-            if show_source && (e.tag == "def" || e.sig) {
+            if show_source && (e.tag == "def" || e.tag == "test" || e.sig) {
                 if let Some((start, end)) = graph.chunks[i].lines {
-                    if let Ok(content) = std::fs::read_to_string(&graph.chunks[i].file) {
+                    let file_path = &graph.chunks[i].file;
+                    let abs_file = if std::path::Path::new(file_path).exists() {
+                        std::path::PathBuf::from(file_path)
+                    } else {
+                        rude_util::find_project_root(crate::db())
+                            .map(|r| r.join(file_path))
+                            .unwrap_or_else(|| std::path::PathBuf::from(file_path))
+                    };
+                    if let Ok(content) = std::fs::read_to_string(&abs_file) {
                         let lines: Vec<&str> = content.lines().collect();
                         let s = start.saturating_sub(1);
                         let e2 = end.min(lines.len());

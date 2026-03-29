@@ -94,16 +94,25 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     let mut entries: Vec<CodeChunkEntry> = Vec::new();
     let mut file_metadata_map: HashMap<String, (u64, u64, Vec<u64>)> = HashMap::new();
 
-    let mir_out_dir = input_path.join("target").join("mir-edges");
+    // find workspace root (directory with Cargo.toml) for MIR analysis
+    let ws_root = {
+        let mut dir = rude_util::safe_canonicalize(&input_path);
+        loop {
+            if dir.join("Cargo.toml").exists() { break dir; }
+            if !dir.pop() { break rude_util::safe_canonicalize(&input_path); }
+        }
+    };
+    let mir_out_dir = ws_root.join("target").join("mir-edges");
     std::fs::create_dir_all(&mir_out_dir).ok();
-    let mir_db = rude_intel::mir_edges::mir_db_path(&input_path);
+    let mir_db = rude_intel::mir_edges::mir_db_path(&ws_root);
 
-    let incremental_crates = prof!("mir_analysis", run_mir_analysis(&input_path, &mir_db, &code_files, &missing_crates)?);
-    prof!("sub_workspaces", run_sub_workspaces(&input_path, &mir_db, &code_files).ok());
+    let incremental_crates = prof!("mir_analysis", run_mir_analysis(&ws_root, &mir_db, &code_files, &missing_crates)
+        .unwrap_or_default());
+    prof!("sub_workspaces", run_sub_workspaces(&ws_root, &mir_db, &code_files).ok());
 
     let mir_chunks = prof!("load_sqlite", rude_intel::mir_edges::MirEdgeMap::load_chunks_from_sqlite(
         &mir_db, to_crate_filter(&incremental_crates).as_deref(),
-    ).context("failed to load MIR chunks")?);
+    ).unwrap_or_default());
 
     prof!("ingest_mir", ingest_mir(&mir_chunks, &db_path, &mut entries, &mut file_metadata_map, None)?);
     tracing::debug!("chunk: {:.1}s ({} chunks)", t0.elapsed().as_secs_f64(), entries.len());
