@@ -212,10 +212,7 @@ pub fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -
     }
 
     fill_chunk_calls(&mut chunks, &edges);
-    let t_mir = t_all.elapsed();
-    let t_out = std::time::Instant::now();
     output::write_results(&crate_name, &edges, &chunks, &uses, &use_deps, fn_count, json, db_path);
-    let t_db = t_out.elapsed();
     eprintln!("[mir-callgraph] {crate_name}: {} edges, {} chunks ({fn_count} fns)", edges.len(), chunks.len());
     ControlFlow::Continue(())
 }
