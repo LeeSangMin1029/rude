@@ -239,13 +239,19 @@ pub fn run_mir_direct(
 
     let mir_db = mir_db_path(project_root);
 
-    // No cached args for these crates → need cargo to generate them
-    if lib_files.is_empty() && test_files.is_empty() {
-        let needs_refresh = !args_dir.exists() || is_args_cache_stale(project_root, &args_dir);
-        if needs_refresh || !all_extern_paths_valid(crates, &args_dir) {
+    // check if args cache is stale (nightly version changed, Cargo.toml changed, etc.)
+    let needs_refresh = !args_dir.exists() || is_args_cache_stale(project_root, &args_dir)
+        || !all_extern_paths_valid(crates, &args_dir);
+    if needs_refresh || (lib_files.is_empty() && test_files.is_empty()) {
+        if needs_refresh {
+            // clean stale mir-check target dir to avoid ABI mismatch
+            let mir_check = project_root.join("target").join(mir_check_dir_name());
+            if mir_check.exists() { let _ = std::fs::remove_dir_all(&mir_check); }
             run_mir_callgraph_for(project_root, mir_callgraph_bin, crates, _rust_only)?;
         }
         // Re-check after cargo run
+        lib_files.clear();
+        test_files.clear();
         for krate in crates {
             let u = krate.replace('-', "_");
             let f = args_dir.join(format!("{u}.lib.rustc-args.json"));
