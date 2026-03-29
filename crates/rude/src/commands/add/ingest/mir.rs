@@ -36,6 +36,8 @@ pub(crate) fn ingest_mir(
     }
 
     for (file_key, indices) in &by_file {
+        let is_abs = file_key.starts_with('/') || (file_key.len() > 2 && file_key.as_bytes().get(1) == Some(&b':'));
+        if is_abs { continue; }
         let normalized_file = normalize_path(file_key);
         let db_parent = db_path.parent().unwrap_or(Path::new("."));
         let workspace = rude_util::safe_canonicalize(&db_parent);
