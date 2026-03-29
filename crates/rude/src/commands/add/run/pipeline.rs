@@ -28,10 +28,14 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     let all_files = prof!("scan_files", {
         let files = scan_files_fast(&input_path, exclude);
         if sub_workspaces.is_empty() { files } else {
-            let abs_subs: Vec<std::path::PathBuf> = sub_workspaces.iter().map(|w| rude_util::safe_canonicalize(w)).collect();
+            let sub_prefixes: Vec<String> = sub_workspaces.iter()
+                .filter_map(|w| w.strip_prefix(&input_path).ok().or_else(|| Some(w.as_path())))
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .collect();
             files.into_iter().filter(|f| {
-                let abs = if f.is_absolute() { f.clone() } else { rude_util::safe_canonicalize(f) };
-                !abs_subs.iter().any(|sw| abs.starts_with(sw))
+                let rel = f.strip_prefix(&input_path).unwrap_or(f);
+                let rel_str = rel.to_string_lossy().replace('\\', "/");
+                !sub_prefixes.iter().any(|sp| rel_str.starts_with(sp))
             }).collect()
         }
     });

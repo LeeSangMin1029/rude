@@ -114,6 +114,8 @@ fn run_mir_cargo_wrapper(ws: &std::path::Path) -> Result<()> {
         .env("MIR_CALLGRAPH_OUT", &abs_out)
         .env("MIR_CALLGRAPH_DB", &abs_db)
         .env("MIR_CALLGRAPH_JSON", "1")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status()
         .context("failed to run cargo check for sub-workspace")?;
     if !status.success() {
