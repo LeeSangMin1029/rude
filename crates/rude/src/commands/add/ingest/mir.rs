@@ -158,5 +158,5 @@ fn crate_name_from_path(file_path: &Path) -> String {
 
 fn is_derive_generated(mc: &rude_intel::mir_edges::MirChunk) -> bool {
     if mc.start_line != mc.end_line { return false; }
-    mc.name.contains(" as ") || mc.name.contains("_serde::") || mc.name.contains("__")
+    mc.name.contains(" as ") || mc.name.contains("_serde::") || mc.name.contains("__") || mc.name.contains("_::<impl")
 }
