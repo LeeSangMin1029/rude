@@ -85,7 +85,9 @@ fn compute_reexport(source_path: &Path, to: &str, symbols: &[&str]) -> String {
     let target_stem = target.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     let target_dir = target.parent().map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default();
     // same directory or sub-module (foo/mod.rs → foo/bar.rs)
-    let is_sibling = source_dir == target_dir;
+    let is_sibling = source_dir == target_dir
+        || source_dir.ends_with(&target_dir)
+        || target_dir.ends_with(&source_dir);
     let is_submod = {
         let parent_name = target.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()).unwrap_or("");
         parent_name == source_name || source_name == "mod"

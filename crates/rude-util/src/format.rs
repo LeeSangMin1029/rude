@@ -6,13 +6,27 @@ pub fn format_lines_opt(lines: Option<(usize, usize)>) -> String {
 
 pub fn extract_crate_name(path: &str) -> String {
     let normalized = path.replace('\\', "/");
-    // find the directory just before /src/ — that's the crate root
     if let Some(src_pos) = normalized.find("/src/") {
         let before_src = &normalized[..src_pos];
         if let Some(slash) = before_src.rfind('/') {
             return before_src[slash + 1..].to_owned();
         }
         return before_src.to_owned();
+    }
+    // path starts with src/ — look for Cargo.toml in CWD
+    if normalized.starts_with("src/") {
+        if let Ok(content) = std::fs::read_to_string("Cargo.toml") {
+            let mut in_pkg = false;
+            for line in content.lines() {
+                let t = line.trim();
+                if t.starts_with('[') { in_pkg = t == "[package]"; continue; }
+                if in_pkg && t.starts_with("name") {
+                    if let Some(name) = t.split('"').nth(1) {
+                        return name.replace('-', "_");
+                    }
+                }
+            }
+        }
     }
     "(root)".to_owned()
 }
