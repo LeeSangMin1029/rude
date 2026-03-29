@@ -62,7 +62,8 @@ pub fn run_dead(
 
     let mut by_crate: std::collections::BTreeMap<String, Vec<usize>> = std::collections::BTreeMap::new();
     for &i in &dead {
-        let crate_name = extract_crate_name(&graph.chunks[i].file);
+        let c = &graph.chunks[i];
+        let crate_name = if c.crate_name.is_empty() { extract_crate_name(&c.file) } else { c.crate_name.clone() };
         by_crate.entry(crate_name).or_default().push(i);
     }
 

@@ -46,8 +46,9 @@ pub(crate) fn locate_symbol_in(graph: &rude_intel::graph::CallGraph, db: &Path, 
     let abs_path = resolve_abs_path(db, &chunk.file)?;
     let rel = relative_display(db, &chunk.file);
     let kind = chunk.kind.clone();
-    let (start, end) = chunk.lines
-        .unwrap_or_else(|| syn_locate(&abs_path, leaf, None).unwrap_or((1, 1)));
+    // always use syn for accurate line numbers (DB cache may be stale after edits)
+    let (start, end) = syn_locate(&abs_path, leaf, None)
+        .unwrap_or_else(|_| chunk.lines.unwrap_or((1, 1)));
     let start = expand_to_attrs(&abs_path, start);
     Ok(SymbolLocation { abs_path, rel_path: rel, start_line: start - 1, end_line: end - 1, kind })
 }

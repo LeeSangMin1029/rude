@@ -80,22 +80,26 @@ pub fn split(symbols: String, to: String, dry_run: bool) -> Result<()> {
 
 fn compute_reexport(source_path: &Path, to: &str, symbols: &[&str]) -> String {
     let source_name = source_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let source_dir = source_path.parent().map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default();
     let target = std::path::Path::new(to);
     let target_stem = target.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    if let Some(parent) = target.parent() {
-        let parent_name = parent.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        if parent_name == source_name || source_name == "mod" {
-            if symbols.len() == 1 {
-                return format!("pub use {target_stem}::{};", symbols[0]);
-            }
-            return format!("pub use {target_stem}::{{{}}};", symbols.join(", "));
+    let target_dir = target.parent().map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+    // same directory or sub-module (foo/mod.rs → foo/bar.rs)
+    let is_sibling = source_dir == target_dir;
+    let is_submod = {
+        let parent_name = target.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()).unwrap_or("");
+        parent_name == source_name || source_name == "mod"
+    };
+    if is_sibling || is_submod {
+        if symbols.len() == 1 {
+            return format!("pub use {target_stem}::{};", symbols[0]);
         }
+        return format!("pub use {target_stem}::{{{}}};", symbols.join(", "));
     }
-    let module_name = target_stem;
     if symbols.len() == 1 {
-        format!("pub use crate::{module_name}::{};", symbols[0])
+        format!("pub use crate::{target_stem}::{};", symbols[0])
     } else {
-        format!("pub use crate::{module_name}::{{{}}};", symbols.join(", "))
+        format!("pub use crate::{target_stem}::{{{}}};", symbols.join(", "))
     }
 }
 
