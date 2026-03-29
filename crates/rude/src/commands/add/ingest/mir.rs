@@ -73,6 +73,7 @@ pub(crate) fn ingest_mir(
 
         for &idx in indices {
             let mc = deduped[idx];
+            if is_derive_generated(mc) { continue; }
             let id = generate_id(&source, idx);
             chunk_ids.push(id);
 
@@ -153,4 +154,9 @@ fn crate_name_from_path(file_path: &Path) -> String {
         dir = d.parent();
     }
     String::new()
+}
+
+fn is_derive_generated(mc: &rude_intel::mir_edges::MirChunk) -> bool {
+    if mc.start_line != mc.end_line { return false; }
+    mc.name.contains(" as ") || mc.name.contains("_serde::") || mc.name.contains("__")
 }
