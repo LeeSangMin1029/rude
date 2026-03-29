@@ -8,7 +8,7 @@ use crate::data::parse::ParsedChunk;
 pub fn build_stats(chunks: &[ParsedChunk]) -> BTreeMap<String, [usize; 4]> {
     let mut stats: BTreeMap<String, [usize; 4]> = BTreeMap::new();
     for c in chunks {
-        let crate_name = extract_crate_name(&c.file);
+        let crate_name = if c.crate_name.is_empty() { extract_crate_name(&c.file) } else { c.crate_name.clone() };
         let row = stats.entry(crate_name).or_insert([0; 4]);
         let is_test = is_test_chunk(c);
         match (c.kind.as_str(), is_test) {

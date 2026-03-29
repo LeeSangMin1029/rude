@@ -6,11 +6,13 @@ pub fn format_lines_opt(lines: Option<(usize, usize)>) -> String {
 
 pub fn extract_crate_name(path: &str) -> String {
     let normalized = path.replace('\\', "/");
-    if let Some(start) = normalized.find("crates/") {
-        let rest = &normalized[start + 7..];
-        if let Some(slash) = rest.find('/') {
-            return rest[..slash].to_owned();
+    // find the directory just before /src/ — that's the crate root
+    if let Some(src_pos) = normalized.find("/src/") {
+        let before_src = &normalized[..src_pos];
+        if let Some(slash) = before_src.rfind('/') {
+            return before_src[slash + 1..].to_owned();
         }
+        return before_src.to_owned();
     }
     "(root)".to_owned()
 }
@@ -22,11 +24,9 @@ pub fn build_path_aliases(paths: &[&str]) -> (BTreeMap<String, String>, Vec<(Str
     }
     let mut crate_dirs: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for &dir in &dirs {
-        if let Some(root_end) = dir.find("crates/").and_then(|cs| {
-            let after = &dir[cs + 7..];
-            let ne = after.find('/')?;
-            if after[ne + 1..].starts_with("src/") { Some(cs + 7 + ne + 5) } else { None }
-        }) {
+        // find /src/ boundary — everything up to and including /src/ is the crate root
+        if let Some(src_pos) = dir.find("/src/") {
+            let root_end = src_pos + 5; // include "/src/"
             crate_dirs.entry(dir[..root_end].to_owned()).or_default().insert(dir[root_end..].to_owned());
         }
     }
