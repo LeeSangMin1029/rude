@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::ops::ControlFlow;
 
 use rustc_public::CrateDef;
-use rustc_public::mir::{MirVisitor, Terminator, TerminatorKind, LocalDecl};
-use rustc_public::mir::visit::Location;
+use rustc_public::mir::{MirVisitor, Terminator, TerminatorKind, LocalDecl, Place, ProjectionElem};
+use rustc_public::mir::visit::{Location, PlaceContext};
 use rustc_public::ty::{RigidTy, TyKind, Span, AdtKind};
 
 use crate::output;
@@ -89,11 +89,17 @@ fn is_test_fn(filename: &str, name: &str, _is_test_target: bool) -> bool {
         || name.contains("::tests::")
 }
 
+struct FieldAccess {
+    type_name: String,
+    field_name: String,
+}
+
 struct CallExtractor<'a> {
     caller_name: String,
     caller_file: String,
     locals: &'a [LocalDecl],
     edges: &'a mut Vec<CallEdge>,
+    field_accesses: &'a mut Vec<FieldAccess>,
     name_cache: &'a mut HashMap<String, String>,
 }
 
@@ -115,6 +121,40 @@ impl MirVisitor for CallExtractor<'_> {
         }
         self.super_terminator(term, loc);
     }
+    fn visit_place(&mut self, place: &Place, ptx: PlaceContext, location: Location) {
+        let mut current_ty = self.locals[place.local].ty;
+        for elem in &place.projection {
+            if let ProjectionElem::Field(idx, _field_ty) = elem {
+                if let Some(fa) = resolve_field_access(current_ty, *idx) {
+                    self.field_accesses.push(fa);
+                }
+            }
+            if let Ok(next_ty) = elem.ty(current_ty) {
+                current_ty = next_ty;
+            } else {
+                break;
+            }
+        }
+        self.super_place(place, ptx, location);
+    }
+}
+
+fn resolve_field_access(base_ty: rustc_public::ty::Ty, field_idx: usize) -> Option<FieldAccess> {
+    let ty = match base_ty.kind() {
+        TyKind::RigidTy(RigidTy::Ref(_, inner, _)) => inner,
+        _ => base_ty,
+    };
+    if let TyKind::RigidTy(RigidTy::Adt(adt_def, _)) = ty.kind() {
+        if !matches!(adt_def.kind(), AdtKind::Struct | AdtKind::Union) { return None; }
+        let variants = adt_def.variants();
+        let variant = variants.first()?;
+        let fields = variant.fields();
+        let field = fields.get(field_idx)?;
+        let type_name = strip_crate_prefix(&adt_def.name());
+        let leaf = type_name.rsplit("::").next().unwrap_or(&type_name);
+        return Some(FieldAccess { type_name: leaf.to_owned(), field_name: field.name.clone() });
+    }
+    None
 }
 
 impl CallExtractor<'_> {
@@ -157,6 +197,7 @@ pub fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -
     let mut chunks: Vec<MirChunk> = Vec::new();
     let mut fn_count: usize = 0;
     let mut name_cache: HashMap<String, String> = HashMap::new();
+    let mut all_field_accesses: HashMap<String, Vec<FieldAccess>> = HashMap::new();
 
     // ── Phase 1: HIR single pass — spans, use items, use deps ──
     let (hir_spans, uses, use_deps) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(collect_hir_data))
@@ -176,12 +217,15 @@ pub fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -
         let parent_name = strip_crate_prefix(parent_raw);
         let parent_file = span_file(&body.span);
         let mut buf: Vec<CallEdge> = Vec::new();
+        let mut fa_buf: Vec<FieldAccess> = Vec::new();
         let mut extractor = CallExtractor {
             caller_name: parent_name.clone(), caller_file: parent_file,
-            locals: body.locals(), edges: &mut buf, name_cache: &mut name_cache,
+            locals: body.locals(), edges: &mut buf, field_accesses: &mut fa_buf,
+            name_cache: &mut name_cache,
         };
         extractor.visit_body(&body);
-        closure_edges.entry(parent_name).or_default().extend(buf);
+        closure_edges.entry(parent_name.clone()).or_default().extend(buf);
+        all_field_accesses.entry(parent_name).or_default().extend(fa_buf);
     }
 
     for fn_def in krate.fn_defs() {
@@ -194,17 +238,22 @@ pub fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -
         let name = strip_crate_prefix(&name_str);
         let filename = span_file(&body.span);
         let (start_line, end_line) = span_lines(&body.span);
+        let mut fa_buf: Vec<FieldAccess> = Vec::new();
         let mut extractor = CallExtractor {
             caller_name: name.clone(), caller_file: filename.clone(),
-            locals: body.locals(), edges: &mut edges, name_cache: &mut name_cache,
+            locals: body.locals(), edges: &mut edges, field_accesses: &mut fa_buf,
+            name_cache: &mut name_cache,
         };
         extractor.visit_body(&body);
         if let Some(ce) = closure_edges.remove(&name) { edges.extend(ce); }
+        if let Some(cfa) = all_field_accesses.remove(&name) { fa_buf.extend(cfa); }
+        let field_accesses = format_field_accesses(&fa_buf);
         let is_test = is_test_fn(&filename, &name, is_test_target);
         chunks.push(MirChunk {
             name, file: filename.clone(), kind: "fn".to_string(),
             start_line, end_line, signature: None, visibility: String::new(),
             is_test, body: String::new(), calls: String::new(), type_refs: String::new(),
+            field_accesses,
         });
         for local in body.locals() {
             try_add_adt(&local.ty, &mut seen_types, &mut chunks, &span_map);
@@ -366,6 +415,7 @@ fn collect_type_chunks(
             name: strip_crate_prefix(&t.name()), file, kind: "trait".into(),
             start_line: s, end_line: end, signature: None, visibility: String::new(),
             is_test: false, body: String::new(), calls: String::new(), type_refs: String::new(),
+            field_accesses: String::new(),
         });
     }
     for imp in krate.trait_impls() {
@@ -377,6 +427,7 @@ fn collect_type_chunks(
             name: strip_crate_prefix(&imp.name()), file, kind: "impl".into(),
             start_line: s, end_line: end, signature: None, visibility: String::new(),
             is_test: false, body: String::new(), calls: String::new(), type_refs: String::new(),
+            field_accesses: String::new(),
         });
         if let Some(ty) = impl_self_ty(&imp) {
             try_add_adt(&ty, &mut seen_types, chunks, hir_spans);
@@ -428,6 +479,7 @@ fn try_add_adt(
                 signature: Some(sig), visibility: String::new(),
                 is_test: false, body: String::new(),
                 calls: String::new(), type_refs: String::new(),
+                field_accesses: String::new(),
             });
             for variant in adt_def.variants() {
                 for field in variant.fields() {
@@ -436,6 +488,18 @@ fn try_add_adt(
             }
         }
     }
+}
+
+fn format_field_accesses(accesses: &[FieldAccess]) -> String {
+    let mut seen = std::collections::HashSet::new();
+    let mut parts: Vec<String> = Vec::new();
+    for fa in accesses {
+        let key = format!("{}.{}", fa.type_name, fa.field_name);
+        if seen.insert(key.clone()) {
+            parts.push(key);
+        }
+    }
+    parts.join(", ")
 }
 
 fn fill_chunk_calls(chunks: &mut [MirChunk], edges: &[CallEdge]) {

@@ -27,6 +27,8 @@ pub struct MirChunk {
     pub calls: String,
     #[serde(default)]
     pub type_refs: String,
+    #[serde(default)]
+    pub field_accesses: String,
 }
 
 #[derive(Serialize, Deserialize)]

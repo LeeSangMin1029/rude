@@ -40,6 +40,8 @@ pub struct MirChunk {
     pub type_refs: String,
     #[serde(default)]
     pub crate_name: String,
+    #[serde(default)]
+    pub field_accesses: String,
 }
 
 impl MirChunk {
@@ -53,6 +55,14 @@ impl MirChunk {
         } else {
             self.type_refs.split(", ").map(|s| s.to_owned()).collect()
         };
+        let field_accesses = if self.field_accesses.is_empty() {
+            Vec::new()
+        } else {
+            self.field_accesses.split(", ").filter_map(|entry| {
+                let dot = entry.find('.')?;
+                Some((entry[..dot].to_owned(), entry[dot + 1..].to_owned()))
+            }).collect()
+        };
         let mut chunk = crate::parse::ParsedChunk {
             kind, name: self.name.clone(), file: self.file.clone(),
             lines: Some((self.start_line, self.end_line)),
@@ -62,6 +72,7 @@ impl MirChunk {
             text: self.body.clone(),
             is_test: self.is_test,
             crate_name: self.crate_name.clone(),
+            field_accesses,
             ..Default::default()
         };
         chunk.compute_minhash();

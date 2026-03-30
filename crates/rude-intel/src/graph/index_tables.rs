@@ -46,10 +46,12 @@ pub(crate) fn build_field_access_index(
         }
 
         for (recv, field) in &chunk.field_accesses {
-            if let Some(ty) = recv_types.get(&recv.to_lowercase()) {
-                map.entry(format!("{ty}::{}", field.to_lowercase()))
-                    .or_default().push(idx as u32);
-            }
+            let recv_lower = recv.to_lowercase();
+            let ty = recv_types.get(&recv_lower)
+                .cloned()
+                .unwrap_or_else(|| recv_lower);
+            map.entry(format!("{ty}::{}", field.to_lowercase()))
+                .or_default().push(idx as u32);
         }
     }
     for list in map.values_mut() { list.sort_unstable(); list.dedup(); }

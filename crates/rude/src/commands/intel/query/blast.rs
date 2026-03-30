@@ -24,6 +24,12 @@ pub(super) fn run_blast(symbol: &str, depth: u32, include_tests: bool, scope: &O
     }
 
     let Some(s) = resolve_symbol(&graph, symbol) else { return Ok(()) };
+
+    let is_type = s.iter().any(|&i| matches!(graph.chunks[i as usize].kind.as_str(), "struct" | "enum"));
+    if is_type {
+        return run_type_blast(symbol, &graph, &s, effective_depth, include_tests, scope, &alias_map);
+    }
+
     let seeds = impact::expand_seeds_with_traits(&graph, &s);
     let all = impact::bfs_reverse(&graph, &seeds, effective_depth);
     let (prod, test) = count_prod_test(&all);
@@ -60,6 +66,50 @@ fn tag_blast(
             TaggedEntry { idx: e.idx, tag, sig: false, call_line: 0 }
         })
         .collect()
+}
+
+fn run_type_blast(
+    symbol: &str,
+    graph: &graph::CallGraph,
+    seeds: &[u32],
+    depth: u32,
+    include_tests: bool,
+    scope: &Option<String>,
+    alias_map: &std::collections::BTreeMap<String, String>,
+) -> Result<()> {
+    let type_name = &graph.chunks[seeds[0] as usize].name;
+    let field_entries = graph.find_field_accesses_for_type(type_name);
+    let mut accessor_set = std::collections::HashSet::<u32>::new();
+    for (_, indices) in &field_entries {
+        accessor_set.extend(indices.iter().copied());
+    }
+    let accessors: Vec<u32> = accessor_set.iter().copied().collect();
+    if accessors.is_empty() {
+        println!("=== context: {symbol}{} (0 affected, 0 prod, 0 test) ===", fmt_scope(scope));
+        print_tagged(graph, &[TaggedEntry { idx: seeds[0], tag: "target", sig: false, call_line: 0 }], false, alias_map);
+        return Ok(());
+    }
+    let all = impact::bfs_reverse(graph, &accessors, depth);
+    let (prod, test) = count_prod_test(&all);
+    let total = prod + test;
+    print!("=== context: {symbol}{} ({} field accessors, {} affected, {} prod, {} test) ===\n",
+        fmt_scope(scope), accessors.len(), total, prod, test);
+    let mut entries: Vec<TaggedEntry> = Vec::new();
+    for &i in seeds {
+        entries.push(TaggedEntry { idx: i, tag: "target", sig: false, call_line: 0 });
+    }
+    for e in all {
+        if seeds.contains(&e.idx) { continue; }
+        if !include_tests && e.is_test { continue; }
+        if let Some(prefix) = scope {
+            let f = &graph.chunks[e.idx as usize].file;
+            if !f.starts_with(prefix.as_str()) && !f.contains(prefix.as_str()) { continue; }
+        }
+        let tag = if accessor_set.contains(&e.idx) { "field" } else { depth_tag(e.depth) };
+        entries.push(TaggedEntry { idx: e.idx, tag, sig: false, call_line: 0 });
+    }
+    print_tagged(graph, &entries, false, alias_map);
+    Ok(())
 }
 
 #[inline]

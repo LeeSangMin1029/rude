@@ -127,7 +127,9 @@ impl CallGraph {
     }
 
     pub fn find_field_accesses_for_type(&self, type_name: &str) -> Vec<(&str, &[u32])> {
-        let prefix = format!("{}::", type_name.to_lowercase());
+        let lower = type_name.to_lowercase();
+        let leaf = lower.rsplit("::").next().unwrap_or(&lower);
+        let prefix = format!("{leaf}::");
         let start = self.field_access_index.partition_point(|(k, _)| k.as_str() < prefix.as_str());
         self.field_access_index[start..].iter()
             .take_while(|(k, _)| k.starts_with(&prefix))

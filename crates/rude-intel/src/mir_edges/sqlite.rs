@@ -42,27 +42,36 @@ pub fn merge_mir_db(main_db: &Path, sub_db: &Path, main_root: &Path, sub_root: &
         ))?;
     } else {
         // rewrite file paths: prepend sub-workspace relative path
+        let has_fa = conn.prepare("SELECT field_accesses FROM sub.mir_chunks LIMIT 0").is_ok();
+        let extra_col = if has_fa { ", field_accesses" } else { "" };
         let mut stmt = conn.prepare(&format!(
-            "SELECT name, file, kind, start_line, end_line, signature, visibility, is_test, body, calls, type_refs, crate_name FROM sub.mir_chunks{crate_filter}"
+            "SELECT name, file, kind, start_line, end_line, signature, visibility, is_test, body, calls, type_refs, crate_name{extra_col} FROM sub.mir_chunks{crate_filter}"
         ))?;
-        let mut insert = conn.prepare(
-            "INSERT OR REPLACE INTO mir_chunks (name, file, kind, start_line, end_line, signature, visibility, is_test, body, calls, type_refs, crate_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"
-        )?;
+        let extra_insert = if has_fa { ", field_accesses" } else { "" };
+        let extra_placeholder = if has_fa { ", ?13" } else { "" };
+        let mut insert = conn.prepare(&format!(
+            "INSERT OR REPLACE INTO mir_chunks (name, file, kind, start_line, end_line, signature, visibility, is_test, body, calls, type_refs, crate_name{extra_insert}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12{extra_placeholder})"
+        ))?;
         let rows = stmt.query_map([], |row| {
             let file: String = row.get(1)?;
             let is_absolute = file.starts_with('/') || (file.len() > 2 && file.as_bytes()[1] == b':');
             let already_prefixed = file.starts_with(&file_prefix);
             let prefixed = if is_absolute || already_prefixed { file } else { format!("{file_prefix}/{file}") };
+            let fa: String = if has_fa { row.get::<_, String>(12).unwrap_or_default() } else { String::new() };
             Ok((row.get::<_, String>(0)?, prefixed, row.get::<_, String>(2)?,
                 row.get::<_, u32>(3)?, row.get::<_, u32>(4)?,
                 row.get::<_, Option<String>>(5)?, row.get::<_, Option<String>>(6)?,
                 row.get::<_, bool>(7)?, row.get::<_, Option<String>>(8)?,
                 row.get::<_, Option<String>>(9)?, row.get::<_, Option<String>>(10)?,
-                row.get::<_, String>(11)?))
+                row.get::<_, String>(11)?, fa))
         })?;
         for row in rows {
             let r = row?;
-            insert.execute(rusqlite::params![r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7, r.8, r.9, r.10, r.11])?;
+            if has_fa {
+                insert.execute(rusqlite::params![r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7, r.8, r.9, r.10, r.11, r.12])?;
+            } else {
+                insert.execute(rusqlite::params![r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7, r.8, r.9, r.10, r.11])?;
+            }
         }
     }
     conn.execute_batch("DETACH DATABASE sub;")?;
@@ -180,12 +189,19 @@ impl MirEdgeMap {
         let conn = rusqlite::Connection::open(db_path)
             .with_context(|| format!("failed to open MIR sqlite: {}", db_path.display()))?;
 
+        let has_field_accesses = conn.prepare("SELECT field_accesses FROM mir_chunks LIMIT 0").is_ok();
+        let cols = if has_field_accesses {
+            "name, file, kind, start_line, end_line, signature, visibility, is_test, body, calls, type_refs, crate_name, field_accesses"
+        } else {
+            "name, file, kind, start_line, end_line, signature, visibility, is_test, body, calls, type_refs, crate_name"
+        };
+
         let (query, params) = if let Some(crates) = only_crates {
             let (placeholders, params) = make_crate_params(crates);
-            let q = format!("SELECT name, file, kind, start_line, end_line, signature, visibility, is_test, body, calls, type_refs, crate_name FROM mir_chunks WHERE crate_name IN ({})", placeholders);
+            let q = format!("SELECT {cols} FROM mir_chunks WHERE crate_name IN ({placeholders})");
             (q, params)
         } else {
-            ("SELECT name, file, kind, start_line, end_line, signature, visibility, is_test, body, calls, type_refs, crate_name FROM mir_chunks".to_owned(), vec![])
+            (format!("SELECT {cols} FROM mir_chunks"), vec![])
         };
 
         let mut stmt = conn.prepare(&query).context("failed to prepare chunk query")?;
@@ -205,6 +221,7 @@ impl MirEdgeMap {
                 calls: row.get::<_, String>(9).unwrap_or_default(),
                 type_refs: row.get::<_, String>(10).unwrap_or_default(),
                 crate_name: row.get::<_, String>(11).unwrap_or_default(),
+                field_accesses: if has_field_accesses { row.get::<_, String>(12).unwrap_or_default() } else { String::new() },
             })
         }).context("failed to query chunks")?;
 

@@ -51,6 +51,7 @@ fn write_sqlite(db_path: &str, crate_name: &str, edges: &[CallEdge], chunks: &[M
             start_line INTEGER, end_line INTEGER,
             signature TEXT, visibility TEXT, is_test INTEGER,
             body TEXT, calls TEXT, type_refs TEXT, crate_name TEXT,
+            field_accesses TEXT DEFAULT '',
             UNIQUE(name, kind, crate_name)
         );
         CREATE TABLE IF NOT EXISTS mir_uses (
@@ -77,14 +78,14 @@ fn write_sqlite(db_path: &str, crate_name: &str, edges: &[CallEdge], chunks: &[M
     }
     {
         let mut stmt = tx.prepare_cached(
-            "INSERT OR IGNORE INTO mir_chunks VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)"
+            "INSERT OR IGNORE INTO mir_chunks VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)"
         ).unwrap();
         for c in chunks {
             let _ = stmt.execute(rusqlite::params![
                 c.name, c.file, c.kind,
                 c.start_line, c.end_line,
                 c.signature, c.visibility, c.is_test as i32,
-                "", c.calls, c.type_refs, crate_name,
+                "", c.calls, c.type_refs, crate_name, c.field_accesses,
             ]);
         }
     }
