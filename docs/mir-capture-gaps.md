@@ -1,4 +1,4 @@
-# MIR Capture Gaps (2026-03-29)
+# MIR Capture Gaps (2026-03-30)
 
 ## 문제
 
@@ -50,6 +50,44 @@
 - `TryToNav`, `to_nav` 심볼이 mir.db에 존재하는지
 - 기존 rude 프로젝트의 인덱싱이 깨지지 않는지
 - 증분 업데이트가 정상 동작하는지
+
+## Gap 2: dyn Trait 호출 미추적 (2026-03-30)
+
+### 문제
+
+MIR에서 `dyn Trait` 호출은 callee가 `Trait::method` 형태로 추출되지만,
+graph의 chunk 이름은 `<ConcreteType as Trait>::method` 형태. 이름 불일치로
+caller-callee 연결이 안 됨.
+
+```
+MIR callee:  SourceDatabase::set_file_text_with_durability
+chunk 이름:  <RootDatabase as base_db::SourceDatabase>::set_file_text_with_durability
+→ 매칭 실패 → caller 0
+```
+
+rust-analyzer 분석에서 발견: `RootDatabase`가 11개 field accessor를 가지지만
+`dyn SourceDatabase` 호출이 추적 안 되어 affected 0.
+
+### 원인
+
+- mir-callgraph `strip_crate_prefix`가 `<dyn T as Trait>::method` → `Trait::method`로 변환
+- graph에는 `Trait::method` 이름의 chunk가 없음 (trait 정의 자체는 fn body가 없으므로)
+- edge_resolve에서 callee 이름으로 chunk를 찾을 때 매칭 실패
+
+### 해결 방향
+
+edge_resolve에서 callee가 `Trait::method` 형태이고 chunk가 없을 때:
+1. `trait_impls` 인덱스로 해당 trait의 모든 impl chunk를 조회
+2. 각 impl에서 같은 method 이름을 가진 chunk를 찾아 callee로 확장
+3. 이미 `expand_seeds_with_traits` (blast용)에 유사 로직 존재 → callee resolve에도 적용
+
+파일: `crates/rude-intel/src/graph/edge_resolve.rs`
+
+### struct blast 영향
+
+struct blast의 정확도에 직접 영향:
+- field accessor가 dyn trait으로만 호출되면 caller chain 끊김
+- 특히 salsa DB 패턴 (rust-analyzer, cargo 등)에서 심각
 
 ## 제약
 
