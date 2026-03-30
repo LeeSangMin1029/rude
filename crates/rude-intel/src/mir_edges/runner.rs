@@ -103,10 +103,20 @@ pub fn find_mir_callgraph_bin(override_path: Option<&Path>) -> Result<PathBuf> {
         let sibling = exe.with_file_name(mir_callgraph_bin_name());
         if sibling.exists() { return Ok(sibling); }
     }
-    // Cached binary — skip nightly version check for speed
     let base = rude_home()?;
     let cached = base.join("bin").join(mir_callgraph_bin_name());
-    if cached.exists() { return Ok(cached); }
+    if cached.exists() {
+        let version_file = base.join("bin").join(".nightly-version");
+        let needs_rebuild = nightly_rustc_version().is_some_and(|ver| {
+            std::fs::read_to_string(&version_file)
+                .map_or(true, |saved| saved.trim() != ver)
+        });
+        if needs_rebuild {
+            eprintln!("  [mir] nightly version changed, rebuilding mir-callgraph...");
+            return install_mir_callgraph();
+        }
+        return Ok(cached);
+    }
     install_mir_callgraph()
 }
 
