@@ -178,7 +178,7 @@ fn build_mir_indexes(chunks: &[ParsedChunk]) -> MirIndexes<'_> {
                 let after_as = &lower[pos + 4..];
                 if let Some(close) = after_as.find('>') {
                     let trait_and_method = &after_as[..close];
-                    if let Some(method_start) = after_as.get(close + 2..) {
+                    if let Some(method_start) = after_as.get(close + 3..) {
                         let trait_leaf = trait_and_method.rsplit("::").next().unwrap_or(trait_and_method);
                         let key = format!("{trait_leaf}>::{method_start}");
                         trait_impl_methods.entry(key).or_default().push(i as u32);
@@ -224,6 +224,7 @@ fn resolve_trait_method_impls(
 fn resolve_crate_edges(
     crate_name: &str,
     mir_edges: &MirEdgeMap,
+    chunks: &[ParsedChunk],
     loc_to_idx: &HashMap<(&str, usize), u32>,
     name_to_idx: &HashMap<String, u32>,
     suffix_to_idx: &HashMap<String, u32>,
@@ -237,10 +238,14 @@ fn resolve_crate_edges(
         let Some(s) = src else { continue };
         let Some(callees) = mir_edges.by_caller.get(*caller_name) else { continue };
         for callee in callees {
-            let targets = match resolve_callee(callee, loc_to_idx, name_to_idx, file_suffix_to_normalized) {
+            let mut targets = match resolve_callee(callee, loc_to_idx, name_to_idx, file_suffix_to_normalized) {
                 Some(t) => vec![t],
-                None => resolve_trait_method_impls(&callee.name, &trait_impl_methods),
+                None => resolve_trait_method_impls(&callee.name, trait_impl_methods),
             };
+            if targets.len() == 1 && chunks[targets[0] as usize].kind == "trait" {
+                let mut impls = resolve_trait_method_impls(&callee.name, trait_impl_methods);
+                if !impls.is_empty() { targets.append(&mut impls); }
+            }
             for t in targets {
                 edges.push((s, t, callee.call_line as u32));
             }
@@ -307,7 +312,7 @@ pub(crate) fn resolve_incremental(
             }
         }
         if let Some(me) = effective_mir {
-            let mut idx_edges = resolve_crate_edges(crate_name, me, &loc_to_idx, &name_to_idx, &suffix_to_idx, &file_suffix_to_normalized, &trait_impl_methods);
+            let mut idx_edges = resolve_crate_edges(crate_name, me, chunks, &loc_to_idx, &name_to_idx, &suffix_to_idx, &file_suffix_to_normalized, &trait_impl_methods);
             idx_edges.sort_unstable(); idx_edges.dedup();
             re_resolved_crates += 1;
             mir_resolved += idx_edges.len();
@@ -364,19 +369,25 @@ pub(crate) fn resolve_with_mir(
             chunks, &name_to_idx, &name_to_all, &suffix_to_idx,
         );
         for callee in callees {
-            let targets = match resolve_callee(callee, &loc_to_idx, &name_to_idx, &file_suffix_to_normalized) {
+            let mut targets = match resolve_callee(callee, &loc_to_idx, &name_to_idx, &file_suffix_to_normalized) {
                 Some(t) => vec![t],
                 None => resolve_trait_method_impls(&callee.name, &trait_impl_methods),
             };
+            if targets.len() == 1 && chunks[targets[0] as usize].kind == "trait" {
+                let mut impls = resolve_trait_method_impls(&callee.name, &trait_impl_methods);
+                if !impls.is_empty() { targets.append(&mut impls); }
+            }
             for t in targets {
                 let tgt_root = file_root(&chunks[t as usize].file);
-                if let Some(&s) = srcs.iter().find(|&&s| file_root(&chunks[s as usize].file) == tgt_root) {
+                let s = srcs.iter().find(|&&s| file_root(&chunks[s as usize].file) == tgt_root)
+                    .or_else(|| srcs.first())
+                    .copied();
+                if let Some(s) = s {
                     adj.add_edge(s as usize, t, callee.call_line as u32);
                 }
             }
         }
     }
-
     for (src, chunk) in chunks.iter().enumerate() { resolve_type_refs(src, chunk, index, &mut adj); }
     adj.dedup();
     adj
