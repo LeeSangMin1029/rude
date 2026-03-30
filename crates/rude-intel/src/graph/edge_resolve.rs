@@ -191,6 +191,24 @@ fn resolve_callee(
     }
 }
 
+fn resolve_trait_method_impls(
+    callee_name: &str,
+    name_to_idx: &HashMap<String, u32>,
+) -> Vec<u32> {
+    let lower = callee_name.to_lowercase();
+    let lower = strip_closure_suffix(&lower);
+    let (trait_part, method) = match lower.rsplit_once("::") {
+        Some(pair) => pair,
+        None => return Vec::new(),
+    };
+    let trait_leaf = trait_part.rsplit("::").next().unwrap_or(trait_part);
+    let suffix = format!("{trait_leaf}>::{method}");
+    name_to_idx.iter()
+        .filter(|(k, _)| k.contains(" as ") && k.ends_with(&suffix))
+        .map(|(_, &idx)| idx)
+        .collect()
+}
+
 fn resolve_crate_edges(
     crate_name: &str,
     mir_edges: &MirEdgeMap,
@@ -203,9 +221,14 @@ fn resolve_crate_edges(
     let mut edges = Vec::new();
     for caller_name in &callers {
         let src = resolve_by_loc_or_name(caller_name, name_to_idx, suffix_to_idx);
+        let Some(s) = src else { continue };
         let Some(callees) = mir_edges.by_caller.get(*caller_name) else { continue };
         for callee in callees {
-            if let (Some(s), Some(t)) = (src, resolve_callee(callee, loc_to_idx, name_to_idx, file_suffix_to_normalized)) {
+            let targets = match resolve_callee(callee, loc_to_idx, name_to_idx, file_suffix_to_normalized) {
+                Some(t) => vec![t],
+                None => resolve_trait_method_impls(&callee.name, name_to_idx),
+            };
+            for t in targets {
                 edges.push((s, t, callee.call_line as u32));
             }
         }
@@ -328,9 +351,12 @@ pub(crate) fn resolve_with_mir(
             chunks, &name_to_idx, &name_to_all, &suffix_to_idx,
         );
         for callee in callees {
-            if let Some(t) = resolve_callee(callee, &loc_to_idx, &name_to_idx, &file_suffix_to_normalized) {
+            let targets = match resolve_callee(callee, &loc_to_idx, &name_to_idx, &file_suffix_to_normalized) {
+                Some(t) => vec![t],
+                None => resolve_trait_method_impls(&callee.name, &name_to_idx),
+            };
+            for t in targets {
                 let tgt_root = file_root(&chunks[t as usize].file);
-                // Pick the src from the same workspace as the callee
                 if let Some(&s) = srcs.iter().find(|&&s| file_root(&chunks[s as usize].file) == tgt_root) {
                     adj.add_edge(s as usize, t, callee.call_line as u32);
                 }
