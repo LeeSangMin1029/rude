@@ -10,6 +10,8 @@ pub fn run_mir_analysis(
     code_files: &[&PathBuf],
     missing_crates: &[String],
 ) -> Result<Vec<String>> {
+    let out_dir = input_path.join("target").join("mir-edges");
+    rude_intel::mir_edges::check_bin_version_match(&out_dir, None);
     let has_cached_edges = mir_db.exists();
 
     if !has_cached_edges {

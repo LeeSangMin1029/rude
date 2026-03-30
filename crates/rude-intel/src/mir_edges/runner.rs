@@ -217,6 +217,25 @@ fn kill_process_by_pid(pid: u32) {
 }
 
 
+pub fn check_bin_version_match(out_dir: &Path, mir_callgraph_bin: Option<&Path>) {
+    let Ok(bin) = find_mir_callgraph_bin(mir_callgraph_bin) else { return };
+    let bin_mtime = std::fs::metadata(&bin).and_then(|m| m.modified()).ok();
+    let stamp_file = out_dir.join(".bin-stamp");
+    let saved = std::fs::read_to_string(&stamp_file).ok();
+    let current = bin_mtime.map(|t| format!("{:?}", t));
+    if saved.is_some() && saved != current {
+        let mir_db = out_dir.join("mir.db");
+        if mir_db.exists() {
+            tracing::debug!("[mir] bin changed, clearing mir.db");
+            let _ = std::fs::remove_file(&mir_db);
+        }
+    }
+    if let Some(ref val) = current {
+        std::fs::create_dir_all(out_dir).ok();
+        let _ = std::fs::write(&stamp_file, val);
+    }
+}
+
 #[tracing::instrument(skip_all)]
 pub fn run_mir_direct(
     project_root: &Path,
