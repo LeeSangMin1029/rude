@@ -148,6 +148,7 @@ type MirIndexes<'a> = (
     HashMap<String, Vec<u32>>,
     HashMap<String, u32>,
     HashMap<String, Vec<String>>,
+    HashMap<String, Vec<u32>>,
 );
 
 fn build_mir_indexes(chunks: &[ParsedChunk]) -> MirIndexes<'_> {
@@ -156,6 +157,7 @@ fn build_mir_indexes(chunks: &[ParsedChunk]) -> MirIndexes<'_> {
     let mut name_to_all: HashMap<String, Vec<u32>> = HashMap::new();
     let mut suffix_to_idx: HashMap<String, u32> = HashMap::new();
     let mut file_suffix_to_normalized: HashMap<String, Vec<String>> = HashMap::new();
+    let mut trait_impl_methods: HashMap<String, Vec<u32>> = HashMap::new();
 
     for (i, c) in chunks.iter().enumerate() {
         let is_synthetic = c.lines == Some((0, 0));
@@ -171,9 +173,22 @@ fn build_mir_indexes(chunks: &[ParsedChunk]) -> MirIndexes<'_> {
             if !is_synthetic { suffix_to_idx.entry(last.to_owned()).or_insert(i as u32); }
         }
         file_suffix_to_normalized.entry(c.file.to_lowercase()).or_default().push(c.file.clone());
+        if lower.contains(" as ") {
+            if let Some(pos) = lower.find(" as ") {
+                let after_as = &lower[pos + 4..];
+                if let Some(close) = after_as.find('>') {
+                    let trait_and_method = &after_as[..close];
+                    if let Some(method_start) = after_as.get(close + 2..) {
+                        let trait_leaf = trait_and_method.rsplit("::").next().unwrap_or(trait_and_method);
+                        let key = format!("{trait_leaf}>::{method_start}");
+                        trait_impl_methods.entry(key).or_default().push(i as u32);
+                    }
+                }
+            }
+        }
     }
     for v in file_suffix_to_normalized.values_mut() { v.sort(); v.dedup(); }
-    (loc_to_idx, name_to_idx, name_to_all, suffix_to_idx, file_suffix_to_normalized)
+    (loc_to_idx, name_to_idx, name_to_all, suffix_to_idx, file_suffix_to_normalized, trait_impl_methods)
 }
 
 fn resolve_callee(
@@ -193,7 +208,7 @@ fn resolve_callee(
 
 fn resolve_trait_method_impls(
     callee_name: &str,
-    name_to_idx: &HashMap<String, u32>,
+    trait_impl_methods: &HashMap<String, Vec<u32>>,
 ) -> Vec<u32> {
     let lower = callee_name.to_lowercase();
     let lower = strip_closure_suffix(&lower);
@@ -202,11 +217,8 @@ fn resolve_trait_method_impls(
         None => return Vec::new(),
     };
     let trait_leaf = trait_part.rsplit("::").next().unwrap_or(trait_part);
-    let suffix = format!("{trait_leaf}>::{method}");
-    name_to_idx.iter()
-        .filter(|(k, _)| k.contains(" as ") && k.ends_with(&suffix))
-        .map(|(_, &idx)| idx)
-        .collect()
+    let key = format!("{trait_leaf}>::{method}");
+    trait_impl_methods.get(&key).cloned().unwrap_or_default()
 }
 
 fn resolve_crate_edges(
@@ -216,6 +228,7 @@ fn resolve_crate_edges(
     name_to_idx: &HashMap<String, u32>,
     suffix_to_idx: &HashMap<String, u32>,
     file_suffix_to_normalized: &HashMap<String, Vec<String>>,
+    trait_impl_methods: &HashMap<String, Vec<u32>>,
 ) -> Vec<(u32, u32, u32)> {
     let callers = mir_edges.callers_for_crate(crate_name);
     let mut edges = Vec::new();
@@ -226,7 +239,7 @@ fn resolve_crate_edges(
         for callee in callees {
             let targets = match resolve_callee(callee, loc_to_idx, name_to_idx, file_suffix_to_normalized) {
                 Some(t) => vec![t],
-                None => resolve_trait_method_impls(&callee.name, name_to_idx),
+                None => resolve_trait_method_impls(&callee.name, &trait_impl_methods),
             };
             for t in targets {
                 edges.push((s, t, callee.call_line as u32));
@@ -249,7 +262,7 @@ pub(crate) fn resolve_incremental(
     let mut cache_loaded: usize = 0;
     let mut re_resolved_crates: usize = 0;
 
-    let (loc_to_idx, name_to_idx, _name_to_all, suffix_to_idx, file_suffix_to_normalized) =
+    let (loc_to_idx, name_to_idx, _name_to_all, suffix_to_idx, file_suffix_to_normalized, trait_impl_methods) =
         build_mir_indexes(chunks);
 
     let chunks_hash = compute_chunks_hash(chunks);
@@ -294,7 +307,7 @@ pub(crate) fn resolve_incremental(
             }
         }
         if let Some(me) = effective_mir {
-            let mut idx_edges = resolve_crate_edges(crate_name, me, &loc_to_idx, &name_to_idx, &suffix_to_idx, &file_suffix_to_normalized);
+            let mut idx_edges = resolve_crate_edges(crate_name, me, &loc_to_idx, &name_to_idx, &suffix_to_idx, &file_suffix_to_normalized, &trait_impl_methods);
             idx_edges.sort_unstable(); idx_edges.dedup();
             re_resolved_crates += 1;
             mir_resolved += idx_edges.len();
@@ -341,7 +354,7 @@ pub(crate) fn resolve_with_mir(
 ) -> ResolvedEdges {
     let mut adj = ResolvedEdges::new(chunks.len());
 
-    let (loc_to_idx, name_to_idx, name_to_all, suffix_to_idx, file_suffix_to_normalized) =
+    let (loc_to_idx, name_to_idx, name_to_all, suffix_to_idx, file_suffix_to_normalized, trait_impl_methods) =
         build_mir_indexes(chunks);
 
     for (caller_name, callees) in &mir_edges.by_caller {
@@ -353,7 +366,7 @@ pub(crate) fn resolve_with_mir(
         for callee in callees {
             let targets = match resolve_callee(callee, &loc_to_idx, &name_to_idx, &file_suffix_to_normalized) {
                 Some(t) => vec![t],
-                None => resolve_trait_method_impls(&callee.name, &name_to_idx),
+                None => resolve_trait_method_impls(&callee.name, &trait_impl_methods),
             };
             for t in targets {
                 let tgt_root = file_root(&chunks[t as usize].file);
