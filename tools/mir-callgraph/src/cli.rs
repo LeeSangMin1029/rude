@@ -39,7 +39,7 @@ fn local_workspace_packages() -> Vec<String> {
     json.get("packages").and_then(|p| p.as_array()).map(|pkgs| {
         pkgs.iter().filter_map(|p| {
             let id = p.get("id")?.as_str()?;
-            if id.starts_with("path+") { Some(p.get("name")?.as_str()?.to_owned()) } else { None }
+            if id.starts_with("path+") { Some(id.to_owned()) } else { None }
         }).collect()
     }).unwrap_or_default()
 }

@@ -67,7 +67,7 @@ else
     echo "mir-callgraph: will auto-build on first 'rude add'"
 fi
 
-rustup run nightly rustc --version 2>/dev/null | awk '{print $2}' > "$RUDE_HOME/bin/.nightly-version"
+rustup run nightly rustc --version 2>/dev/null | tr -d '\n' > "$RUDE_HOME/bin/.nightly-version"
 
 echo ""
 echo "=== Done ==="
