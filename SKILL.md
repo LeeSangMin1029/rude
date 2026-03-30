@@ -108,5 +108,5 @@ min_lines = 50
 ## 제약
 
 - **nightly rustc 필요** — `mir-callgraph`가 `rustc_private` 사용
-- blast/context/trace는 **함수/메서드 단위만**
+- blast는 함수/메서드 + struct/enum 지원 (MIR field access 추적)
 - 현재 **Rust 전용**

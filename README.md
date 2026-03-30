@@ -16,7 +16,8 @@ nightly rustc 필요 (`mir-callgraph`가 `rustc_private` 사용).
 rude add .                              # DB 생성/갱신 (.code.db)
 rude symbols --compact                  # 심볼 목록
 rude context run -s                     # 함수 정의 + caller/callee + 소스
-rude context run --blast                # 변경 영향 범위 분석
+rude context run --blast                # 함수 변경 영향 범위 분석
+rude context MyStruct --blast           # struct 필드 접근 기반 영향 범위
 rude trace fn_a fn_b                    # 두 함수 간 최단 호출 경로
 ```
 
