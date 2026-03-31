@@ -2,6 +2,7 @@
 use std::collections::HashSet;
 
 use crate::graph::build::CallGraph;
+use crate::graph::context_cmd::is_derived_noise;
 use rude_util::{apply_alias, format_lines_opt, relative_path};
 
 pub struct FlowNode {
@@ -37,7 +38,9 @@ fn build_subtree(
     let children: Vec<FlowNode> = callees
         .iter()
         .filter(|&&child_idx| {
-            !skip_test || !graph.is_test.get(child_idx as usize).copied().unwrap_or(false)
+            let ci = child_idx as usize;
+            (!skip_test || !graph.is_test.get(ci).copied().unwrap_or(false))
+                && !is_derived_noise(&graph.chunks[ci].name)
         })
         .map(|&child_idx| {
             if expanded.contains(&child_idx) {

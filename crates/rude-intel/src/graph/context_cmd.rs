@@ -36,7 +36,9 @@ pub fn build_context(
         let all = bfs_generic(graph, &seeds, depth, BfsDirection::Forward, |idx, d| {
             Some(ContextEntry { idx, depth: d })
         });
-        all.into_iter().filter(|e| e.depth > 0).collect()
+        all.into_iter()
+            .filter(|e| e.depth > 0 && !is_derived_noise(&graph.chunks[e.idx as usize].name))
+            .collect()
     };
 
     let types = collect_types(graph, &seeds);
@@ -104,6 +106,18 @@ fn collect_unresolved(graph: &CallGraph, seeds: &[u32]) -> Vec<String> {
         }
     }
     unresolved
+}
+
+pub(crate) fn is_derived_noise(name: &str) -> bool {
+    if !name.starts_with('<') { return false; }
+    let Some(trait_part) = name.split("as ").nth(1) else { return false };
+    let trait_path = trait_part.split('>').next().unwrap_or("");
+    let trait_leaf = trait_path.rsplit("::").next().unwrap_or("");
+    matches!(trait_leaf,
+        "PartialEq" | "Eq" | "PartialOrd" | "Ord"
+        | "Clone" | "Debug" | "Hash" | "Default"
+        | "Serialize" | "Deserialize"
+    )
 }
 
 pub(crate) fn is_noise(call: &str) -> bool {
