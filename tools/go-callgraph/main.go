@@ -5,15 +5,14 @@ import (
 	"flag"
 	"fmt"
 	"go/ast"
+	"go/parser"
 	"go/token"
-	"go/types"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
-
-	"golang.org/x/tools/go/packages"
 )
 
 type CallEdge struct {
@@ -50,6 +49,13 @@ type funcSpan struct {
 	endLn    int
 }
 
+type goPackage struct {
+	Dir        string   `json:"Dir"`
+	Name       string   `json:"Name"`
+	GoFiles    []string `json:"GoFiles"`
+	CgoFiles   []string `json:"CgoFiles"`
+}
+
 func main() {
 	flag.Parse()
 	patterns := flag.Args()
@@ -63,88 +69,98 @@ func main() {
 		os.Exit(2)
 	}
 	projectRoot = filepath.ToSlash(projectRoot)
-	cfg := &packages.Config{
-		Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax |
-			packages.NeedTypes | packages.NeedTypesInfo | packages.NeedImports,
-	}
-	initial, err := packages.Load(cfg, patterns...)
+
+	pkgs, err := listPackages(patterns)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "load: %v\n", err)
+		fmt.Fprintf(os.Stderr, "go list: %v\n", err)
 		os.Exit(2)
 	}
-	for _, pkg := range initial {
-		for _, e := range pkg.Errors {
-			fmt.Fprintf(os.Stderr, "pkg error: %v\n", e)
-		}
-	}
 
+	fset := token.NewFileSet()
 	var allSpans []funcSpan
 	chunkSet := make(map[string]bool)
 	var chunks []Chunk
+	type parsedFile struct {
+		file    *ast.File
+		relPath string
+		pkgName string
+	}
+	var allFiles []parsedFile
 
-	for _, pkg := range initial {
-		pkgName := pkg.Name
-		fset := pkg.Fset
-		for _, file := range pkg.Syntax {
-			filename := fset.Position(file.Pos()).Filename
-			relFile := toRelPath(filename, projectRoot)
+	for _, pkg := range pkgs {
+		dir := filepath.ToSlash(pkg.Dir)
+		if !strings.HasPrefix(dir, projectRoot+"/") && dir != projectRoot {
+			continue
+		}
+		allGoFiles := append(pkg.GoFiles, pkg.CgoFiles...)
+		for _, fname := range allGoFiles {
+			absPath := filepath.Join(pkg.Dir, fname)
+			relFile := toRelPath(filepath.ToSlash(absPath), projectRoot)
 			if relFile == "" {
 				continue
 			}
-			ast.Inspect(file, func(n ast.Node) bool {
-				switch decl := n.(type) {
-				case *ast.FuncDecl:
-					name := astFuncName(decl)
-					startLn := fset.Position(decl.Pos()).Line
-					endLn := fset.Position(decl.End()).Line
-					allSpans = append(allSpans, funcSpan{
-						name: name, file: relFile,
-						startPos: decl.Pos(), endPos: decl.End(),
-						startLn: startLn, endLn: endLn,
+			f, err := parser.ParseFile(fset, absPath, nil, 0)
+			if err != nil {
+				continue
+			}
+			allFiles = append(allFiles, parsedFile{file: f, relPath: relFile, pkgName: pkg.Name})
+		}
+	}
+
+	for _, pf := range allFiles {
+		ast.Inspect(pf.file, func(n ast.Node) bool {
+			switch decl := n.(type) {
+			case *ast.FuncDecl:
+				name := astFuncName(decl)
+				startLn := fset.Position(decl.Pos()).Line
+				endLn := fset.Position(decl.End()).Line
+				allSpans = append(allSpans, funcSpan{
+					name: name, file: pf.relPath,
+					startPos: decl.Pos(), endPos: decl.End(),
+					startLn: startLn, endLn: endLn,
+				})
+				key := pf.relPath + ":" + name
+				if !chunkSet[key] {
+					chunkSet[key] = true
+					chunks = append(chunks, Chunk{
+						Name: name, File: pf.relPath, Kind: astFuncKind(decl),
+						StartLine: startLn, EndLine: endLn,
+						Signature: astFuncSig(decl), CrateName: pf.pkgName,
 					})
-					key := relFile + ":" + name
+				}
+			case *ast.GenDecl:
+				if decl.Tok != token.TYPE {
+					return true
+				}
+				for _, spec := range decl.Specs {
+					ts, ok := spec.(*ast.TypeSpec)
+					if !ok {
+						continue
+					}
+					kind := ""
+					switch ts.Type.(type) {
+					case *ast.StructType:
+						kind = "struct"
+					case *ast.InterfaceType:
+						kind = "interface"
+					default:
+						continue
+					}
+					startLn := fset.Position(ts.Pos()).Line
+					endLn := fset.Position(ts.End()).Line
+					key := pf.relPath + ":" + ts.Name.Name
 					if !chunkSet[key] {
 						chunkSet[key] = true
 						chunks = append(chunks, Chunk{
-							Name: name, File: relFile, Kind: astFuncKind(decl),
+							Name: ts.Name.Name, File: pf.relPath, Kind: kind,
 							StartLine: startLn, EndLine: endLn,
-							Signature: astFuncSig(decl), CrateName: pkgName,
+							CrateName: pf.pkgName,
 						})
 					}
-				case *ast.GenDecl:
-					if decl.Tok != token.TYPE {
-						return true
-					}
-					for _, spec := range decl.Specs {
-						ts, ok := spec.(*ast.TypeSpec)
-						if !ok {
-							continue
-						}
-						kind := ""
-						switch ts.Type.(type) {
-						case *ast.StructType:
-							kind = "struct"
-						case *ast.InterfaceType:
-							kind = "interface"
-						default:
-							continue
-						}
-						startLn := fset.Position(ts.Pos()).Line
-						endLn := fset.Position(ts.End()).Line
-						key := relFile + ":" + ts.Name.Name
-						if !chunkSet[key] {
-							chunkSet[key] = true
-							chunks = append(chunks, Chunk{
-								Name: ts.Name.Name, File: relFile, Kind: kind,
-								StartLine: startLn, EndLine: endLn,
-								CrateName: pkgName,
-							})
-						}
-					}
 				}
-				return true
-			})
-		}
+			}
+			return true
+		})
 	}
 
 	sort.Slice(allSpans, func(i, j int) bool {
@@ -152,35 +168,35 @@ func main() {
 	})
 
 	var edges []CallEdge
-	for _, pkg := range initial {
-		fset := pkg.Fset
-		for id, obj := range pkg.TypesInfo.Uses {
-			fn, ok := obj.(*types.Func)
+	for _, pf := range allFiles {
+		ast.Inspect(pf.file, func(n ast.Node) bool {
+			ce, ok := n.(*ast.CallExpr)
 			if !ok {
-				continue
+				return true
 			}
-			callPos := fset.Position(id.Pos())
-			if !callPos.IsValid() || callPos.Line == 0 {
-				continue
+			callee := callExprName(ce)
+			if callee == "" {
+				return true
 			}
-			callFile := toRelPath(callPos.Filename, projectRoot)
-			if callFile == "" {
-				continue
+			pos := fset.Position(ce.Pos())
+			if !pos.IsValid() || pos.Line == 0 {
+				return true
 			}
-			caller := findEnclosing(id.Pos(), allSpans)
+			caller := findEnclosing(ce.Pos(), allSpans)
 			if caller == nil {
-				continue
+				return true
 			}
 			edges = append(edges, CallEdge{
 				Caller:      caller.name,
-				Callee:      typesLeafName(fn),
-				File:        callFile,
-				Line:        callPos.Line,
+				Callee:      callee,
+				File:        pf.relPath,
+				Line:        pos.Line,
 				CallerFile:  caller.file,
 				CallerStart: caller.startLn,
 				CallerEnd:   caller.endLn,
 			})
-		}
+			return true
+		})
 	}
 
 	out := Output{Edges: edges, Chunks: chunks}
@@ -193,6 +209,53 @@ func main() {
 	elapsed := time.Since(start)
 	fmt.Fprintf(os.Stderr, "edges: %d, chunks: %d, elapsed: %v\n", len(edges), len(chunks), elapsed)
 	json.NewEncoder(os.Stdout).Encode(out)
+}
+
+func listPackages(patterns []string) ([]goPackage, error) {
+	args := append([]string{"list", "-json"}, patterns...)
+	cmd := exec.Command("go", args...)
+	cmd.Stderr = os.Stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	var pkgs []goPackage
+	dec := json.NewDecoder(strings.NewReader(string(out)))
+	for dec.More() {
+		var p goPackage
+		if err := dec.Decode(&p); err != nil {
+			return nil, err
+		}
+		pkgs = append(pkgs, p)
+	}
+	return pkgs, nil
+}
+
+func callExprName(ce *ast.CallExpr) string {
+	switch fn := ce.Fun.(type) {
+	case *ast.Ident:
+		return fn.Name
+	case *ast.SelectorExpr:
+		return selectorCallee(fn)
+	}
+	return ""
+}
+
+func selectorCallee(sel *ast.SelectorExpr) string {
+	switch x := sel.X.(type) {
+	case *ast.Ident:
+		return x.Name + "." + sel.Sel.Name
+	case *ast.SelectorExpr:
+		return selectorCallee(x) + "." + sel.Sel.Name
+	case *ast.CallExpr:
+		inner := callExprName(x)
+		if inner != "" {
+			return sel.Sel.Name
+		}
+		return sel.Sel.Name
+	default:
+		return sel.Sel.Name
+	}
 }
 
 func findEnclosing(pos token.Pos, spans []funcSpan) *funcSpan {
@@ -344,23 +407,4 @@ func writeExpr(b *strings.Builder, expr ast.Expr) {
 	default:
 		b.WriteByte('?')
 	}
-}
-
-func typesLeafName(fn *types.Func) string {
-	sig := fn.Type().(*types.Signature)
-	recv := sig.Recv()
-	if recv != nil {
-		return typesRecvLeaf(recv.Type()) + "." + fn.Name()
-	}
-	return fn.Name()
-}
-
-func typesRecvLeaf(t types.Type) string {
-	switch ty := t.(type) {
-	case *types.Pointer:
-		return typesRecvLeaf(ty.Elem())
-	case *types.Named:
-		return ty.Obj().Name()
-	}
-	return "?"
 }

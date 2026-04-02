@@ -26,7 +26,18 @@ interface CallGraphResult {
   chunks: Chunk[];
 }
 
-function collectSourceFiles(dir: string): string[] {
+const SKIP_DIRS = new Set([
+  "node_modules", "test", "tests", "__tests__", "__test__",
+  "spec", "specs", "fixtures", "__fixtures__", "__mocks__",
+  "testdata", "test-data", "testing",
+]);
+
+function isTestFile(name: string): boolean {
+  return /\.(test|spec|e2e)\.(ts|tsx|js|jsx)$/.test(name)
+    || /^test[.\-]/.test(name);
+}
+
+function collectSourceFiles(dir: string, includeTests: boolean): string[] {
   const results: string[] = [];
   const exts = new Set([".ts", ".tsx", ".js", ".jsx"]);
 
@@ -40,12 +51,14 @@ function collectSourceFiles(dir: string): string[] {
     for (const entry of entries) {
       if (entry.name.startsWith(".")) continue;
       if (entry.name === "node_modules") continue;
+      if (!includeTests && SKIP_DIRS.has(entry.name)) continue;
       const full = path.join(d, entry.name);
       if (entry.isDirectory()) {
         walk(full);
       } else if (entry.isFile()) {
         const ext = path.extname(entry.name);
         if (exts.has(ext) && !entry.name.endsWith(".d.ts")) {
+          if (!includeTests && isTestFile(entry.name)) continue;
           results.push(full);
         }
       }
@@ -297,10 +310,19 @@ function extractCallGraph(program: ts.Program): CallGraphResult {
     ts.forEachChild(node, visit);
   }
 
+  let skippedFiles = 0;
   for (const sf of program.getSourceFiles()) {
     if (sf.isDeclarationFile) continue;
     if (sf.fileName.includes("node_modules")) continue;
-    visit(sf);
+    try {
+      visit(sf);
+    } catch (e: any) {
+      skippedFiles++;
+      process.stderr.write(`warning: skipped ${sf.fileName}: ${e.message || e}\n`);
+    }
+  }
+  if (skippedFiles > 0) {
+    process.stderr.write(`Skipped ${skippedFiles} files due to errors\n`);
   }
 
   return { edges, chunks };
@@ -321,21 +343,51 @@ function normalizePaths(result: CallGraphResult, baseDir: string): CallGraphResu
   };
 }
 
+function createProgramSafe(files: string[], compilerOptions: ts.CompilerOptions): ts.Program {
+  try {
+    return ts.createProgram(files, compilerOptions);
+  } catch (e: any) {
+    process.stderr.write(`createProgram failed (${files.length} files): ${e.message || e}\n`);
+    process.stderr.write("Falling back to file-by-file parsing...\n");
+  }
+  const BATCH = 500;
+  const validFiles: string[] = [];
+  for (let i = 0; i < files.length; i += BATCH) {
+    const batch = files.slice(i, i + BATCH);
+    const tested: string[] = [];
+    for (const f of batch) {
+      try {
+        const src = fs.readFileSync(f, "utf-8");
+        ts.createSourceFile(f, src, ts.ScriptTarget.ES2020, true);
+        tested.push(f);
+      } catch {
+        process.stderr.write(`warning: skipped unparseable file: ${f}\n`);
+      }
+    }
+    validFiles.push(...tested);
+  }
+  process.stderr.write(`Retrying createProgram with ${validFiles.length}/${files.length} parseable files\n`);
+  return ts.createProgram(validFiles, compilerOptions);
+}
+
 function main() {
   const args = process.argv.slice(2);
   let tsconfigPath: string | undefined;
   let targetDir: string | undefined;
+  let includeTests = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--tsconfig" && i + 1 < args.length) {
       tsconfigPath = args[++i];
+    } else if (args[i] === "--include-tests") {
+      includeTests = true;
     } else if (!args[i].startsWith("-")) {
       targetDir = args[i];
     }
   }
 
   if (!targetDir) {
-    process.stderr.write("Usage: node dist/index.js [--tsconfig path] <directory>\n");
+    process.stderr.write("Usage: node dist/index.js [--tsconfig path] [--include-tests] <directory>\n");
     process.exit(1);
   }
 
@@ -381,8 +433,12 @@ function main() {
   }
 
   process.stderr.write(`Collecting source files from ${targetDir}...\n`);
-  const files = collectSourceFiles(targetDir);
-  process.stderr.write(`Found ${files.length} source files\n`);
+  const files = collectSourceFiles(targetDir, includeTests);
+  if (!includeTests) {
+    process.stderr.write(`Found ${files.length} source files (test files excluded)\n`);
+  } else {
+    process.stderr.write(`Found ${files.length} source files\n`);
+  }
 
   if (files.length === 0) {
     const result: CallGraphResult = { edges: [], chunks: [] };
@@ -391,7 +447,7 @@ function main() {
   }
 
   process.stderr.write("Creating program...\n");
-  const program = ts.createProgram(files, compilerOptions);
+  const program = createProgramSafe(files, compilerOptions);
 
   process.stderr.write("Extracting call graph...\n");
   const result = extractCallGraph(program);
