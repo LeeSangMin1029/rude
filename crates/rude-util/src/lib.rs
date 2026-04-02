@@ -10,7 +10,7 @@ pub use path::{
 };
 pub use hash::{content_hash, content_hash_bytes, generate_id};
 pub use scan::{
-    lang_for_ext, is_code_ext, get_file_mtime, get_file_size,
+    lang_for_ext, is_code_ext, is_supported_code_file, get_file_mtime, get_file_size,
     should_skip_dir, scan_files,
 };
 pub use format::{format_lines_opt, extract_crate_name, build_path_aliases, apply_alias};

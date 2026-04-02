@@ -50,7 +50,8 @@ pub(crate) fn locate_symbol_in(graph: &rude_intel::graph::CallGraph, db: &Path, 
     let (start, end) = if is_rust {
         syn_locate(&abs_path, leaf, None).unwrap_or_else(|_| chunk.lines.unwrap_or((1, 1)))
     } else {
-        chunk.lines.unwrap_or((1, 1))
+        let content = std::fs::read_to_string(&abs_path).unwrap_or_default();
+        text_fallback(&content, leaf).unwrap_or_else(|| chunk.lines.unwrap_or((1, 1)))
     };
     let start = expand_to_attrs(&abs_path, start);
     Ok(SymbolLocation { abs_path, rel_path: rel, start_line: start - 1, end_line: end - 1, kind })
@@ -140,7 +141,13 @@ impl<'a, 'ast> syn::visit::Visit<'ast> for SymbolFinder<'a> {
 
 fn text_fallback(content: &str, name: &str) -> Option<(usize, usize)> {
     let lines: Vec<&str> = content.lines().collect();
-    let patterns = [format!("fn {name}"), format!("struct {name}"), format!("enum {name}"), format!("const {name}")];
+    let leaf = name.rsplit('.').next().unwrap_or(name);
+    let patterns = [
+        format!("fn {leaf}"), format!("struct {leaf}"), format!("enum {leaf}"), format!("const {leaf}"),
+        format!("func {leaf}"), format!("func ({leaf}"), format!(") {leaf}("),
+        format!("function {leaf}"), format!("class {leaf}"), format!("interface {leaf}"),
+        format!("{leaf}("), format!("{leaf} ="),
+    ];
     let start = lines.iter().position(|l| patterns.iter().any(|p| l.contains(p.as_str())))?;
     let mut depth: i32 = 0;
     let mut end = start;

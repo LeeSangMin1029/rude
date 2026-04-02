@@ -47,7 +47,7 @@ pub fn run_dead(
             continue;
         }
         let file = &graph.chunks[i].file;
-        if !file.ends_with(".rs") {
+        if !rude_util::is_supported_code_file(file) {
             continue;
         }
         if name.contains("::check::assert_impl")

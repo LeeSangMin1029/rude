@@ -18,6 +18,11 @@ pub fn lang_for_ext(ext: &str) -> &'static str {
 pub fn is_code_ext(ext: &str) -> bool {
     lang_for_ext(ext) != "other"
 }
+pub fn is_supported_code_file(file: &str) -> bool {
+    let f = file.replace('\\', "/");
+    let ext = f.rsplit('.').next().unwrap_or("");
+    is_code_ext(ext)
+}
 
 pub fn get_file_mtime(path: &Path) -> Option<u64> {
     std::fs::metadata(path)
