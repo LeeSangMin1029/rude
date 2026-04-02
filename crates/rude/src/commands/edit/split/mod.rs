@@ -38,7 +38,7 @@ fn filter_header(source: &str, body: &str) -> (Vec<String>, Vec<String>) {
         if !is_header_line(trimmed) { break; }
         if trimmed.starts_with("#![") {
             inner_attrs.push(line.to_string());
-        } else if trimmed.starts_with("use ") || trimmed.starts_with("pub use ") {
+        } else if trimmed.starts_with("use ") || trimmed.starts_with("pub use ") || trimmed.starts_with("pub(crate) use ") {
             if trimmed.contains("::*") {
                 use_lines.push(line.to_string());
             } else {

@@ -7,18 +7,22 @@ pub(crate) fn cleanup_unused_imports(path: &Path) -> Result<()> {
         let lines: Vec<&str> = content.lines().collect();
         let trailing = content.ends_with('\n');
         let mut keep = vec![true; lines.len()];
+        let mut use_indices: Vec<usize> = Vec::new();
         for (i, line) in lines.iter().enumerate() {
             let trimmed = line.trim();
             if !is_use_line(trimmed) { continue; }
             if trimmed.starts_with("pub use ") || trimmed.starts_with("pub(crate) use ") { continue; }
-            let idents = extract_use_idents(trimmed);
+            use_indices.push(i);
+        }
+        let non_use_body: String = lines.iter().enumerate()
+            .filter(|(i, _)| !use_indices.contains(i))
+            .map(|(_, l)| *l)
+            .collect::<Vec<_>>()
+            .join("\n");
+        for &i in &use_indices {
+            let idents = extract_use_idents(lines[i].trim());
             if idents.is_empty() { continue; }
-            let rest: String = lines.iter().enumerate()
-                .filter(|&(j, _)| j != i)
-                .map(|(_, l)| *l)
-                .collect::<Vec<_>>()
-                .join("\n");
-            if idents.iter().all(|id| !ident_used_in(&rest, id)) {
+            if idents.iter().all(|id| !ident_used_in(&non_use_body, id)) {
                 keep[i] = false;
             }
         }

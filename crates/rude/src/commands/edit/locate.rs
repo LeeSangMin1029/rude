@@ -59,10 +59,29 @@ fn expand_to_attrs(path: &Path, start: usize) -> usize {
     let mut s = start.saturating_sub(1);
     while s > 0 {
         let prev = lines.get(s - 1).map(|l| l.trim()).unwrap_or("");
-        if prev.starts_with("#[") || prev.starts_with("///") || prev.starts_with("//!") { s -= 1; }
-        else { break; }
+        if prev.starts_with("#[") || prev.starts_with("///") || prev.starts_with("//!") {
+            s -= 1;
+        } else if is_inside_multiline_attr(&lines, s - 1) {
+            s -= 1;
+        } else {
+            break;
+        }
     }
     s + 1
+}
+fn is_inside_multiline_attr(lines: &[&str], line_idx: usize) -> bool {
+    let mut depth: i32 = 0;
+    for i in (0..=line_idx).rev() {
+        let t = lines[i].trim();
+        depth += t.chars().filter(|&c| c == ']').count() as i32;
+        depth -= t.chars().filter(|&c| c == '[').count() as i32;
+        if t.starts_with("#[") {
+            return depth < 0;
+        }
+        if t.starts_with("///") || t.starts_with("//!") || t.starts_with("#[") { continue; }
+        if !t.is_empty() && !t.starts_with("//") && depth >= 0 { return false; }
+    }
+    false
 }
 
 fn span_line(span: proc_macro2::Span, end: bool) -> usize {

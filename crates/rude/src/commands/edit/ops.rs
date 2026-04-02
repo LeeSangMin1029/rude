@@ -64,6 +64,7 @@ pub fn run_batch(manifest: PathBuf) -> Result<()> {
     let entries: Vec<BatchEntry> = serde_json::from_str(&content)
         .context("failed to parse batch manifest JSON")?;
     if entries.is_empty() { return Ok(()); }
+    validate_batch_ops(&entries)?;
     let db = crate::db();
     let mut resolved: Vec<(super::locate::SymbolLocation, String, String)> = Vec::with_capacity(entries.len());
     for e in &entries {
@@ -159,8 +160,18 @@ fn str_to_op<'a>(op: &str, body: &'a str) -> Op<'a> {
         "replace" => Op::Replace(body),
         "insert-after" => Op::After(body),
         "insert-before" => Op::Before(body),
-        _ => Op::Delete,
+        "delete" => Op::Delete,
+        _ => panic!("Unknown batch op: '{op}' (expected: replace, insert-after, insert-before, delete)"),
     }
+}
+fn validate_batch_ops(entries: &[BatchEntry]) -> Result<()> {
+    for e in entries {
+        match e.op.as_str() {
+            "replace" | "insert-after" | "insert-before" | "delete" => {}
+            other => bail!("Unknown op '{other}' for symbol '{}'. Expected: replace, insert-after, insert-before, delete", e.symbol),
+        }
+    }
+    Ok(())
 }
 
 #[derive(serde::Deserialize)]
