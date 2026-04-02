@@ -46,9 +46,12 @@ pub(crate) fn locate_symbol_in(graph: &rude_intel::graph::CallGraph, db: &Path, 
     let abs_path = resolve_abs_path(db, &chunk.file)?;
     let rel = relative_display(db, &chunk.file);
     let kind = chunk.kind.clone();
-    // always use syn for accurate line numbers (DB cache may be stale after edits)
-    let (start, end) = syn_locate(&abs_path, leaf, None)
-        .unwrap_or_else(|_| chunk.lines.unwrap_or((1, 1)));
+    let is_rust = abs_path.extension().and_then(|e| e.to_str()) == Some("rs");
+    let (start, end) = if is_rust {
+        syn_locate(&abs_path, leaf, None).unwrap_or_else(|_| chunk.lines.unwrap_or((1, 1)))
+    } else {
+        chunk.lines.unwrap_or((1, 1))
+    };
     let start = expand_to_attrs(&abs_path, start);
     Ok(SymbolLocation { abs_path, rel_path: rel, start_line: start - 1, end_line: end - 1, kind })
 }
@@ -56,6 +59,9 @@ pub(crate) fn locate_symbol_in(graph: &rude_intel::graph::CallGraph, db: &Path, 
 fn expand_to_attrs(path: &Path, start: usize) -> usize {
     let Ok(content) = std::fs::read_to_string(path) else { return start };
     let lines: Vec<&str> = content.lines().collect();
+    if start == 0 || start > lines.len() { return start; }
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if !matches!(ext, "rs") { return start; }
     let mut s = start.saturating_sub(1);
     while s > 0 {
         let prev = lines.get(s - 1).map(|l| l.trim()).unwrap_or("");
