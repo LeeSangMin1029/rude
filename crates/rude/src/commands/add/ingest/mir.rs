@@ -70,6 +70,7 @@ pub(crate) fn ingest_mir(
             };
 
         let mut chunk_ids = Vec::with_capacity(indices.len());
+        let mut cached_crate_name: Option<String> = None;
 
         for &idx in indices {
             let mc = deduped[idx];
@@ -81,7 +82,9 @@ pub(crate) fn ingest_mir(
             parsed_chunk.file = normalized_file.clone();
             parsed_chunk.chunk_index = idx;
             if parsed_chunk.crate_name.is_empty() {
-                parsed_chunk.crate_name = crate_name_from_path(&file_path);
+                parsed_chunk.crate_name = cached_crate_name
+                    .get_or_insert_with(|| crate_name_from_path(&file_path))
+                    .clone();
             }
 
             if parsed_chunk.text.is_empty() {

@@ -81,8 +81,8 @@ pub fn prebuild_caches(
         let changed: Vec<&str> = incremental_crates.iter().map(|s| s.as_str()).collect();
         rude_intel::loader::save_chunks_cache_for(&new_chunks, Some(&changed));
         tracing::debug!("[cache] updated {} chunks for {} crate(s)", new_chunks.len(), changed.len());
-        if let Ok(engine) = rude_db::StorageEngine::open(crate::db()) {
-            let _ = engine.set_cache("graph", &[]);
-        }
+        let Some(all_chunks) = rude_intel::loader::load_chunks_from_cache() else { return };
+        let graph = rude_intel::graph::CallGraph::build_only(all_chunks, None, None);
+        graph.save_background();
     }
 }
