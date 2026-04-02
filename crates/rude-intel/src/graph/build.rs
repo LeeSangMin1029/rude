@@ -90,7 +90,7 @@ impl CallGraph {
     /// Name-based graph construction used only in tests (no MIR available).
     pub fn build(chunks: &[ParsedChunk]) -> Self {
         let index = ChunkIndex::build(chunks);
-        let adj = edge_resolve::resolve_by_name_test(chunks, &index);
+        let adj = edge_resolve::resolve_by_name(chunks, &index);
         Self::assemble(chunks.to_vec(), &index, adj)
     }
 
@@ -171,7 +171,12 @@ impl CallGraph {
                 (edge_resolve::resolve_with_mir(&chunks, &index, mir), "mir-resolve")
             }
             _ => {
-                (edge_resolve::ResolvedEdges::empty(chunks.len()), "no-mir")
+                let has_calls = chunks.iter().any(|c| !c.calls.is_empty());
+                if has_calls {
+                    (edge_resolve::resolve_by_name(&chunks, &index), "name-resolve")
+                } else {
+                    (edge_resolve::ResolvedEdges::empty(chunks.len()), "no-mir")
+                }
             }
         };
         tracing::debug!("[graph] {label}: {:.1}ms ({} chunks)", t0.elapsed().as_secs_f64() * 1000.0, chunks.len());

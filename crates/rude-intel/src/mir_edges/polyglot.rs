@@ -69,10 +69,9 @@ pub fn run_go_callgraph(project_dir: &Path) -> Result<(Vec<ExtCallEdge>, Vec<Ext
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!("go-callgraph failed: {stderr}");
     }
-    let edges: Vec<ExtCallEdge> = serde_json::from_slice(&output.stdout)
+    let go_out: TsOutput = serde_json::from_slice(&output.stdout)
         .context("failed to parse go-callgraph JSON")?;
-    let chunks = chunks_from_edges(&edges);
-    Ok((edges, chunks))
+    Ok((go_out.edges, go_out.chunks))
 }
 
 pub fn run_ts_callgraph(project_dir: &Path) -> Result<(Vec<ExtCallEdge>, Vec<ExtChunk>)> {

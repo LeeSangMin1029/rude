@@ -28,6 +28,9 @@ impl ChunkIndex {
             if let Some(s) = c.name.rsplit("::").next() {
                 short.entry(s.to_lowercase()).or_insert(idx);
             }
+            if let Some(s) = lower.rsplit_once('.').map(|(_, s)| s) {
+                short.entry(s.to_string()).or_insert(idx);
+            }
 
             if let Some((prefix, method_name)) = lower.rsplit_once("::") {
                 if let Some(owner_leaf) = prefix.rsplit_once("::").map(|p| p.1) {
@@ -332,12 +335,16 @@ pub(crate) fn resolve_incremental(
     adj
 }
 
-/// Name-based resolution used only in tests (no MIR available).
-pub(crate) fn resolve_by_name_test(chunks: &[ParsedChunk], index: &ChunkIndex) -> ResolvedEdges {
+pub(crate) fn resolve_by_name(chunks: &[ParsedChunk], index: &ChunkIndex) -> ResolvedEdges {
     fn resolve_name(index: &ChunkIndex, call: &str) -> Option<u32> {
         let lower = call.to_lowercase();
         let short = lower.rsplit("::").next().unwrap_or(&lower);
-        index.exact.get(&lower).copied().or_else(|| index.short.get(short).copied())
+        index.exact.get(&lower).copied()
+            .or_else(|| index.short.get(short).copied())
+            .or_else(|| {
+                let dot_short = lower.rsplit('.').next().unwrap_or(&lower);
+                if dot_short != short { index.short.get(dot_short).copied() } else { None }
+            })
     }
     let mut adj = ResolvedEdges::new(chunks.len());
     for (src, chunk) in chunks.iter().enumerate() {

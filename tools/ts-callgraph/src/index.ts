@@ -71,10 +71,30 @@ function getSymbolQualifiedName(checker: ts.TypeChecker, symbol: ts.Symbol): str
     if (!decls || decls.length === 0) break;
     const parent: ts.Node = decls[0].parent;
     if (!parent) break;
-    s = ts.isSourceFile(parent) ? undefined : checker.getSymbolAtLocation(parent);
-    if (s && (s.flags & ts.SymbolFlags.Module) && s.getName().startsWith('"')) break;
+    if (ts.isSourceFile(parent)) break;
+    s = checker.getSymbolAtLocation(parent);
+    if (!s) {
+      const className = findEnclosingClassName(parent);
+      if (className) parts.unshift(className);
+      break;
+    }
+    if (s.flags & ts.SymbolFlags.Module && s.getName().startsWith('"')) break;
   }
   return parts.join(".");
+}
+
+function findEnclosingClassName(node: ts.Node): string | null {
+  let cur: ts.Node | undefined = node;
+  while (cur) {
+    if (ts.isClassDeclaration(cur) && cur.name) return cur.name.text;
+    if (ts.isClassExpression(cur) && cur.name) return cur.name.text;
+    if (ts.isClassExpression(cur) && !cur.name) {
+      const p = cur.parent;
+      if (ts.isVariableDeclaration(p) && ts.isIdentifier(p.name)) return p.name.text;
+    }
+    cur = cur.parent;
+  }
+  return null;
 }
 
 function resolveSymbol(checker: ts.TypeChecker, symbol: ts.Symbol): ts.Symbol {
