@@ -16,7 +16,7 @@ pub(super) fn run_blast(symbol: &str, depth: u32, include_tests: bool, scope: &O
         if field_chunks.is_empty() { println!("No field accesses found for {symbol}"); return Ok(()); }
         let all = impact::bfs_reverse(&graph, &field_chunks, effective_depth);
         let (prod, test) = count_prod_test(&all);
-        print!("=== context: {symbol}{} ({} field accessors, {} affected, {} prod, {} test) ===\n",
+        println!("=== context: {symbol}{} ({} field accessors, {} affected, {} prod, {} test) ===",
             fmt_scope(scope), field_chunks.len(), prod + test, prod, test);
         let entries = tag_blast(all, &graph, scope, include_tests, Some(&field_chunks));
         print_tagged(&graph, &entries, false, &alias_map);
@@ -33,7 +33,7 @@ pub(super) fn run_blast(symbol: &str, depth: u32, include_tests: bool, scope: &O
     let seeds = impact::expand_seeds_with_traits(&graph, &s);
     let all = impact::bfs_reverse(&graph, &seeds, effective_depth);
     let (prod, test) = count_prod_test(&all);
-    print!("=== context: {symbol}{} ({} affected, {} prod, {} test) ===\n",
+    println!("=== context: {symbol}{} ({} affected, {} prod, {} test) ===",
         fmt_scope(scope), prod + test, prod, test);
     let entries = tag_blast(all, &graph, scope, include_tests, None);
     print_tagged(&graph, &entries, false, &alias_map);
@@ -92,7 +92,7 @@ fn run_type_blast(
     let all = impact::bfs_reverse(graph, &accessors, depth);
     let (prod, test) = count_prod_test(&all);
     let total = prod + test;
-    print!("=== context: {symbol}{} ({} field accessors, {} affected, {} prod, {} test) ===\n",
+    println!("=== context: {symbol}{} ({} field accessors, {} affected, {} prod, {} test) ===",
         fmt_scope(scope), accessors.len(), total, prod, test);
     let mut entries: Vec<TaggedEntry> = Vec::new();
     for &i in seeds {

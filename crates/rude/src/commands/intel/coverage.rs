@@ -36,7 +36,7 @@ pub fn run_coverage(
         "{:<28} {:>8} {:>8} {:>10} {:>8} {:>8} {:>10}",
         "crate", "prod_fn", "covered", "fn_cov", "lines", "ln_cov", "ln_%"
     );
-    println!("{}", "-".repeat(84));
+    println!("{}", "-".repeat(72));
 
     for (name, (fn_t, fn_c, ln_t, ln_c)) in &crate_cov {
         let fn_pct = if *fn_t > 0 {
@@ -55,7 +55,7 @@ pub fn run_coverage(
         );
     }
 
-    println!("{}", "-".repeat(84));
+    println!("{}", "-".repeat(72));
     println!(
         "{:<28} {:>8} {:>8} {:>10} {:>8} {:>8} {:>10}",
         "total",

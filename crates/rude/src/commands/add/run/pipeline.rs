@@ -21,8 +21,8 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
 
     rude_intel::parse::set_project_root(&input_path);
 
-    println!("Indexing code: {}", input_path.display());
-    println!("Database:      {}", db_path.display());
+    eprintln!("Indexing code: {}", input_path.display());
+    eprintln!("Database:      {}", db_path.display());
 
     let all_files = prof!("scan_files", scan_files_fast(&input_path, exclude));
     if !is_profiling() { tracing::debug!("scan: {} files", all_files.len()); }
@@ -61,17 +61,17 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
 
     let missing_crates = detect_missing_from_cache(&input_path);
     if code_files.is_empty() && missing_crates.is_empty() {
-        println!("No files changed. Nothing to update.");
+        eprintln!("No files changed. Nothing to update.");
         return Ok(());
     }
 
-    println!("Files: {} ({})", code_files.len(), lang_summary(&code_files));
+    eprintln!("Files: {} ({})", code_files.len(), lang_summary(&code_files));
 
     let engine = if db_path.exists() {
         StorageEngine::open_exclusive(&db_path)
             .with_context(|| format!("Failed to open database at {}", db_path.display()))?
     } else {
-        println!("New database: {} (dim={TEXT_ONLY_DIM})", db_path.display());
+        eprintln!("New database: {} (dim={TEXT_ONLY_DIM})", db_path.display());
         for rel in &["target/mir-edges", "target/mir-check/debug/.fingerprint"] {
             let p = input_path.join(rel);
             if p.exists() { let _ = std::fs::remove_dir_all(&p); }
@@ -117,9 +117,9 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     prof!("ingest_mir", ingest_mir(&mir_chunks, &db_path, &mut entries, &mut file_metadata_map, None)?);
     tracing::debug!("chunk: {:.1}s ({} chunks)", t0.elapsed().as_secs_f64(), entries.len());
 
-    println!("Symbols: {} (functions, structs, enums, ...)", entries.len());
+    eprintln!("Symbols: {} (functions, structs, enums, ...)", entries.len());
     let inserted = prof!("write_chunks", write_chunks(&entries, &file_metadata_map, &mut file_idx, true)?);
-    if !is_profiling() { println!("\nInserted {inserted} chunks in 0.00s"); }
+    if !is_profiling() { eprintln!("\nInserted {inserted} chunks in 0.00s"); }
 
     for f in &code_files {
         let source = source_cache.get(*f).cloned().unwrap_or_default();
@@ -148,14 +148,14 @@ pub fn run(input_path: PathBuf, exclude: &[String]) -> Result<()> {
     }
 
     if is_interrupted() {
-        println!("\nOperation interrupted. Partial data may have been inserted.");
+        eprintln!("\nOperation interrupted. Partial data may have been inserted.");
         return Ok(());
     }
 
     if inserted == 0 && deleted.is_empty() {
-        println!("No changes. Database is up to date.");
+        eprintln!("No changes. Database is up to date.");
     } else {
-        println!("\nDone! Code DB ready: {}", db_path.display());
+        eprintln!("\nDone! Code DB ready: {}", db_path.display());
         tracing::debug!("Use: rude context/blast/symbols/dupes {}", db_path.display());
         prof!("checkpoint", engine.checkpoint().ok());
         drop(engine);
