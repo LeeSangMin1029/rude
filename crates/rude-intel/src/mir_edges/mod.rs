@@ -2,6 +2,7 @@ pub mod types;
 pub mod sqlite;
 pub mod runner;
 pub mod workspace;
+pub mod polyglot;
 
 pub use types::{CalleeInfo, MirChunk, MirEdgeMap, parse_calls_field};
 pub use sqlite::{clear_mir_db, merge_mir_db, mir_crate_names, mir_db_path};

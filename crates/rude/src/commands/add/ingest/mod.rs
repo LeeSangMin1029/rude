@@ -1,5 +1,6 @@
 mod mir;
 mod writer;
+pub(crate) mod polyglot;
 
 pub(crate) use mir::ingest_mir;
 pub(crate) use writer::write_chunks;
