@@ -38,6 +38,24 @@ rude insert-after fn_name --body-file code.rs
 rude split-module --file foo.rs --auto  # call graph 기반 자동 모듈 분리
 ```
 
+## trait impl 그룹핑
+
+같은 이름의 함수가 여러 trait impl에 존재하면 자동으로 그룹핑:
+
+```
+=== context: serialize_str (4 impls) ===
+
+  callers:
+    .serialize (Content, str, String, Ipv4Addr, ...)
+
+  impls: TaggedSerializer<S>, ContentSerializer<E>, FlatMapSerializer<'a, M>, Formatter<'a>
+  callees:
+    bad_type (FlatMapSerializer, TaggedSerializer)
+    .fmt (CannotSerializeVariant, Error, ...) (Formatter)
+```
+
+최근 검색 기록에 따라 관련 impl이 우선 표시됩니다.
+
 ## 다국어 지원
 
 | 언어 | 감지 | 분석 방식 |
@@ -45,6 +63,11 @@ rude split-module --file foo.rs --auto  # call graph 기반 자동 모듈 분리
 | Rust | `Cargo.toml` | MIR call graph (100% 정확) |
 | Go | `go.mod` | go/ast + go/parser |
 | TypeScript | `tsconfig.json` / `package.json` | TSC Compiler API |
+
+## 자동 복구
+
+nightly 미설치 → 자동 설치. mir-callgraph 없음 → 자동 빌드.
+nightly 버전 변경 → 자동 재빌드. 모든 실패 → clean + 재시도.
 
 ## 설정
 

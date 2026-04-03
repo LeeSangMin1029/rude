@@ -61,10 +61,18 @@ cd tools/ts-callgraph && npm install && npx tsc
 - Pos()==0 또는 line==0 심볼 제외
 - 심볼 이름: leaf name (패키지 경로 없이). 메서드: `Type.Method`
 
+## 출력 구조
+
+- 단일 함수: 기존 context (caller/callee/type/test)
+- trait impl 여러 개: 자동 그룹핑 (shared callers + 메서드명 중복 제거)
+- 최근 검색 기록 기반 우선순위 (kv_cache `recent_query_names`)
+- `display_name`: 짧은 이름 표시 (`<Type as Trait>::method` → `Type::method`)
+- struct: caller/callee 0이 정상. `--blast`로 영향 범위 확인
+
 ## DB 구조
 
 단일 테이블 `kv_cache (key TEXT, value BLOB)` — chunks/graph/edges는 bincode blob.
-FileIndex만 JSON. 전체 그래프를 메모리에 로드하는 구조 (부분 로드 미지원).
+FileIndex만 JSON. 전체 그래프를 메모리에 로드하는 구조.
 
 ## 편집 기능 주의
 
