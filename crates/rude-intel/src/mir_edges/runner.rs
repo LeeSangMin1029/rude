@@ -154,7 +154,7 @@ pub fn run_mir_callgraph_for(
         cmd.arg("-p").arg(krate.replace('_', "-"));
     }
     cmd.stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stderr(std::process::Stdio::inherit());
 
     let status = cmd.status()
         .with_context(|| format!("failed to run mir-callgraph: {}", bin.display()))?;
@@ -324,7 +324,7 @@ pub fn run_mir_direct(
                 .env("MIR_CALLGRAPH_DB", &mir_db)
                 .env("MIR_CALLGRAPH_JSON", "1")
                 .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null());
+                .stderr(std::process::Stdio::inherit());
             match cmd.spawn() {
                 Ok(child) => children.push((args_file.clone(), child)),
                 Err(e) => { eprintln!("  [mir] failed to spawn direct: {e}"); had_error = true; }
@@ -501,7 +501,7 @@ pub fn start_daemon(project_root: &Path, mir_callgraph_bin: Option<&Path>) -> Re
         .env("MIR_CALLGRAPH_DB", super::sqlite::mir_db_path(project_root))
         .env("MIR_CALLGRAPH_JSON", "1")
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stderr(std::process::Stdio::inherit());
     wait_for_event(&event_name, 6000);
     Ok(())
 }

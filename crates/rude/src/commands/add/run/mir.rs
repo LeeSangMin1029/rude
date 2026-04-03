@@ -103,20 +103,21 @@ fn run_mir_cargo_wrapper(ws: &std::path::Path) -> Result<()> {
     let bin = rude_intel::mir_edges::find_mir_callgraph_bin(None)?;
     let out_dir = ws.join("target").join("mir-edges");
     std::fs::create_dir_all(&out_dir).ok();
-    let abs_out = rude_util::safe_canonicalize(&out_dir);
+    let abs_out = std::fs::canonicalize(&out_dir).unwrap_or_else(|_| out_dir.clone());
+    let abs_out = rude_util::strip_unc_prefix_path(&abs_out);
     let abs_db = abs_out.join("mir.db");
-    let abs_bin = rude_util::safe_canonicalize(&bin);
+    let abs_bin = std::fs::canonicalize(&bin).unwrap_or_else(|_| bin.clone());
+    let abs_bin = rude_util::strip_unc_prefix_path(&abs_bin);
     let mut cmd = std::process::Command::new("cargo");
     cmd.arg("check").arg("--tests")
         .env("RUSTUP_TOOLCHAIN", "nightly")
-        .arg("--target-dir").arg(ws.join("target").join(rude_intel::mir_edges::mir_check_dir_name()))
         .current_dir(ws)
         .env("RUSTC_WRAPPER", &abs_bin)
         .env("MIR_CALLGRAPH_OUT", &abs_out)
         .env("MIR_CALLGRAPH_DB", &abs_db)
         .env("MIR_CALLGRAPH_JSON", "1")
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stderr(std::process::Stdio::inherit());
     rude_intel::mir_edges::runner::add_nightly_path(&mut cmd);
     let status = cmd.status()
         .context("failed to run cargo check for sub-workspace")?;
