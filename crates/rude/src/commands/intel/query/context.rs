@@ -91,25 +91,51 @@ pub fn run_context(
         if !shared_names.is_empty() {
             let mut names: Vec<&str> = shared_names.iter().map(|s| s.as_str()).collect();
             names.sort();
-            println!("\n  shared callers: {}", names.join(", "));
+            println!("\n  ← {}", names.join(", "));
         }
-        println!();
-        for g in groups {
-            let i = g.seed_idx as usize;
-            let file = rude_util::relative_path(&graph.chunks[i].file);
-            let loc = rude_util::format_lines_opt(graph.chunks[i].lines);
+        let impl_labels: Vec<String> = groups.iter()
+            .map(|g| {
+                let i = g.seed_idx as usize;
+                let dn = &g.impl_name;
+                if dn.contains("::") {
+                    dn.rsplit("::").nth(1).unwrap_or(dn).to_string()
+                } else {
+                    disambiguate(&graph, i)
+                        .rsplit("::").nth(1)
+                        .unwrap_or_else(|| {
+                            let file = rude_util::relative_path(&graph.chunks[i].file);
+                            rude_util::apply_alias(file, &alias_map).leak()
+                        })
+                        .to_string()
+                }
+            })
+            .collect();
+        println!("\n  impls: {}", impl_labels.join(", "));
+        let mut callee_to_impls: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+        for (gi, g) in groups.iter().enumerate() {
+            let impl_short = &impl_labels[gi];
+            for c in &g.callees {
+                callee_to_impls.entry(caller_name(c.idx)).or_default().push(impl_short.clone());
+            }
             let unique_callers: Vec<String> = g.callers.iter()
                 .map(|c| caller_name(c.idx))
                 .filter(|n| !shared_names.contains(n))
                 .collect();
-            let unique_callees: Vec<String> = g.callees.iter()
-                .map(|c| caller_name(c.idx))
-                .collect();
-            let mut parts = Vec::new();
-            for n in &unique_callers { parts.push(format!("← {n}")); }
-            for n in &unique_callees { parts.push(format!("→ {n}")); }
-            let extra = if parts.is_empty() { String::new() } else { format!("  {}", parts.join(", ")) };
-            println!("  {}{loc}  {}{extra}", rude_util::apply_alias(file, &alias_map), g.impl_name);
+            if !unique_callers.is_empty() {
+                println!("  ← {} ({impl_short})", unique_callers.join(", "));
+            }
+        }
+        if !callee_to_impls.is_empty() {
+            for (callee, impls) in &callee_to_impls {
+                if impls.len() == impl_labels.len() {
+                    println!("  → {callee}");
+                } else {
+                    let mut deduped = impls.clone();
+                    deduped.sort();
+                    deduped.dedup();
+                    println!("  → {callee} ({})", deduped.join(", "));
+                }
+            }
         }
         println!();
     } else {
