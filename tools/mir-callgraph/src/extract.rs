@@ -249,9 +249,21 @@ pub fn extract_all(is_test_target: bool, json: bool, db_path: &Option<String>) -
         if let Some(cfa) = all_field_accesses.remove(&name) { fa_buf.extend(cfa); }
         let field_accesses = format_field_accesses(&fa_buf);
         let is_test = is_test_fn(&filename, &name, is_test_target);
+        let signature = if let TyKind::RigidTy(RigidTy::FnDef(def, _)) = item.ty().kind() {
+            let sig = def.fn_sig().value;
+            let params: Vec<String> = sig.inputs().iter().map(|t| clean_ty_name(t)).collect();
+            let ret = clean_ty_name(&sig.output());
+            if ret == "()" {
+                Some(format!("fn {name}({})", params.join(", ")))
+            } else {
+                Some(format!("fn {name}({}) -> {ret}", params.join(", ")))
+            }
+        } else {
+            None
+        };
         chunks.push(MirChunk {
             name, file: filename.clone(), kind: "fn".to_string(),
-            start_line, end_line, signature: None, visibility: String::new(),
+            start_line, end_line, signature, visibility: String::new(),
             is_test, body: String::new(), calls: String::new(), type_refs: String::new(),
             field_accesses,
         });
