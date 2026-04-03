@@ -97,17 +97,16 @@ pub fn run_context(
                     by_method.entry(name.as_str()).or_default();
                 }
             }
-            print!("\n ");
+            println!("\n  callers:");
             for (method, owners) in &by_method {
                 if owners.is_empty() {
-                    print!(" ← {method}");
+                    println!("    {method}");
                 } else {
                     let mut sorted = owners.clone();
                     sorted.sort();
-                    print!(" ← .{method} ({})", sorted.join(", "));
+                    println!("    .{method} ({})", sorted.join(", "));
                 }
             }
-            println!();
         }
         let impl_labels: Vec<String> = groups.iter()
             .map(|g| {
@@ -138,10 +137,11 @@ pub fn run_context(
                 .filter(|n| !shared_names.contains(n))
                 .collect();
             if !unique_callers.is_empty() {
-                println!("  ← {} ({impl_short})", unique_callers.join(", "));
+                println!("    {} ({impl_short} only)", unique_callers.join(", "));
             }
         }
         if !callee_to_impls.is_empty() {
+            println!("  callees:");
             let mut by_method: std::collections::BTreeMap<String, Vec<(String, Vec<String>)>> = std::collections::BTreeMap::new();
             for (callee, impls) in &callee_to_impls {
                 let method = callee.rsplit("::").next().unwrap_or(callee);
@@ -166,11 +166,11 @@ pub fn run_context(
                 if owners.len() > 1 {
                     let mut sorted = owners;
                     sorted.sort();
-                    println!("  → .{method} ({}){impl_note}", sorted.join(", "));
+                    println!("    .{method} ({}){impl_note}", sorted.join(", "));
                 } else if owners.len() == 1 {
-                    println!("  → {}::{method}{impl_note}", owners[0]);
+                    println!("    {}::{method}{impl_note}", owners[0]);
                 } else {
-                    println!("  → {method}{impl_note}");
+                    println!("    {method}{impl_note}");
                 }
             }
         }
