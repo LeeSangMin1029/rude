@@ -70,31 +70,48 @@ pub fn run_context(
     let (alias_map, _) = graph.global_aliases();
 
     if !result.impl_groups.is_empty() {
-        let trait_label = result.impl_groups.first()
+        let groups = &result.impl_groups;
+        let trait_label = groups.first()
             .filter(|g| !g.trait_name.is_empty())
             .map(|g| format!("{}::", g.trait_name))
             .unwrap_or_default();
-        println!("=== context: {trait_label}{symbol} ({} impls) ===\n", result.impl_groups.len());
-        for g in &result.impl_groups {
+        println!("=== context: {trait_label}{symbol} ({} impls) ===", groups.len());
+        let caller_name = |idx: u32| disambiguate(&graph, idx as usize);
+        let all_caller_names: Vec<std::collections::HashSet<String>> = groups.iter()
+            .map(|g| g.callers.iter().map(|c| caller_name(c.idx)).collect())
+            .collect();
+        let shared_names: std::collections::HashSet<String> = {
+            let threshold = (all_caller_names.len() + 1) / 2; // majority
+            let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+            for set in &all_caller_names {
+                for name in set { *counts.entry(name.clone()).or_default() += 1; }
+            }
+            counts.into_iter().filter(|(_, c)| *c >= threshold && *c > 1).map(|(n, _)| n).collect()
+        };
+        if !shared_names.is_empty() {
+            let mut names: Vec<&str> = shared_names.iter().map(|s| s.as_str()).collect();
+            names.sort();
+            println!("\n  shared callers: {}", names.join(", "));
+        }
+        println!();
+        for g in groups {
             let i = g.seed_idx as usize;
             let file = rude_util::relative_path(&graph.chunks[i].file);
             let loc = rude_util::format_lines_opt(graph.chunks[i].lines);
-            println!("  @ {}{loc}  {}", rude_util::apply_alias(file, &alias_map), g.impl_name);
-            if let Some(s) = &graph.chunks[i].signature {
-                if !s.is_empty() { println!("    {}", rude_util::shorten_signature(s, 100)); }
-            }
-            for c in &g.callers {
-                let ci = c.idx as usize;
-                let file = rude_util::apply_alias(rude_util::relative_path(&graph.chunks[ci].file), &alias_map);
-                println!("    [caller] {file}{} {}", rude_util::format_lines_opt(graph.chunks[ci].lines), disambiguate(&graph, ci));
-            }
-            for c in &g.callees {
-                let ci = c.idx as usize;
-                let file = rude_util::apply_alias(rude_util::relative_path(&graph.chunks[ci].file), &alias_map);
-                println!("    [callee] {file}{} {}", rude_util::format_lines_opt(graph.chunks[ci].lines), disambiguate(&graph, ci));
-            }
-            println!();
+            let unique_callers: Vec<String> = g.callers.iter()
+                .map(|c| caller_name(c.idx))
+                .filter(|n| !shared_names.contains(n))
+                .collect();
+            let unique_callees: Vec<String> = g.callees.iter()
+                .map(|c| caller_name(c.idx))
+                .collect();
+            let mut parts = Vec::new();
+            for n in &unique_callers { parts.push(format!("← {n}")); }
+            for n in &unique_callees { parts.push(format!("→ {n}")); }
+            let extra = if parts.is_empty() { String::new() } else { format!("  {}", parts.join(", ")) };
+            println!("  {}{loc}  {}{extra}", rude_util::apply_alias(file, &alias_map), g.impl_name);
         }
+        println!();
     } else {
         println!("=== context: {symbol}{} ({} caller, {} callee, {} type, {} test) ===\n",
             fmt_scope(&scope), result.callers.len(), result.callees.len(),
