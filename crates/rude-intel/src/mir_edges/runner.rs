@@ -56,13 +56,22 @@ pub fn add_nightly_path(cmd: &mut Command) {
     }
 }
 
+fn ensure_nightly() -> Result<String> {
+    if let Some(ver) = nightly_rustc_version() { return Ok(ver); }
+    eprintln!("  [mir] nightly not found, installing...");
+    let status = Command::new("rustup")
+        .args(["toolchain", "install", "nightly",
+               "--component", "rust-src", "rustc-dev", "llvm-tools-preview"])
+        .status();
+    match status {
+        Ok(s) if s.success() => {}
+        _ => bail!("failed to install nightly toolchain. Install manually:\n  rustup toolchain install nightly --component rust-src rustc-dev llvm-tools-preview"),
+    }
+    nightly_rustc_version().ok_or_else(|| anyhow::anyhow!("nightly installed but rustc not found"))
+}
+
 fn install_mir_callgraph() -> Result<PathBuf> {
-    let nightly_ver = nightly_rustc_version().ok_or_else(|| {
-        anyhow::anyhow!(
-            "nightly Rust toolchain required for rude add.\n\
-             Run: rustup toolchain install nightly --component rust-src rustc-dev llvm-tools-preview"
-        )
-    })?;
+    let nightly_ver = ensure_nightly()?;
 
     let base = rude_home()?;
     let bin_dir = base.join("bin");
@@ -74,7 +83,9 @@ fn install_mir_callgraph() -> Result<PathBuf> {
             if saved_ver.trim() == nightly_ver {
                 return Ok(cached_bin);
             }
-            eprintln!("  [mir] nightly version changed, reinstalling mir-callgraph...");
+            eprintln!("  [mir] nightly changed ({} → {}), rebuilding mir-callgraph...",
+                saved_ver.trim().split(' ').last().unwrap_or("?"),
+                nightly_ver.split(' ').last().unwrap_or("?"));
         }
     } else {
         eprintln!("  [mir] installing mir-callgraph (first run)...");

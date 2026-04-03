@@ -21,13 +21,8 @@ if ! command -v cargo &>/dev/null; then
     fi
 fi
 
-echo "Installing nightly toolchain..."
-rustup toolchain install nightly 2>&1 | tail -1
-# rustc-dev is only needed if analyzing rustc_private projects (like mir-callgraph itself)
-# Install it if we're in the rude repo (has tools/mir-callgraph)
-if [ -f "tools/mir-callgraph/Cargo.toml" ]; then
-    rustup component add rust-src rustc-dev llvm-tools-preview --toolchain nightly 2>&1 | tail -1
-fi
+echo "Installing nightly toolchain + components..."
+rustup toolchain install nightly --component rust-src rustc-dev llvm-tools-preview 2>&1 | tail -1
 
 # --- Download helper ---
 download() {
