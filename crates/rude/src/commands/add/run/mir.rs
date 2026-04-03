@@ -66,7 +66,7 @@ pub fn run_mir_analysis(
     Ok(changed_crates)
 }
 
-fn clean_all_mir_state(root: &std::path::Path) {
+pub(crate) fn clean_all_mir_state(root: &std::path::Path) {
     let mir_edges = root.join("target").join("mir-edges");
     let _ = std::fs::remove_dir_all(&mir_edges);
     let _ = std::fs::create_dir_all(&mir_edges);
@@ -243,6 +243,10 @@ fn detect_sub_workspaces(root: &std::path::Path) -> Vec<PathBuf> {
         })
         .collect()
 }
+
+#[cfg(test)]
+#[path = "mir_tests.rs"]
+mod mir_tests;
 
 pub fn to_crate_filter(crates: &[String]) -> Option<Vec<&str>> {
     if crates.is_empty() { None } else { Some(crates.iter().map(String::as_str).collect()) }
