@@ -12,12 +12,11 @@ pub fn run_mir_analysis(
 ) -> Result<Vec<String>> {
     let out_dir = input_path.join("target").join("mir-edges");
     rude_intel::mir_edges::check_bin_version_match(&out_dir, None);
-    let has_cached_edges = mir_db.exists();
+    let has_cached_edges = mir_db.exists() && std::fs::metadata(mir_db).map_or(false, |m| m.len() > 0);
 
     if !has_cached_edges {
         rude_intel::mir_edges::clear_mir_db(input_path, &[]).ok();
-        rude_intel::mir_edges::run_mir_callgraph(input_path, None)
-            .context("mir-callgraph failed — ensure nightly rustc and mir-callgraph are installed")?;
+        run_mir_cargo_wrapper(input_path)?;
         return Ok(Vec::new());
     }
 
@@ -107,8 +106,8 @@ fn run_mir_cargo_wrapper(ws: &std::path::Path) -> Result<()> {
     let abs_out = rude_util::safe_canonicalize(&out_dir);
     let abs_db = abs_out.join("mir.db");
     let abs_bin = rude_util::safe_canonicalize(&bin);
-    let status = std::process::Command::new("cargo")
-        .arg("check").arg("--tests")
+    let mut cmd = std::process::Command::new("cargo");
+    cmd.arg("check").arg("--tests")
         .env("RUSTUP_TOOLCHAIN", "nightly")
         .arg("--target-dir").arg(ws.join("target").join(rude_intel::mir_edges::mir_check_dir_name()))
         .current_dir(ws)
@@ -117,8 +116,9 @@ fn run_mir_cargo_wrapper(ws: &std::path::Path) -> Result<()> {
         .env("MIR_CALLGRAPH_DB", &abs_db)
         .env("MIR_CALLGRAPH_JSON", "1")
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
+        .stderr(std::process::Stdio::null());
+    rude_intel::mir_edges::runner::add_nightly_path(&mut cmd);
+    let status = cmd.status()
         .context("failed to run cargo check for sub-workspace")?;
     if !status.success() {
         eprintln!("  [mir] sub-workspace cargo check failed: {status}");

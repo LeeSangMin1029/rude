@@ -48,7 +48,7 @@ fn nightly_sysroot_bin() -> Option<String> {
     CACHE.get_or_init(|| run_nightly_rustc(&["--print", "sysroot"]).map(|s| format!("{s}/bin"))).clone()
 }
 
-pub(super) fn add_nightly_path(cmd: &mut Command) {
+pub fn add_nightly_path(cmd: &mut Command) {
     if let Some(nightly_bin) = nightly_sysroot_bin() {
         let current = std::env::var("PATH").unwrap_or_default();
         let sep = if cfg!(windows) { ";" } else { ":" };
