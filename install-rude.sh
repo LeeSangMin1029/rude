@@ -71,8 +71,15 @@ rustup run nightly rustc --version 2>/dev/null | tr -d '\n' > "$RUDE_HOME/bin/.n
 
 # --- go-callgraph (optional) ---
 GO_DEST="$RUDE_HOME/bin/go-callgraph${EXT}"
-if [ -f "tools/go-callgraph/main.go" ] && command -v go &>/dev/null; then
-    echo "go-callgraph: building from source..."
+find_go() {
+    command -v go &>/dev/null && return 0
+    for d in "/c/go/bin" "/c/Program Files/Go/bin" "/usr/local/go/bin" "$HOME/go/bin" "$HOME/.local/go/bin"; do
+        [ -x "$d/go${EXT}" ] && export PATH="$d:$PATH" && return 0
+    done
+    return 1
+}
+if [ -f "tools/go-callgraph/main.go" ] && find_go; then
+    echo "go-callgraph: building from source... ($(go version | head -c 20))"
     (cd tools/go-callgraph && go build -o "go-callgraph${EXT}" . 2>&1 | tail -1)
     cp "tools/go-callgraph/go-callgraph${EXT}" "$GO_DEST"
     echo "go-callgraph: installed"

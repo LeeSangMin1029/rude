@@ -43,8 +43,64 @@ impl std::ops::Deref for CallGraph {
 
 impl CallGraph {
 
+    fn dedup_structs(mut chunks: Vec<ParsedChunk>, adj: ResolvedEdges) -> (Vec<ParsedChunk>, ResolvedEdges) {
+        use std::collections::HashMap;
+        let n = chunks.len();
+        let mut best: HashMap<(String, String, String), usize> = HashMap::new();
+        let mut remove = vec![false; n];
+        for i in 0..n {
+            let k = &chunks[i].kind;
+            if k != "struct" && k != "enum" && k != "trait" && k != "type_alias" {
+                continue;
+            }
+            let key = (chunks[i].file.clone(), chunks[i].display_name.clone(), chunks[i].kind.clone());
+            if let Some(&prev) = best.get(&key) {
+                let span = |idx: usize| {
+                    chunks[idx].lines.map(|(s, e)| e.saturating_sub(s)).unwrap_or(0)
+                };
+                if span(i) >= span(prev) {
+                    remove[prev] = true;
+                    best.insert(key, i);
+                } else {
+                    remove[i] = true;
+                }
+            } else {
+                best.insert(key, i);
+            }
+        }
+        let removed_count: usize = remove.iter().filter(|&&r| r).count();
+        if removed_count == 0 {
+            return (chunks, adj);
+        }
+        let mut idx_map: Vec<Option<u32>> = Vec::with_capacity(n);
+        let mut new_idx: u32 = 0;
+        for r in &remove {
+            if *r {
+                idx_map.push(None);
+            } else {
+                idx_map.push(Some(new_idx));
+                new_idx += 1;
+            }
+        }
+        let remap = |old: u32| -> Option<u32> { idx_map[old as usize] };
+        let mut new_chunks = Vec::with_capacity(n - removed_count);
+        let mut new_callees = Vec::with_capacity(n - removed_count);
+        let mut new_callers = Vec::with_capacity(n - removed_count);
+        let mut new_call_sites = Vec::with_capacity(n - removed_count);
+        for i in 0..n {
+            if remove[i] { continue; }
+            new_chunks.push(std::mem::take(&mut chunks[i]));
+            new_callees.push(adj.callees[i].iter().filter_map(|&x| remap(x)).collect());
+            new_callers.push(adj.callers[i].iter().filter_map(|&x| remap(x)).collect());
+            new_call_sites.push(adj.call_sites[i].iter().filter_map(|&(tgt, line)| remap(tgt).map(|t| (t, line))).collect());
+        }
+        tracing::debug!("[graph] dedup_structs: removed {removed_count} duplicates");
+        (new_chunks, ResolvedEdges { callees: new_callees, callers: new_callers, call_sites: new_call_sites })
+    }
+
     fn assemble(chunks: Vec<ParsedChunk>, index: &ChunkIndex, adj: ResolvedEdges, ) -> Self {
         let t = std::time::Instant::now();
+        let (chunks, adj) = Self::dedup_structs(chunks, adj);
         let owner_field_types = index_tables::collect_owner_field_types(&chunks);
 
         let len = chunks.len();

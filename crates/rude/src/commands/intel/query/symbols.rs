@@ -4,7 +4,7 @@ use anyhow::Result;
 
 use rude_intel::graph;
 use rude_intel::parse::ParsedChunk;
-use rude_util::{apply_alias, build_path_aliases, format_lines_opt, relative_path};
+use rude_util::{apply_alias, build_path_aliases, format_lines_opt, relative_path, shorten_signature};
 
 use super::common::load_or_build_graph;
 
@@ -51,7 +51,7 @@ pub fn run_symbols(
             let kind_tag = if c.kind == "function" { String::new() } else { format!("[{}] ", c.kind) };
             let test_marker = if graph::is_test_chunk(c) { " [test]" } else { "" };
             println!("  {} {kind_tag}{}{test_marker}", format_lines_opt(c.lines), c.dn());
-            if !compact { if let Some(sig) = c.signature.as_deref().filter(|s| !s.is_empty()) { println!("    {sig}"); } }
+            if !compact { if let Some(sig) = c.signature.as_deref().filter(|s| !s.is_empty()) { println!("    {}", shorten_signature(sig, 120)); } }
         }
         if !compact { println!(); }
     }

@@ -13,5 +13,5 @@ pub use scan::{
     lang_for_ext, is_code_ext, is_supported_code_file, get_file_mtime, get_file_size,
     should_skip_dir, scan_files,
 };
-pub use format::{format_lines_opt, extract_crate_name, build_path_aliases, apply_alias, shorten_symbol_name, display_symbol_name};
+pub use format::{format_lines_opt, extract_crate_name, build_path_aliases, apply_alias, shorten_symbol_name, display_symbol_name, shorten_signature};
 pub use interrupt::is_interrupted;

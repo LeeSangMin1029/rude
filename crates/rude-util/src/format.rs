@@ -101,6 +101,47 @@ pub fn display_symbol_name(name: &str) -> String {
     short.to_string()
 }
 
+pub fn shorten_signature(sig: &str, max_len: usize) -> String {
+    let bytes = sig.as_bytes();
+    let len = bytes.len();
+    let mut out = String::with_capacity(len);
+    let mut i = 0;
+    while i < len {
+        let b = bytes[i];
+        if b.is_ascii_alphanumeric() || b == b'_' {
+            let start = i;
+            while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            if i + 1 < len && bytes[i] == b':' && bytes[i + 1] == b':' {
+                let mut last_seg_start = start;
+                let mut j = i;
+                while j + 1 < len && bytes[j] == b':' && bytes[j + 1] == b':' {
+                    j += 2;
+                    last_seg_start = j;
+                    while j < len && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+                        j += 1;
+                    }
+                }
+                out.push_str(&sig[last_seg_start..j]);
+                i = j;
+            } else {
+                out.push_str(&sig[start..i]);
+            }
+        } else {
+            out.push(b as char);
+            i += 1;
+        }
+    }
+    if out.len() > max_len {
+        let mut trunc = out[..max_len.saturating_sub(3)].to_string();
+        trunc.push_str("...");
+        trunc
+    } else {
+        out
+    }
+}
+
 pub fn apply_alias(path: &str, alias_map: &BTreeMap<String, String>) -> String {
     let dir = match path.rfind('/') {
         Some(i) => &path[..=i],

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 
 use rude_intel::graph;
-use rude_util::{apply_alias, format_lines_opt, relative_path};
+use rude_util::{apply_alias, format_lines_opt, relative_path, shorten_signature};
 
 pub(crate) struct TaggedEntry {
     pub idx: u32,
@@ -53,7 +53,12 @@ pub(super) fn print_tagged(
             let test_marker = if graph.is_test[i] { " [test]" } else { "" };
             let call_site = if e.call_line > 0 { format!(" → :{}", e.call_line) } else { String::new() };
             println!("  [{}] {} {kind_tag}{}{test_marker}{call_site}", e.tag, format_lines_opt(graph.chunks[i].lines), graph.chunks[i].dn());
-            if e.sig { if let Some(s) = &graph.chunks[i].signature { println!("    {s}"); } }
+            if let Some(s) = &graph.chunks[i].signature {
+                if !s.is_empty() {
+                    let display_sig = if e.sig { shorten_signature(s, 120) } else { shorten_signature(s, 80) };
+                    println!("    {display_sig}");
+                }
+            }
             if show_source && (e.tag == "def" || e.tag == "test" || e.sig) {
                 if let Some((start, end)) = graph.chunks[i].lines {
                     let file_path = &graph.chunks[i].file;
