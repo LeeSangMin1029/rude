@@ -6,6 +6,14 @@ pub struct ContextEntry {
     pub depth: u32,
 }
 
+pub struct ImplGroup {
+    pub trait_name: String,
+    pub impl_name: String,
+    pub seed_idx: u32,
+    pub callers: Vec<ContextEntry>,
+    pub callees: Vec<ContextEntry>,
+}
+
 pub struct ContextResult {
     pub seeds: Vec<u32>,
     pub callers: Vec<ContextEntry>,
@@ -13,6 +21,7 @@ pub struct ContextResult {
     pub types: Vec<u32>,
     pub tests: Vec<u32>,
     pub unresolved_calls: Vec<String>,
+    pub impl_groups: Vec<ImplGroup>,
 }
 
 pub fn build_context(
@@ -44,8 +53,13 @@ pub fn build_context(
     let types = collect_types(graph, &seeds);
     let tests = collect_tests(graph, &seeds, depth);
     let unresolved_calls = collect_unresolved(graph, &seeds);
+    let impl_groups = if seeds.len() > 1 {
+        build_impl_groups(graph, &seeds, depth)
+    } else {
+        Vec::new()
+    };
 
-    ContextResult { seeds, callers, callees, types, tests, unresolved_calls }
+    ContextResult { seeds, callers, callees, types, tests, unresolved_calls, impl_groups }
 }
 
 fn collect_types(graph: &CallGraph, seeds: &[u32]) -> Vec<u32> {
@@ -131,6 +145,33 @@ pub(crate) fn is_noise(call: &str) -> bool {
         | "as_ref" | "as_mut" | "borrow" | "deref"
         | "fmt" | "write" | "read" | "flush"
     ) || matches!(call, "Ok" | "Err" | "Some" | "None" | "format" | "println" | "eprintln" | "vec")
+}
+
+fn build_impl_groups(graph: &CallGraph, seeds: &[u32], depth: u32) -> Vec<ImplGroup> {
+    let mut groups = Vec::new();
+    for &seed in seeds {
+        let i = seed as usize;
+        if i >= graph.chunks.len() { continue; }
+        let chunk = &graph.chunks[i];
+        let trait_name = graph.impl_of_trait.get(i)
+            .and_then(|&t| t.map(|ti| graph.chunks[ti as usize].dn().to_string()))
+            .unwrap_or_default();
+        let impl_name = chunk.dn().to_string();
+        let callers: Vec<ContextEntry> = graph.callers.get(i)
+            .map(|cs| cs.iter()
+                .filter(|&&c| !graph.is_test[c as usize])
+                .map(|&c| ContextEntry { idx: c, depth: 1 })
+                .collect())
+            .unwrap_or_default();
+        let callees: Vec<ContextEntry> = graph.callees.get(i)
+            .map(|cs| cs.iter()
+                .filter(|&&c| !is_derived_noise(&graph.chunks[c as usize].name))
+                .map(|&c| ContextEntry { idx: c, depth: 1 })
+                .collect())
+            .unwrap_or_default();
+        groups.push(ImplGroup { trait_name, impl_name, seed_idx: seed, callers, callees });
+    }
+    groups
 }
 
 fn collect_tests(graph: &CallGraph, seeds: &[u32], depth: u32) -> Vec<u32> {

@@ -43,10 +43,37 @@ pub fn run_context(
     }
 
     let (alias_map, _) = graph.global_aliases();
-    println!("=== context: {symbol}{} ({} caller, {} callee, {} type, {} test) ===\n",
-        fmt_scope(&scope), result.callers.len(), result.callees.len(),
-        result.types.len(), result.tests.len());
-    print_tagged(&graph, &entries, source, &alias_map);
+
+    if !result.impl_groups.is_empty() {
+        let trait_label = result.impl_groups.first()
+            .filter(|g| !g.trait_name.is_empty())
+            .map(|g| format!("{}::", g.trait_name))
+            .unwrap_or_default();
+        println!("=== context: {trait_label}{symbol} ({} impls) ===\n", result.impl_groups.len());
+        for g in &result.impl_groups {
+            let i = g.seed_idx as usize;
+            let file = rude_util::relative_path(&graph.chunks[i].file);
+            let loc = rude_util::format_lines_opt(graph.chunks[i].lines);
+            println!("  @ {}{loc}  {}", rude_util::apply_alias(file, &alias_map), g.impl_name);
+            if let Some(s) = &graph.chunks[i].signature {
+                if !s.is_empty() { println!("    {}", rude_util::shorten_signature(s, 100)); }
+            }
+            for c in &g.callers {
+                let ci = c.idx as usize;
+                println!("    [caller] {} {}", rude_util::format_lines_opt(graph.chunks[ci].lines), graph.chunks[ci].dn());
+            }
+            for c in &g.callees {
+                let ci = c.idx as usize;
+                println!("    [callee] {} {}", rude_util::format_lines_opt(graph.chunks[ci].lines), graph.chunks[ci].dn());
+            }
+            println!();
+        }
+    } else {
+        println!("=== context: {symbol}{} ({} caller, {} callee, {} type, {} test) ===\n",
+            fmt_scope(&scope), result.callers.len(), result.callees.len(),
+            result.types.len(), result.tests.len());
+        print_tagged(&graph, &entries, source, &alias_map);
+    }
 
     if !include_tests && !result.tests.is_empty() {
         println!("  {} tests (use --include-tests to show)\n", result.tests.len());
@@ -57,7 +84,7 @@ pub fn run_context(
         if !field_entries.is_empty() {
             println!("@ [field accesses]");
             for (field, indices) in &field_entries {
-                let names: Vec<&str> = indices.iter().map(|&i| graph.chunks[i as usize].name.as_str()).collect();
+                let names: Vec<&str> = indices.iter().map(|&i| graph.chunks[i as usize].dn()).collect();
                 println!("  .{field} ← {}", names.join(", "));
             }
             println!();

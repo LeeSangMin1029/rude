@@ -161,9 +161,14 @@ impl CallGraph {
         let start = self.name_index.partition_point(|(n, _)| n.as_str() < lower.as_str());
         let mut results: Vec<u32> = self.name_index[start..].iter()
             .take_while(|(n, _)| n == &lower).map(|(_, idx)| *idx).collect();
-        if results.is_empty() {
-            let suffix = format!("::{lower}");
-            results = self.name_index.iter().filter(|(n, _)| n.ends_with(&suffix)).map(|(_, idx)| *idx).collect();
+        let suffix = format!("::{lower}");
+        let suffix_results: Vec<u32> = self.name_index.iter()
+            .filter(|(n, _)| n.ends_with(&suffix))
+            .map(|(_, idx)| *idx)
+            .filter(|idx| !results.contains(idx))
+            .collect();
+        if !suffix_results.is_empty() {
+            results.extend(suffix_results);
         }
         if results.is_empty() {
             if let Some((owner, method)) = lower.rsplit_once("::") {
@@ -174,6 +179,8 @@ impl CallGraph {
                     .map(|(_, idx)| *idx).collect();
             }
         }
+        results.sort_unstable();
+        results.dedup();
         results
     }
 
