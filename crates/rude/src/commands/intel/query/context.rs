@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 use rude_intel::graph::build::CallGraph;
-use super::common::{load_or_build_graph, resolve_symbol, fmt_scope, print_tagged, TaggedEntry};
+use super::common::{load_or_build_graph, resolve_symbol, fmt_scope, print_tagged, TaggedEntry, save_query_context, rank_by_recent};
 use super::blast::run_blast;
 
 fn disambiguate(graph: &CallGraph, idx: usize) -> String {
@@ -42,12 +42,19 @@ pub fn run_context(
 
     use rude_intel::context_cmd;
     let graph = load_or_build_graph()?;
-    let result = context_cmd::build_context(&graph, &symbol, depth);
+    let mut result = context_cmd::build_context(&graph, &symbol, depth);
 
     if result.seeds.is_empty() {
         println!("No symbol found matching \"{symbol}\".");
         return Ok(());
     }
+    rank_by_recent(&graph, &mut result.seeds);
+    if !result.impl_groups.is_empty() {
+        let seed_order: std::collections::HashMap<u32, usize> = result.seeds.iter()
+            .enumerate().map(|(i, &s)| (s, i)).collect();
+        result.impl_groups.sort_by_key(|g| seed_order.get(&g.seed_idx).copied().unwrap_or(usize::MAX));
+    }
+    save_query_context(&graph, &result.seeds);
 
     let seed0 = result.seeds.first().copied();
     let site = |a, b| seed0.map_or(0, |_| graph.call_site_line(a, b));

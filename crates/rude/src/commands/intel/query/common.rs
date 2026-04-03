@@ -15,6 +15,75 @@ pub(crate) fn load_or_build_graph() -> anyhow::Result<rude_intel::graph::CallGra
     rude_intel::loader::load_or_build_graph()
 }
 
+pub(crate) fn save_query_context(graph: &graph::CallGraph, seeds: &[u32]) {
+    let entries: Vec<String> = seeds.iter()
+        .filter_map(|&i| {
+            let c = graph.chunks.get(i as usize)?;
+            Some(c.dn().to_string())
+        })
+        .collect();
+    if entries.is_empty() { return; }
+    let db = crate::db();
+    let Ok(engine) = rude_db::StorageEngine::open(db) else { return };
+    let mut recent: Vec<String> = engine.get_cache("recent_query_names").ok()
+        .flatten()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    for f in &entries {
+        recent.retain(|r| r != f);
+        recent.insert(0, f.clone());
+    }
+    recent.truncate(30);
+    if let Ok(json) = serde_json::to_vec(&recent) {
+        let _ = engine.set_cache("recent_query_names", &json);
+    }
+}
+
+pub(crate) fn rank_by_recent(graph: &graph::CallGraph, seeds: &mut Vec<u32>) {
+    if seeds.len() <= 1 { return; }
+    let db = crate::db();
+    let Ok(engine) = rude_db::StorageEngine::open(db) else { return };
+    let recent: Vec<String> = engine.get_cache("recent_query_names").ok()
+        .flatten()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    if recent.is_empty() { return; }
+    seeds.sort_by(|&a, &b| {
+        let sa = score_chunk(&graph.chunks[a as usize], &recent);
+        let sb = score_chunk(&graph.chunks[b as usize], &recent);
+        sb.cmp(&sa)
+    });
+}
+
+fn score_chunk(chunk: &rude_intel::parse::ParsedChunk, recent: &[String]) -> u32 {
+    let dn = chunk.dn();
+    let name = &chunk.name;
+    let file = &chunk.file;
+    let mut best = 0u32;
+    for (i, r) in recent.iter().enumerate() {
+        let recency = (30 - i as u32).max(1);
+        if dn == r || name.ends_with(&format!("::{r}")) {
+            return 100 + recency;
+        }
+        if let Some(owner) = dn.rsplit_once("::").map(|(o, _)| o) {
+            if r.contains(owner) || owner.contains(r.as_str()) {
+                best = best.max(80 + recency);
+            }
+        }
+        if let Some(owner) = r.rsplit_once("::").map(|(o, _)| o) {
+            if dn.contains(owner) || name.contains(owner) {
+                best = best.max(80 + recency);
+            }
+        }
+        let r_dir = r.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+        let f_dir = file.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+        if !f_dir.is_empty() && !r_dir.is_empty() && f_dir == r_dir {
+            best = best.max(50 + recency);
+        }
+    }
+    best
+}
+
 pub(super) fn resolve_symbol(graph: &graph::CallGraph, symbol: &str) -> Option<Vec<u32>> {
     let seeds = graph.resolve(symbol);
     if seeds.is_empty() { println!("No symbol found matching \"{symbol}\"."); None } else { Some(seeds) }

@@ -3,13 +3,14 @@ use anyhow::Result;
 use rude_intel::trace;
 use rude_util::{apply_alias, format_lines_opt, relative_path};
 
-use super::common::{load_or_build_graph, resolve_symbol};
+use super::common::{load_or_build_graph, resolve_symbol, save_query_context};
 
 pub fn run_trace(from: String, to: String) -> Result<()> {
     let graph = load_or_build_graph()?;
     let (alias_map, _) = graph.global_aliases();
     let Some(sources) = resolve_symbol(&graph, &from) else { return Ok(()) };
     let Some(targets) = resolve_symbol(&graph, &to) else { return Ok(()) };
+    save_query_context(&graph, &sources);
     match trace::bfs_shortest_path(&graph, &sources, &targets) {
         Some(path) => {
             println!("=== trace: {from} \u{2192} {to} ({} hops) ===\n", path.len() - 1);
