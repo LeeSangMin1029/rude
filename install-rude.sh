@@ -69,11 +69,37 @@ fi
 
 rustup run nightly rustc --version 2>/dev/null | tr -d '\n' > "$RUDE_HOME/bin/.nightly-version"
 
+# --- go-callgraph (optional) ---
+GO_DEST="$RUDE_HOME/bin/go-callgraph${EXT}"
+if [ -f "tools/go-callgraph/main.go" ] && command -v go &>/dev/null; then
+    echo "go-callgraph: building from source..."
+    (cd tools/go-callgraph && go build -o "go-callgraph${EXT}" . 2>&1 | tail -1)
+    cp "tools/go-callgraph/go-callgraph${EXT}" "$GO_DEST"
+    echo "go-callgraph: installed"
+else
+    echo "go-callgraph: skipped (Go SDK not found or not in rude repo)"
+fi
+
+# --- ts-callgraph (optional) ---
+TS_DIR="$RUDE_HOME/lib/ts-callgraph"
+if [ -f "tools/ts-callgraph/package.json" ] && command -v node &>/dev/null; then
+    echo "ts-callgraph: installing..."
+    mkdir -p "$TS_DIR"
+    cp -r tools/ts-callgraph/package.json tools/ts-callgraph/tsconfig.json "$TS_DIR/"
+    cp -r tools/ts-callgraph/src "$TS_DIR/"
+    (cd "$TS_DIR" && npm install --silent 2>&1 | tail -1 && npx tsc 2>&1 | tail -1)
+    echo "ts-callgraph: installed"
+else
+    echo "ts-callgraph: skipped (Node.js not found or not in rude repo)"
+fi
+
 echo ""
 echo "=== Done ==="
 echo "  rude:           $(which rude 2>/dev/null || echo "$RUDE_DEST")"
 echo "  mir-callgraph:  $MIR_DEST"
+[ -f "$GO_DEST" ] && echo "  go-callgraph:   $GO_DEST"
+[ -d "$TS_DIR/dist" ] && echo "  ts-callgraph:   $TS_DIR/dist/index.js"
 echo ""
-echo "  rude add .       # Index project"
+echo "  rude add .       # Index project (Rust/Go/TS auto-detect)"
 echo "  rude ctx fn -s   # Function context"
 echo "  rude dead        # Dead code"
