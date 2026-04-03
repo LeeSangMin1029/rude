@@ -183,9 +183,15 @@ pub fn run_context(
         }
         println!();
     } else {
-        println!("=== context: {symbol}{} ({} caller, {} callee, {} type, {} test) ===\n",
-            fmt_scope(&scope), result.callers.len(), result.callees.len(),
-            result.types.len(), result.tests.len());
+        let is_type = result.seeds.iter().any(|&s|
+            matches!(graph.chunks[s as usize].kind.as_str(), "struct" | "enum" | "trait"));
+        if is_type {
+            println!("=== context: {symbol}{} ===\n", fmt_scope(&scope));
+        } else {
+            println!("=== context: {symbol}{} ({} caller, {} callee, {} type, {} test) ===\n",
+                fmt_scope(&scope), result.callers.len(), result.callees.len(),
+                result.types.len(), result.tests.len());
+        }
         print_tagged(&graph, &entries, source, &alias_map);
     }
 
