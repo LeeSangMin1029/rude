@@ -15,3 +15,4 @@ tools/go-callgraph/go-callgraph.exe
 tools/ts-callgraph/node_modules/
 tools/ts-callgraph/dist/
 tools/ts-callgraph/package-lock.json
+.devpulse/

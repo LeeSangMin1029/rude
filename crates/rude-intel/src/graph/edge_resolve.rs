@@ -31,6 +31,13 @@ impl ChunkIndex {
             if let Some(s) = lower.rsplit_once('.').map(|(_, s)| s) {
                 short.entry(s.to_string()).or_insert(idx);
             }
+            if !c.display_name.is_empty() {
+                let dn_lower = c.display_name.to_lowercase();
+                exact.entry(dn_lower.clone()).or_insert(idx);
+                if let Some(s) = c.display_name.rsplit("::").next() {
+                    short.entry(s.to_lowercase()).or_insert(idx);
+                }
+            }
 
             if let Some((prefix, method_name)) = lower.rsplit_once("::") {
                 if let Some(owner_leaf) = prefix.rsplit_once("::").map(|p| p.1) {

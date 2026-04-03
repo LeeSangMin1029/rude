@@ -25,7 +25,8 @@ pub fn run_symbols(
             if is_file_query {
                 if !c.file.ends_with(n) && !c.file.ends_with(&n.replace('\\', "/")) { return false; }
             } else {
-                if !c.name.to_lowercase().contains(&n.to_lowercase()) { return false; }
+                let nl = n.to_lowercase();
+                if !c.name.to_lowercase().contains(&nl) && !c.display_name.to_lowercase().contains(&nl) { return false; }
             }
         }
         if let Some(ref k) = kind && c.kind.to_lowercase() != k.to_lowercase() { return false; }
@@ -49,7 +50,7 @@ pub fn run_symbols(
         for c in items {
             let kind_tag = if c.kind == "function" { String::new() } else { format!("[{}] ", c.kind) };
             let test_marker = if graph::is_test_chunk(c) { " [test]" } else { "" };
-            println!("  {} {kind_tag}{}{test_marker}", format_lines_opt(c.lines), c.name);
+            println!("  {} {kind_tag}{}{test_marker}", format_lines_opt(c.lines), c.dn());
             if !compact { if let Some(sig) = c.signature.as_deref().filter(|s| !s.is_empty()) { println!("    {sig}"); } }
         }
         if !compact { println!(); }
@@ -60,10 +61,10 @@ pub fn run_symbols(
                 let i = idx as usize;
                 let impls = &graph.trait_impls[i];
                 if graph.chunks[i].kind != "trait" || impls.is_empty() { continue; }
-                println!("  implementations of {}:", graph.chunks[i].name);
+                println!("  implementations of {}:", graph.chunks[i].dn());
                 for ii in impls.iter().map(|&x| x as usize) {
                     println!("    {}{}  [{}] {}", relative_path(&graph.chunks[ii].file),
-                        format_lines_opt(graph.chunks[ii].lines), graph.chunks[ii].kind, graph.chunks[ii].name);
+                        format_lines_opt(graph.chunks[ii].lines), graph.chunks[ii].kind, graph.chunks[ii].dn());
                 }
                 println!();
             }

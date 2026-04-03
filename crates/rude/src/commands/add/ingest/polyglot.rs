@@ -34,8 +34,10 @@ pub(crate) fn ingest_polyglot(
         } else {
             extract_module_from_symbol(&chunk.name).unwrap_or_else(|| project_name.clone())
         };
+        let display_name = rude_util::display_symbol_name(&chunk.name);
         let mut parsed = ParsedChunk {
             name: chunk.name.clone(),
+            display_name,
             file: file.clone(),
             kind: chunk.kind.clone(),
             lines: Some((chunk.start, chunk.end)),

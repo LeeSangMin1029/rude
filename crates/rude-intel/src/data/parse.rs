@@ -39,11 +39,15 @@ pub struct ParsedChunk {
     #[serde(default)]
     pub minhash: Option<String>,
     #[serde(default)]
+    pub display_name: String,
+    #[serde(default)]
     pub crate_name: String,
 }
 
 impl ParsedChunk {
-    /// Compute minhash from text and store it in the `minhash` field.
+    pub fn dn(&self) -> &str {
+        if self.display_name.is_empty() { &self.name } else { &self.display_name }
+    }
     pub fn compute_minhash(&mut self) {
         let tokens = crate::minhash::code_tokens(&self.text);
         if tokens.len() >= 10 {

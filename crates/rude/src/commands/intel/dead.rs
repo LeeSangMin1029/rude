@@ -75,7 +75,7 @@ pub fn run_dead(
             let loc = format_lines_opt(graph.chunks[i].lines);
             let rel = relative_path(&graph.chunks[i].file);
             let short = apply_alias(rel, &alias_map);
-            println!("  {short}{loc}  {}", graph.chunks[i].name);
+            println!("  {short}{loc}  {}", graph.chunks[i].dn());
         }
         println!();
     }

@@ -81,6 +81,7 @@ pub(crate) fn ingest_mir(
             let mut parsed_chunk = mc.to_parsed();
             parsed_chunk.file = normalized_file.clone();
             parsed_chunk.chunk_index = idx;
+            parsed_chunk.display_name = rude_util::display_symbol_name(&parsed_chunk.name);
             if parsed_chunk.crate_name.is_empty() {
                 parsed_chunk.crate_name = cached_crate_name
                     .get_or_insert_with(|| crate_name_from_path(&file_path))

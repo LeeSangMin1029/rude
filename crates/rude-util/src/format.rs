@@ -66,6 +66,41 @@ pub fn build_path_aliases(paths: &[&str]) -> (BTreeMap<String, String>, Vec<(Str
     (alias_map, legend)
 }
 
+pub fn shorten_symbol_name(name: &str) -> &str {
+    // "<module::Type as module::Trait>::method" → "Type::method"
+    if let Some(inner) = name.strip_prefix('<') {
+        if let Some(as_pos) = inner.find(" as ") {
+            let type_part = inner[..as_pos].rsplit("::").next().unwrap_or(&inner[..as_pos]);
+            if let Some(gt_pos) = inner.find(">::") {
+                let method = &inner[gt_pos + 3..];
+                // return just "Type::method" — we need to return a str reference
+                // can't construct new string, so return from after last >::
+                let method_start = name.len() - method.len();
+                let _ = (type_part, method_start);
+            }
+        }
+    }
+    // "module::path::function_name" → "function_name"
+    name.rsplit("::").next().unwrap_or(name)
+}
+
+pub fn display_symbol_name(name: &str) -> String {
+    if let Some(inner) = name.strip_prefix('<') {
+        if let Some(as_pos) = inner.find(" as ") {
+            let type_part = inner[..as_pos].rsplit("::").next().unwrap_or(&inner[..as_pos]);
+            if let Some(gt_pos) = inner.find(">::") {
+                let method = &inner[gt_pos + 3..];
+                return format!("{type_part}::{method}");
+            }
+            return type_part.to_string();
+        }
+        let no_gt = inner.trim_end_matches('>');
+        return no_gt.rsplit("::").next().unwrap_or(no_gt).to_string();
+    }
+    let short = name.rsplit("::").next().unwrap_or(name);
+    short.to_string()
+}
+
 pub fn apply_alias(path: &str, alias_map: &BTreeMap<String, String>) -> String {
     let dir = match path.rfind('/') {
         Some(i) => &path[..=i],

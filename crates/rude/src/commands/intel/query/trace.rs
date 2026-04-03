@@ -18,7 +18,7 @@ pub fn run_trace(from: String, to: String) -> Result<()> {
                 let short = apply_alias(relative_path(&graph.chunks[i].file), &alias_map);
                 let test_marker = if graph.is_test[i] { " [test]" } else { "" };
                 let (arrow, indent) = if step == 0 { ("  ", String::new()) } else { ("→ ", "  ".repeat(step)) };
-                println!("  {indent}{arrow}{short}{}  {}{test_marker}", format_lines_opt(graph.chunks[i].lines), graph.chunks[i].name);
+                println!("  {indent}{arrow}{short}{}  {}{test_marker}", format_lines_opt(graph.chunks[i].lines), graph.chunks[i].dn());
             }
             println!();
         }

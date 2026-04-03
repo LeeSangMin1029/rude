@@ -194,7 +194,7 @@ fn warn_callers(symbols: &[&str]) {
                 .filter(|&&c| !graph.is_test[c as usize] && !idxs.contains(&(c as usize))).collect();
             if !callers.is_empty() {
                 eprintln!("  warning: {sym} has {} caller(s):", callers.len());
-                for &&c in &callers { eprintln!("    → {} ({})", graph.chunks[c as usize].name, graph.chunks[c as usize].file); }
+                for &&c in &callers { eprintln!("    → {} ({})", graph.chunks[c as usize].dn(), graph.chunks[c as usize].file); }
             }
         }
     }

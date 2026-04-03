@@ -56,6 +56,12 @@ impl CallGraph {
 
         for (i, c) in chunks.iter().enumerate() {
             name_index.push((c.name.to_lowercase(), i as u32));
+            if !c.display_name.is_empty() {
+                let dn = c.display_name.to_lowercase();
+                if dn != c.name.to_lowercase() {
+                    name_index.push((dn, i as u32));
+                }
+            }
             is_test.push(is_test_chunk(c));
         }
         name_index.sort_by(|a, b| a.0.cmp(&b.0));

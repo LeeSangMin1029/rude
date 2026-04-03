@@ -52,7 +52,7 @@ pub(super) fn print_tagged(
             let kind_tag = if graph.chunks[i].kind == "function" { String::new() } else { format!("[{}] ", graph.chunks[i].kind) };
             let test_marker = if graph.is_test[i] { " [test]" } else { "" };
             let call_site = if e.call_line > 0 { format!(" → :{}", e.call_line) } else { String::new() };
-            println!("  [{}] {} {kind_tag}{}{test_marker}{call_site}", e.tag, format_lines_opt(graph.chunks[i].lines), graph.chunks[i].name);
+            println!("  [{}] {} {kind_tag}{}{test_marker}{call_site}", e.tag, format_lines_opt(graph.chunks[i].lines), graph.chunks[i].dn());
             if e.sig { if let Some(s) = &graph.chunks[i].signature { println!("    {s}"); } }
             if show_source && (e.tag == "def" || e.tag == "test" || e.sig) {
                 if let Some((start, end)) = graph.chunks[i].lines {

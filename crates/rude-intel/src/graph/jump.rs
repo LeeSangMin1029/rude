@@ -63,7 +63,7 @@ pub fn render_tree(
     let mut buf = String::new();
     for node in nodes {
         let i = node.idx as usize;
-        let name = &graph.chunks[i].name;
+        let name = graph.chunks[i].dn();
         let file = relative_path(&graph.chunks[i].file);
         let short = apply_alias(file, alias_map);
         let lines = format_lines_opt(graph.chunks[i].lines);
@@ -88,7 +88,7 @@ fn render_children(
         let extension = if is_last { "    " } else { "\u{2502}   " };
 
         let i = child.idx as usize;
-        let name = &graph.chunks[i].name;
+        let name = graph.chunks[i].dn();
         let file = relative_path(&graph.chunks[i].file);
         let short = apply_alias(file, alias_map);
         let lines = format_lines_opt(graph.chunks[i].lines);

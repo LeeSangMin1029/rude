@@ -133,7 +133,7 @@ pub fn run_cluster(file: String, min_lines: usize) -> Result<()> {
             let line_range = graph.chunks[gi].lines
                 .map(|(s, e)| format!(":{s}-{e}"))
                 .unwrap_or_default();
-            println!("  {line_range:<12} {}", graph.chunks[gi].name);
+            println!("  {line_range:<12} {}", graph.chunks[gi].dn());
         }
         println!();
     }
