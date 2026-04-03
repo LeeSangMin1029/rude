@@ -65,9 +65,22 @@ fn ensure_nightly() -> Result<String> {
         .status();
     match status {
         Ok(s) if s.success() => {}
-        _ => bail!("failed to install nightly toolchain. Install manually:\n  rustup toolchain install nightly --component rust-src rustc-dev llvm-tools-preview"),
+        Ok(_) => bail!(
+            "nightly component install failed.\n\
+             Some nightly builds don't ship rustc-dev. Try tomorrow's nightly:\n  \
+             rustup toolchain install nightly-$(date -d '+1 day' +%Y-%m-%d) --component rust-src rustc-dev llvm-tools-preview\n\
+             Or pin a known-good version:\n  \
+             rustup toolchain install nightly-2026-04-01 --component rust-src rustc-dev llvm-tools-preview"
+        ),
+        Err(e) => bail!(
+            "rustup not found ({e}).\n\
+             Install Rust: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+        ),
     }
-    nightly_rustc_version().ok_or_else(|| anyhow::anyhow!("nightly installed but rustc not found"))
+    nightly_rustc_version().ok_or_else(|| anyhow::anyhow!(
+        "nightly installed but rustc not found.\n\
+         Try: rustup default nightly && rustc --version"
+    ))
 }
 
 fn install_mir_callgraph() -> Result<PathBuf> {
@@ -88,7 +101,7 @@ fn install_mir_callgraph() -> Result<PathBuf> {
                 nightly_ver.split(' ').last().unwrap_or("?"));
         }
     } else {
-        eprintln!("  [mir] installing mir-callgraph (first run)...");
+        eprintln!("  [mir] installing mir-callgraph (first run, may take ~30s)...");
     }
 
     std::fs::create_dir_all(&bin_dir)?;
@@ -100,7 +113,13 @@ fn install_mir_callgraph() -> Result<PathBuf> {
         .context("failed to run cargo install mir-callgraph")?;
 
     if !status.success() {
-        bail!("mir-callgraph install failed (exit code: {status})");
+        bail!(
+            "mir-callgraph build failed.\n\
+             Possible causes:\n  \
+             - Network error (needs github.com access for first build)\n  \
+             - nightly ABI break (try: rustup toolchain install nightly-2026-04-01)\n\
+             Manual fix: cd ~/.rude && cargo install --git {REPO_URL} mir-callgraph --force"
+        );
     }
 
     std::fs::write(&version_file, &nightly_ver)?;

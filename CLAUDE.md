@@ -1,6 +1,7 @@
 # rude — Code Intelligence Tool
 
-Rust 코드 구조 분석 + 편집 도구. MIR 기반 call graph, Go/TypeScript도 지원.
+코드 구조 분석 + 편집 도구. Rust(MIR), Go(go/ast), TypeScript(TSC API) 지원.
+nightly, Go SDK, Node.js는 `rude add` 시 자동 설치/감지.
 
 ## 크레이트 구조
 
@@ -42,7 +43,8 @@ cd tools/ts-callgraph && npm install && npx tsc
 - 요청하지 않은 기능 추가 금지
 - `///` doc comments, `//!` 모듈 doc 작성 금지 (clap 도움말만 예외)
 - `mod.rs` 파일은 이미 있는 구조만 사용, 새로 생성하지 않음
-- mir-callgraph 관련 변경은 반드시 `cargo build`로 nightly 빌드 확인 후 진행
+- mir-callgraph 관련 변경은 반드시 nightly 빌드 확인 후 진행
+- mir-callgraph 수정은 에이전트에 위임하지 않음 (nightly/DLL 문제로 hang 위험)
 
 ## 코드 스타일
 
@@ -69,3 +71,9 @@ FileIndex만 JSON. 전체 그래프를 메모리에 로드하는 구조 (부분 
 - `locate_symbol`은 Rust는 `syn`으로, Go/TS는 `text_fallback`으로 심볼 위치 탐색
 - 연속 편집 시 역순 정렬 (뒤에서부터 splice) — 앞 인덱스 유지
 - `expand_to_attrs`는 `.rs` 파일에만 적용
+
+## MIR 자동 복구
+
+nightly 미설치 → 자동 설치. mir-callgraph 없음 → 자동 빌드.
+nightly 버전 변경 → mir-callgraph 자동 재빌드 + stale 캐시 삭제.
+모든 실패 → clean + 재시도. 에러 시 조치 방법 출력.

@@ -22,7 +22,10 @@ pub fn run_mir_analysis(
         if !db_ok {
             eprintln!("  [mir] retrying with clean state...");
             clean_all_mir_state(input_path);
-            let _ = run_mir_cargo_wrapper(input_path);
+            if let Err(e) = run_mir_cargo_wrapper(input_path) {
+                eprintln!("  [mir] retry also failed: {e}");
+                eprintln!("  [mir] manual fix: rm -rf target/mir-edges target/mir-check-* && rude add .");
+            }
         }
         return Ok(Vec::new());
     }
@@ -42,9 +45,12 @@ pub fn run_mir_analysis(
         prof!("clear_mir_db", rude_intel::mir_edges::clear_mir_db(input_path, &truly_changed).ok());
         let rust_only = code_files.iter().all(|f| f.extension().and_then(|e| e.to_str()) == Some("rs"));
         if let Err(e) = rude_intel::mir_edges::run_mir_direct(input_path, None, &truly_changed, rust_only) {
-            eprintln!("  [mir] incremental failed ({e}), falling back to full rebuild...");
+            eprintln!("  [mir] incremental failed ({e}), rebuilding...");
             clean_all_mir_state(input_path);
-            let _ = run_mir_cargo_wrapper(input_path);
+            if let Err(e2) = run_mir_cargo_wrapper(input_path) {
+                eprintln!("  [mir] full rebuild also failed: {e2}");
+                eprintln!("  [mir] manual fix: rm -rf target/mir-edges target/mir-check-* && rude add .");
+            }
             return Ok(Vec::new());
         }
     }
