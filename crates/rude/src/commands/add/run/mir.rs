@@ -208,7 +208,18 @@ fn detect_sub_workspaces(root: &std::path::Path) -> Vec<PathBuf> {
             let abs_dir = rude_util::safe_canonicalize(&abs_root.join(&parent));
             let dir_norm = norm(&abs_dir.to_string_lossy());
             if members.contains(&dir_norm) || dir_norm == ws_root { return None; }
-            Some(root.join(parent))
+            let candidate = root.join(&parent);
+            let valid = std::process::Command::new("cargo")
+                .args(["metadata", "--no-deps", "--format-version", "1"])
+                .current_dir(&candidate)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status().map(|s| s.success()).unwrap_or(false);
+            if !valid {
+                tracing::debug!("[mir] skipping broken sub-workspace: {}", candidate.display());
+                return None;
+            }
+            Some(candidate)
         })
         .collect()
 }

@@ -1,8 +1,6 @@
 
 use anyhow::Result;
 
-use rude_util::shorten_signature;
-
 use super::query::load_or_build_graph;
 
 pub fn run_cluster(file: String, min_lines: usize) -> Result<()> {
@@ -135,11 +133,7 @@ pub fn run_cluster(file: String, min_lines: usize) -> Result<()> {
             let line_range = graph.chunks[gi].lines
                 .map(|(s, e)| format!(":{s}-{e}"))
                 .unwrap_or_default();
-            let sig_part = graph.chunks[gi].signature.as_deref()
-                .filter(|s| !s.is_empty())
-                .map(|s| format!("  {}", shorten_signature(s, 60)))
-                .unwrap_or_default();
-            println!("  {line_range:<12} {}{sig_part}", graph.chunks[gi].dn());
+            println!("  {line_range:<12} {}", graph.chunks[gi].dn());
         }
         println!();
     }

@@ -1,7 +1,7 @@
 
 use anyhow::Result;
 
-use rude_util::{apply_alias, extract_crate_name, format_lines_opt, relative_path, shorten_signature};
+use rude_util::{apply_alias, extract_crate_name, format_lines_opt, relative_path};
 
 use super::query::load_or_build_graph;
 
@@ -76,9 +76,6 @@ pub fn run_dead(
             let rel = relative_path(&graph.chunks[i].file);
             let short = apply_alias(rel, &alias_map);
             println!("  {short}{loc}  {}", graph.chunks[i].dn());
-            if let Some(s) = graph.chunks[i].signature.as_deref().filter(|s| !s.is_empty()) {
-                println!("    {}", shorten_signature(s, 80));
-            }
         }
         println!();
     }
