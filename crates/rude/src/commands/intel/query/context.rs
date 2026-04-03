@@ -89,9 +89,25 @@ pub fn run_context(
             counts.into_iter().filter(|(_, c)| *c >= threshold && *c > 1).map(|(n, _)| n).collect()
         };
         if !shared_names.is_empty() {
-            let mut names: Vec<&str> = shared_names.iter().map(|s| s.as_str()).collect();
-            names.sort();
-            println!("\n  ← {}", names.join(", "));
+            let mut by_method: std::collections::BTreeMap<&str, Vec<&str>> = std::collections::BTreeMap::new();
+            for name in &shared_names {
+                if let Some((owner, method)) = name.rsplit_once("::") {
+                    by_method.entry(method).or_default().push(owner);
+                } else {
+                    by_method.entry(name.as_str()).or_default();
+                }
+            }
+            print!("\n ");
+            for (method, owners) in &by_method {
+                if owners.is_empty() {
+                    print!(" ← {method}");
+                } else {
+                    let mut sorted = owners.clone();
+                    sorted.sort();
+                    print!(" ← .{method} ({})", sorted.join(", "));
+                }
+            }
+            println!();
         }
         let impl_labels: Vec<String> = groups.iter()
             .map(|g| {
@@ -126,14 +142,35 @@ pub fn run_context(
             }
         }
         if !callee_to_impls.is_empty() {
+            let mut by_method: std::collections::BTreeMap<String, Vec<(String, Vec<String>)>> = std::collections::BTreeMap::new();
             for (callee, impls) in &callee_to_impls {
-                if impls.len() == impl_labels.len() {
-                    println!("  → {callee}");
+                let method = callee.rsplit("::").next().unwrap_or(callee);
+                let owner = callee.rsplit_once("::").map(|(o, _)| o.to_string()).unwrap_or_default();
+                by_method.entry(method.to_string()).or_default().push((owner, impls.clone()));
+            }
+            for (method, entries) in &by_method {
+                let owners: Vec<&str> = entries.iter()
+                    .filter(|(o, _)| !o.is_empty())
+                    .map(|(o, _)| o.as_str())
+                    .collect();
+                let all_impls: std::collections::HashSet<&str> = entries.iter()
+                    .flat_map(|(_, impls)| impls.iter().map(|s| s.as_str()))
+                    .collect();
+                let impl_note = if all_impls.len() == impl_labels.len() {
+                    String::new()
                 } else {
-                    let mut deduped = impls.clone();
-                    deduped.sort();
-                    deduped.dedup();
-                    println!("  → {callee} ({})", deduped.join(", "));
+                    let mut sorted: Vec<&str> = all_impls.into_iter().collect();
+                    sorted.sort();
+                    format!(" ({})", sorted.join(", "))
+                };
+                if owners.len() > 1 {
+                    let mut sorted = owners;
+                    sorted.sort();
+                    println!("  → .{method} ({}){impl_note}", sorted.join(", "));
+                } else if owners.len() == 1 {
+                    println!("  → {}::{method}{impl_note}", owners[0]);
+                } else {
+                    println!("  → {method}{impl_note}");
                 }
             }
         }
