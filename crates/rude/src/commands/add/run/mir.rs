@@ -127,6 +127,11 @@ fn run_mir_cargo_wrapper(ws: &std::path::Path) -> Result<()> {
         rude_intel::mir_edges::runner::add_nightly_path(&mut cmd);
         cmd.status()
     };
+    let mir_target = ws.join("target").join(rude_intel::mir_edges::mir_check_dir_name());
+    let db_valid = abs_db.exists() && std::fs::metadata(&abs_db).map_or(false, |m| m.len() > 0);
+    if !db_valid && mir_target.exists() {
+        let _ = std::fs::remove_dir_all(&mir_target);
+    }
     let lib_status = run(&[]).context("cargo check (lib) failed")?;
     if !lib_status.success() {
         let db_size = std::fs::metadata(&abs_db).map(|m| m.len()).unwrap_or(0);
