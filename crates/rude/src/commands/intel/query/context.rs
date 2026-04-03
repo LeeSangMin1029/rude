@@ -193,13 +193,56 @@ pub fn run_context(
         println!("  {} tests (use --include-tests to show)\n", result.tests.len());
     }
 
-    if let Some(&si) = result.seeds.iter().find(|&&s| graph.chunks[s as usize].kind == "struct") {
-        let field_entries = graph.find_field_accesses_for_type(&graph.chunks[si as usize].name.clone());
+    if let Some(&si) = result.seeds.iter().find(|&&s| {
+        matches!(graph.chunks[s as usize].kind.as_str(), "struct" | "enum" | "trait")
+    }) {
+        let type_name = &graph.chunks[si as usize].name;
+        let type_dn = graph.chunks[si as usize].dn();
+        let type_base = type_dn.split('<').next().unwrap_or(type_dn);
+        let methods: Vec<(usize, &str)> = graph.chunks.iter().enumerate()
+            .filter(|(_, c)| {
+                if c.kind != "function" { return false; }
+                let cdn = c.dn();
+                if let Some((owner, _)) = cdn.rsplit_once("::") {
+                    let owner_base = owner.split('<').next().unwrap_or(owner);
+                    owner_base == type_base
+                } else {
+                    c.name.contains(&format!("{type_name}::")) || c.name.contains(&format!("{type_dn}::"))
+                }
+            })
+            .map(|(i, c)| {
+                let method = c.dn().rsplit("::").next().unwrap_or(c.dn());
+                (i, method)
+            })
+            .collect();
+        if !methods.is_empty() {
+            println!("  methods:");
+            for (i, method) in &methods {
+                let loc = rude_util::format_lines_opt(graph.chunks[*i].lines);
+                let sig = graph.chunks[*i].signature.as_deref()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| format!("  {}", rude_util::shorten_signature(s, 60)))
+                    .unwrap_or_default();
+                println!("    {loc} {method}{sig}");
+            }
+            println!();
+        }
+        let field_entries = graph.find_field_accesses_for_type(&type_name.clone());
         if !field_entries.is_empty() {
-            println!("@ [field accesses]");
+            let mut by_method: std::collections::BTreeMap<&str, Vec<&str>> = std::collections::BTreeMap::new();
             for (field, indices) in &field_entries {
-                let names: Vec<&str> = indices.iter().map(|&i| graph.chunks[i as usize].dn()).collect();
-                println!("  .{field} ← {}", names.join(", "));
+                for &idx in indices.iter() {
+                    let name = graph.chunks[idx as usize].dn();
+                    let method = name.rsplit("::").next().unwrap_or(name);
+                    by_method.entry(field.as_ref()).or_default().push(method);
+                }
+            }
+            println!("  fields:");
+            for (field, accessors) in &by_method {
+                let mut deduped = accessors.clone();
+                deduped.sort();
+                deduped.dedup();
+                println!("    .{field} ← {}", deduped.join(", "));
             }
             println!();
         }
