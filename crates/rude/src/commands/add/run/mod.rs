@@ -1,4 +1,4 @@
-mod mir;
+pub mod mir;
 mod pipeline;
 mod scan;
 
