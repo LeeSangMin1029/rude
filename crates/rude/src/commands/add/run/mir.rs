@@ -13,13 +13,19 @@ pub fn run_mir_analysis(
     let out_dir = input_path.join("target").join("mir-edges");
     rude_intel::mir_edges::check_bin_version_match(&out_dir, None);
     let has_cached_edges = mir_db.exists() && std::fs::metadata(mir_db).map_or(false, |m| m.len() > 0);
-
     if !has_cached_edges {
         rude_intel::mir_edges::clear_mir_db(input_path, &[]).ok();
-        run_mir_cargo_wrapper(input_path)?;
+        if let Err(e) = run_mir_cargo_wrapper(input_path) {
+            eprintln!("  [mir] first run failed: {e}");
+        }
+        let db_ok = mir_db.exists() && std::fs::metadata(mir_db).map_or(false, |m| m.len() > 0);
+        if !db_ok {
+            eprintln!("  [mir] retrying with clean state...");
+            clean_all_mir_state(input_path);
+            let _ = run_mir_cargo_wrapper(input_path);
+        }
         return Ok(Vec::new());
     }
-
     let rust_changed: Vec<_> = code_files.iter()
         .filter(|f| f.extension().and_then(|e| e.to_str()) == Some("rs"))
         .collect();
@@ -28,19 +34,20 @@ pub fn run_mir_analysis(
         if !changed_crates.iter().any(|c| c == m) { changed_crates.push(m.clone()); }
     }
     if changed_crates.is_empty() { return Ok(Vec::new()); }
-
     let crate_refs: Vec<&str> = changed_crates.iter().map(|s| s.as_str()).collect();
-    tracing::debug!("[mir] incremental: {} crate(s) — {}", crate_refs.len(), crate_refs.join(", "));
     let truly_changed: Vec<&str> = crate_refs.iter()
         .filter(|c| !missing_crates.iter().any(|m| m == *c))
         .copied().collect();
     if !truly_changed.is_empty() {
         prof!("clear_mir_db", rude_intel::mir_edges::clear_mir_db(input_path, &truly_changed).ok());
         let rust_only = code_files.iter().all(|f| f.extension().and_then(|e| e.to_str()) == Some("rs"));
-        prof!("run_mir_direct", rude_intel::mir_edges::run_mir_direct(input_path, None, &truly_changed, rust_only)
-            .context("mir-callgraph incremental failed")?);
+        if let Err(e) = rude_intel::mir_edges::run_mir_direct(input_path, None, &truly_changed, rust_only) {
+            eprintln!("  [mir] incremental failed ({e}), falling back to full rebuild...");
+            clean_all_mir_state(input_path);
+            let _ = run_mir_cargo_wrapper(input_path);
+            return Ok(Vec::new());
+        }
     }
-    // missing crates: check if they have mir.db data, if not do full cargo check
     let missing_without_data: Vec<&str> = missing_crates.iter()
         .filter(|m| {
             let mir_db = rude_intel::mir_edges::mir_db_path(input_path);
@@ -52,11 +59,25 @@ pub fn run_mir_analysis(
         })
         .map(|s| s.as_str()).collect();
     if !missing_without_data.is_empty() {
-        tracing::debug!("[mir] full rebuild for missing crates: {}", missing_without_data.join(", "));
-        rude_intel::mir_edges::run_mir_callgraph(input_path, None)
-            .context("mir-callgraph full rebuild failed")?;
+        if let Err(e) = run_mir_cargo_wrapper(input_path) {
+            eprintln!("  [mir] missing crates rebuild failed: {e}");
+        }
     }
     Ok(changed_crates)
+}
+
+fn clean_all_mir_state(root: &std::path::Path) {
+    let mir_edges = root.join("target").join("mir-edges");
+    let _ = std::fs::remove_dir_all(&mir_edges);
+    let _ = std::fs::create_dir_all(&mir_edges);
+    for entry in std::fs::read_dir(root.join("target")).into_iter().flatten() {
+        if let Ok(e) = entry {
+            let name = e.file_name();
+            if name.to_string_lossy().starts_with("mir-check") {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
+    }
 }
 
 pub fn run_sub_workspaces(
@@ -72,7 +93,6 @@ pub fn run_sub_workspaces(
             abs_f.starts_with(&abs_ws)
         });
         if has_changes {
-            tracing::debug!("[mir] sub-workspace: {}", ws.display());
             let ws_args_dir = abs_ws.join("target").join("mir-edges").join("rustc-args");
             if ws_args_dir.exists() {
                 let changed_ws: Vec<PathBuf> = code_files.iter().filter_map(|f| {
@@ -92,7 +112,7 @@ pub fn run_sub_workspaces(
         } else if !ws_mir_db.exists() {
             run_mir_cargo_wrapper(&abs_ws).ok();
         }
-        if ws_mir_db.exists() {
+        if ws_mir_db.exists() && std::fs::metadata(&ws_mir_db).map_or(false, |m| m.len() > 0) {
             rude_intel::mir_edges::merge_mir_db(main_mir_db, &ws_mir_db, &abs_root, &abs_ws).ok();
         }
     }
@@ -109,8 +129,12 @@ fn run_mir_cargo_wrapper(ws: &std::path::Path) -> Result<()> {
     let abs_bin = std::fs::canonicalize(&bin).unwrap_or_else(|_| bin.clone());
     let abs_bin = rude_util::strip_unc_prefix_path(&abs_bin);
     let members = detect_workspace_members(ws);
+    let mir_target = ws.join("target").join(rude_intel::mir_edges::mir_check_dir_name());
+    let db_valid = abs_db.exists() && std::fs::metadata(&abs_db).map_or(false, |m| m.len() > 0);
+    if !db_valid && mir_target.exists() {
+        let _ = std::fs::remove_dir_all(&mir_target);
+    }
     let run = |extra_args: &[&str]| {
-        let mir_target = ws.join("target").join(rude_intel::mir_edges::mir_check_dir_name());
         let mut cmd = std::process::Command::new("cargo");
         cmd.arg("check")
             .env("RUSTUP_TOOLCHAIN", "nightly")
@@ -127,16 +151,11 @@ fn run_mir_cargo_wrapper(ws: &std::path::Path) -> Result<()> {
         rude_intel::mir_edges::runner::add_nightly_path(&mut cmd);
         cmd.status()
     };
-    let mir_target = ws.join("target").join(rude_intel::mir_edges::mir_check_dir_name());
-    let db_valid = abs_db.exists() && std::fs::metadata(&abs_db).map_or(false, |m| m.len() > 0);
-    if !db_valid && mir_target.exists() {
-        let _ = std::fs::remove_dir_all(&mir_target);
-    }
     let lib_status = run(&[]).context("cargo check (lib) failed")?;
     if !lib_status.success() {
         let db_size = std::fs::metadata(&abs_db).map(|m| m.len()).unwrap_or(0);
         if db_size == 0 {
-            eprintln!("  [mir] cargo check failed. Trying individual packages...");
+            eprintln!("  [mir] workspace check failed, trying individual packages...");
             for m in &members {
                 let _ = run(&[&format!("-p={m}")]);
             }
@@ -144,10 +163,9 @@ fn run_mir_cargo_wrapper(ws: &std::path::Path) -> Result<()> {
     }
     let db_size = std::fs::metadata(&abs_db).map(|m| m.len()).unwrap_or(0);
     if db_size > 0 {
-        let test_status = run(&["--tests"]);
-        if let Ok(s) = test_status {
+        if let Ok(s) = run(&["--tests"]) {
             if !s.success() {
-                eprintln!("  [mir] cargo check (tests) partial: {s}");
+                eprintln!("  [mir] test analysis partial (lib results preserved)");
             }
         }
     }
@@ -220,10 +238,7 @@ fn detect_sub_workspaces(root: &std::path::Path) -> Vec<PathBuf> {
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status().map(|s| s.success()).unwrap_or(false);
-            if !valid {
-                tracing::debug!("[mir] skipping broken sub-workspace: {}", candidate.display());
-                return None;
-            }
+            if !valid { return None; }
             Some(candidate)
         })
         .collect()
