@@ -684,7 +684,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "rude"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -707,7 +707,7 @@ dependencies = [
 
 [[package]]
 name = "rude-db"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "rusqlite",
@@ -717,7 +717,7 @@ dependencies = [
 
 [[package]]
 name = "rude-intel"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bincode",
@@ -735,7 +735,7 @@ dependencies = [
 
 [[package]]
 name = "rude-util"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "ctrlc",
