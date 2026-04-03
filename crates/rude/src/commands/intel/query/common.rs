@@ -57,28 +57,18 @@ pub(crate) fn rank_by_recent(graph: &graph::CallGraph, seeds: &mut Vec<u32>) {
 
 fn score_chunk(chunk: &rude_intel::parse::ParsedChunk, recent: &[String]) -> u32 {
     let dn = chunk.dn();
-    let name = &chunk.name;
-    let file = &chunk.file;
     let mut best = 0u32;
+    let dn_base = dn.split('<').next().unwrap_or(dn);
     for (i, r) in recent.iter().enumerate() {
         let recency = (30 - i as u32).max(1);
-        if dn == r || name.ends_with(&format!("::{r}")) {
+        let r_base = r.split('<').next().unwrap_or(r);
+        if dn_base == r_base {
             return 100 + recency;
         }
-        if let Some(owner) = dn.rsplit_once("::").map(|(o, _)| o) {
-            if r.contains(owner) || owner.contains(r.as_str()) {
+        if let Some(owner) = dn_base.rsplit_once("::").map(|(o, _)| o) {
+            if owner == r_base || r_base.ends_with(owner) || owner.ends_with(r_base) {
                 best = best.max(80 + recency);
             }
-        }
-        if let Some(owner) = r.rsplit_once("::").map(|(o, _)| o) {
-            if dn.contains(owner) || name.contains(owner) {
-                best = best.max(80 + recency);
-            }
-        }
-        let r_dir = r.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
-        let f_dir = file.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
-        if !f_dir.is_empty() && !r_dir.is_empty() && f_dir == r_dir {
-            best = best.max(50 + recency);
         }
     }
     best
