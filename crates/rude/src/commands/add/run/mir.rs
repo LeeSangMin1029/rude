@@ -108,23 +108,59 @@ fn run_mir_cargo_wrapper(ws: &std::path::Path) -> Result<()> {
     let abs_db = abs_out.join("mir.db");
     let abs_bin = std::fs::canonicalize(&bin).unwrap_or_else(|_| bin.clone());
     let abs_bin = rude_util::strip_unc_prefix_path(&abs_bin);
-    let mut cmd = std::process::Command::new("cargo");
-    cmd.arg("check").arg("--tests")
-        .env("RUSTUP_TOOLCHAIN", "nightly")
-        .current_dir(ws)
-        .env("RUSTC_WRAPPER", &abs_bin)
-        .env("MIR_CALLGRAPH_OUT", &abs_out)
-        .env("MIR_CALLGRAPH_DB", &abs_db)
-        .env("MIR_CALLGRAPH_JSON", "1")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::inherit());
-    rude_intel::mir_edges::runner::add_nightly_path(&mut cmd);
-    let status = cmd.status()
-        .context("failed to run cargo check for sub-workspace")?;
-    if !status.success() {
-        eprintln!("  [mir] sub-workspace cargo check failed: {status}");
+    let members = detect_workspace_members(ws);
+    let run = |extra_args: &[&str]| {
+        let mir_target = ws.join("target").join(rude_intel::mir_edges::mir_check_dir_name());
+        let mut cmd = std::process::Command::new("cargo");
+        cmd.arg("check")
+            .env("RUSTUP_TOOLCHAIN", "nightly")
+            .arg("--target-dir").arg(&mir_target)
+            .current_dir(ws)
+            .env("RUSTC_WRAPPER", &abs_bin)
+            .env("MIR_CALLGRAPH_OUT", &abs_out)
+            .env("MIR_CALLGRAPH_DB", &abs_db)
+            .env("MIR_CALLGRAPH_JSON", "1")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::inherit());
+        for m in &members { cmd.arg("-p").arg(m); }
+        for a in extra_args { cmd.arg(a); }
+        rude_intel::mir_edges::runner::add_nightly_path(&mut cmd);
+        cmd.status()
+    };
+    let lib_status = run(&[]).context("cargo check (lib) failed")?;
+    if !lib_status.success() {
+        let db_size = std::fs::metadata(&abs_db).map(|m| m.len()).unwrap_or(0);
+        if db_size == 0 {
+            eprintln!("  [mir] cargo check failed. Trying individual packages...");
+            for m in &members {
+                let _ = run(&[&format!("-p={m}")]);
+            }
+        }
+    }
+    let db_size = std::fs::metadata(&abs_db).map(|m| m.len()).unwrap_or(0);
+    if db_size > 0 {
+        let test_status = run(&["--tests"]);
+        if let Ok(s) = test_status {
+            if !s.success() {
+                eprintln!("  [mir] cargo check (tests) partial: {s}");
+            }
+        }
     }
     Ok(())
+}
+
+fn detect_workspace_members(root: &std::path::Path) -> Vec<String> {
+    let output = std::process::Command::new("cargo")
+        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .current_dir(root)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output().ok();
+    let Some(out) = output.filter(|o| o.status.success()) else { return Vec::new() };
+    let Ok(meta) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else { return Vec::new() };
+    meta.get("packages").and_then(|p| p.as_array())
+        .map(|pkgs| pkgs.iter().filter_map(|p| p.get("name")?.as_str().map(String::from)).collect())
+        .unwrap_or_default()
 }
 
 pub fn find_sub_workspaces(root: &std::path::Path) -> Vec<PathBuf> {
