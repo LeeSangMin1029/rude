@@ -1,7 +1,32 @@
 use anyhow::Result;
 
+use rude_intel::graph::build::CallGraph;
 use super::common::{load_or_build_graph, resolve_symbol, fmt_scope, print_tagged, TaggedEntry};
 use super::blast::run_blast;
+
+fn disambiguate(graph: &CallGraph, idx: usize) -> String {
+    let chunk = &graph.chunks[idx];
+    let dn = chunk.dn();
+    if dn.contains("::") {
+        return dn.to_string();
+    }
+    if let Some(sig) = &chunk.signature {
+        if let Some(start) = sig.find("impl ") {
+            let after = &sig[start + 5..];
+            if let Some(end) = after.find(">::") {
+                let impl_type = after[..end].rsplit("::").next().unwrap_or(&after[..end]);
+                let for_part = after[..end].rsplit(" for ").next().unwrap_or(impl_type);
+                let for_short = for_part.rsplit("::").next().unwrap_or(for_part);
+                return format!("{for_short}::{dn}");
+            }
+        }
+    }
+    let name = &chunk.name;
+    if name.contains("::") {
+        return rude_util::display_symbol_name(name);
+    }
+    dn.to_string()
+}
 
 pub fn run_context(
     symbol: String,
@@ -60,11 +85,13 @@ pub fn run_context(
             }
             for c in &g.callers {
                 let ci = c.idx as usize;
-                println!("    [caller] {} {}", rude_util::format_lines_opt(graph.chunks[ci].lines), graph.chunks[ci].dn());
+                let file = rude_util::apply_alias(rude_util::relative_path(&graph.chunks[ci].file), &alias_map);
+                println!("    [caller] {file}{} {}", rude_util::format_lines_opt(graph.chunks[ci].lines), disambiguate(&graph, ci));
             }
             for c in &g.callees {
                 let ci = c.idx as usize;
-                println!("    [callee] {} {}", rude_util::format_lines_opt(graph.chunks[ci].lines), graph.chunks[ci].dn());
+                let file = rude_util::apply_alias(rude_util::relative_path(&graph.chunks[ci].file), &alias_map);
+                println!("    [callee] {file}{} {}", rude_util::format_lines_opt(graph.chunks[ci].lines), disambiguate(&graph, ci));
             }
             println!();
         }
