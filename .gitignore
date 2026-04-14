@@ -17,3 +17,4 @@ tools/ts-callgraph/dist/
 tools/ts-callgraph/package-lock.json
 .devpulse/
 .devflow/
+.claude
