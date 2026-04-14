@@ -33,7 +33,20 @@ pub(crate) fn locate_symbol_in(graph: &rude_intel::graph::CallGraph, db: &Path, 
         let abs_path = resolve_abs_path(db, file_path)?;
         if !abs_path.exists() { bail!("File not found: {}", abs_path.display()); }
         let rel = relative_display(db, file_path);
-        let (start, end) = syn_locate(&abs_path, leaf, None)?;
+        let is_rust = abs_path.extension().and_then(|e| e.to_str()) == Some("rs");
+        let (start, end) = if is_rust {
+            syn_locate(&abs_path, leaf, None)
+                .map_err(|e| anyhow::anyhow!("Symbol '{symbol}' not found in {rel}: {e} — DB may be stale, run `rude add .`"))?
+        } else {
+            let content = std::fs::read_to_string(&abs_path).unwrap_or_default();
+            text_fallback(&content, leaf)
+                .ok_or_else(|| anyhow::anyhow!("Symbol '{symbol}' not found in {rel} — DB may be stale, run `rude add .`"))?
+        };
+        let total = file_line_count(&abs_path);
+        if end > total || start == 0 {
+            bail!("Located '{symbol}' at L{start}-{end} but file has {total} lines — DB may be stale, run `rude add .`");
+        }
+        let start = expand_to_attrs(&abs_path, start);
         return Ok(SymbolLocation { abs_path, rel_path: rel, start_line: start - 1, end_line: end - 1, kind: "function".into() });
     }
     if candidates.len() > 1 {
@@ -47,14 +60,26 @@ pub(crate) fn locate_symbol_in(graph: &rude_intel::graph::CallGraph, db: &Path, 
     let rel = relative_display(db, &chunk.file);
     let kind = chunk.kind.clone();
     let is_rust = abs_path.extension().and_then(|e| e.to_str()) == Some("rs");
+    // The DB's chunk.lines are a known stale hazard (see delete-symbol bug).
+    // Only use syn/text_fallback on current file content — never fall back to chunk.lines.
     let (start, end) = if is_rust {
-        syn_locate(&abs_path, leaf, None).unwrap_or_else(|_| chunk.lines.unwrap_or((1, 1)))
+        syn_locate(&abs_path, leaf, None)
+            .map_err(|e| anyhow::anyhow!("Symbol '{symbol}' not found in {rel} (syn): {e} — DB may be stale, run `rude add .`"))?
     } else {
         let content = std::fs::read_to_string(&abs_path).unwrap_or_default();
-        text_fallback(&content, leaf).unwrap_or_else(|| chunk.lines.unwrap_or((1, 1)))
+        text_fallback(&content, leaf)
+            .ok_or_else(|| anyhow::anyhow!("Symbol '{symbol}' not found in {rel} (text search) — DB may be stale, run `rude add .`"))?
     };
+    let total = file_line_count(&abs_path);
+    if end > total || start == 0 {
+        bail!("Located '{symbol}' at L{start}-{end} but file {rel} has {total} lines — DB may be stale, run `rude add .`");
+    }
     let start = expand_to_attrs(&abs_path, start);
     Ok(SymbolLocation { abs_path, rel_path: rel, start_line: start - 1, end_line: end - 1, kind })
+}
+
+fn file_line_count(path: &Path) -> usize {
+    std::fs::read_to_string(path).map(|c| c.lines().count()).unwrap_or(0)
 }
 
 fn expand_to_attrs(path: &Path, start: usize) -> usize {

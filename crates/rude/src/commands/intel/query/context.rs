@@ -1,8 +1,16 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 
 use rude_intel::graph::build::CallGraph;
-use super::common::{load_or_build_graph, resolve_symbol, fmt_scope, print_tagged, TaggedEntry, save_query_context, rank_by_recent};
+use super::common::{load_or_build_graph, resolve_symbol, fmt_scope, print_tagged, TaggedEntry, save_query_context, rank_by_recent, print_no_symbol_hint};
 use super::blast::run_blast;
+
+const LEGEND: &str = "# markers: [def]=definition [caller]/[callee]=edges  →:N=call-site-line  [test]=test fn  [d1]/[d2]=BFS depth (blast)  ↩=recursion (tree)";
+
+fn maybe_print_legend() {
+    if std::env::var_os("RUDE_LEGEND").is_some() {
+        println!("{LEGEND}");
+    }
+}
 
 fn disambiguate(graph: &CallGraph, idx: usize) -> String {
     let chunk = &graph.chunks[idx];
@@ -36,7 +44,11 @@ pub fn run_context(
     scope: Option<String>,
     tree: bool,
     blast: bool,
+    summary: bool,
 ) -> Result<()> {
+    if summary && (source || tree || blast) {
+        bail!("--summary is exclusive; do not combine with --source / --tree / --blast");
+    }
     if tree { return run_context_tree(&symbol, depth, include_tests); }
     if blast { return run_blast(&symbol, depth, include_tests, &scope); }
 
@@ -45,7 +57,7 @@ pub fn run_context(
     let mut result = context_cmd::build_context(&graph, &symbol, depth);
 
     if result.seeds.is_empty() {
-        println!("No symbol found matching \"{symbol}\".");
+        print_no_symbol_hint(&graph, &symbol);
         return Ok(());
     }
     rank_by_recent(&graph, &mut result.seeds);
@@ -55,6 +67,11 @@ pub fn run_context(
         result.impl_groups.sort_by_key(|g| seed_order.get(&g.seed_idx).copied().unwrap_or(usize::MAX));
     }
     save_query_context(&graph, &result.seeds);
+
+    if summary {
+        return print_summary(&graph, &result, &symbol, &scope);
+    }
+    maybe_print_legend();
 
     let seed0 = result.seeds.first().copied();
     let site = |a, b| seed0.map_or(0, |_| graph.call_site_line(a, b));
@@ -68,10 +85,12 @@ pub fn run_context(
     }
 
     if let Some(ref sc) = scope {
-        entries.retain(|e| e.tag == "def" || {
-            let f = &graph.chunks[e.idx as usize].file;
-            f.starts_with(sc.as_str()) || f.contains(sc.as_str())
-        });
+        let before = entries.len();
+        entries.retain(|e| e.tag == "def" || graph.chunks[e.idx as usize].file.contains(sc.as_str()));
+        let def_count = entries.iter().filter(|e| e.tag == "def").count();
+        if before > def_count && entries.len() == def_count {
+            println!("scope '{sc}' matched no files (tip: check with `rude aliases`)");
+        }
     }
 
     let (alias_map, _) = graph.global_aliases();
@@ -263,5 +282,103 @@ fn run_context_tree(symbol: &str, depth: u32, include_tests: bool) -> Result<()>
     let (alias_map, _) = graph.global_aliases();
     println!("=== jump: {symbol} ===\n");
     print!("{}", jump::render_tree(&graph, &jump::build_flow_tree(&graph, &seeds, depth, !include_tests), &alias_map));
+    Ok(())
+}
+
+fn print_summary(
+    graph: &CallGraph,
+    result: &rude_intel::context_cmd::ContextResult,
+    symbol: &str,
+    scope: &Option<String>,
+) -> Result<()> {
+    use rude_intel::context_cmd::ContextEntry;
+    let (alias_map, _) = graph.global_aliases();
+    let in_scope = |idx: u32| -> bool {
+        scope.as_ref().is_none_or(|sc| graph.chunks[idx as usize].file.contains(sc.as_str()))
+    };
+    let filter_entries = |es: &[ContextEntry]| -> Vec<u32> {
+        es.iter().map(|e| e.idx).filter(|&i| in_scope(i)).collect()
+    };
+    let filter_ids = |ids: &[u32]| -> Vec<u32> {
+        ids.iter().copied().filter(|&i| in_scope(i)).collect()
+    };
+    maybe_print_legend();
+
+    if !result.impl_groups.is_empty() {
+        let groups = &result.impl_groups;
+        let files: std::collections::BTreeSet<String> = groups.iter()
+            .map(|g| rude_util::apply_alias(
+                rude_util::relative_path(&graph.chunks[g.seed_idx as usize].file),
+                &alias_map,
+            ))
+            .collect();
+        let file_list: Vec<String> = files.into_iter().collect();
+        println!("=== context: {symbol}{} (summary: {} impls in {}) ===",
+            fmt_scope(scope), groups.len(), file_list.join(", "));
+        for g in groups {
+            let i = g.seed_idx as usize;
+            let loc = rude_util::format_lines_opt(graph.chunks[i].lines);
+            let file = rude_util::apply_alias(rude_util::relative_path(&graph.chunks[i].file), &alias_map);
+            let sig = graph.chunks[i].signature.as_deref()
+                .filter(|s| !s.is_empty())
+                .map(|s| rude_util::shorten_signature(s, 100))
+                .unwrap_or_else(|| g.impl_name.clone());
+            println!("  [{file}{loc}] {sig}");
+        }
+        if scope.is_some() && !groups.iter().any(|g| in_scope(g.seed_idx)) {
+            if let Some(sc) = scope {
+                println!("scope '{sc}' matched no files (tip: check with `rude aliases`)");
+            }
+        }
+        return Ok(());
+    }
+
+    let callers_filtered = filter_entries(&result.callers);
+    let callees_filtered = filter_entries(&result.callees);
+    let tests_filtered = filter_ids(&result.tests);
+
+    if let Some(sc) = scope {
+        let had_any = !result.callers.is_empty() || !result.callees.is_empty();
+        let kept_any = !callers_filtered.is_empty() || !callees_filtered.is_empty();
+        if had_any && !kept_any {
+            println!("scope '{sc}' matched no files (tip: check with `rude aliases`)");
+        }
+    }
+
+    println!("=== context: {symbol}{} (summary: {} caller, {} callee, {} test) ===",
+        fmt_scope(scope), callers_filtered.len(), callees_filtered.len(), tests_filtered.len());
+
+    let seed_idx = result.seeds.first().copied().unwrap_or(0);
+    let seed = &graph.chunks[seed_idx as usize];
+    let def_loc = rude_util::format_lines_opt(seed.lines);
+    let def_file = rude_util::apply_alias(rude_util::relative_path(&seed.file), &alias_map);
+    let def_sig = seed.signature.as_deref()
+        .filter(|s| !s.is_empty())
+        .map(|s| rude_util::shorten_signature(s, 100))
+        .unwrap_or_else(|| seed.dn().to_string());
+    println!("[def]  [{def_file}{def_loc}]  {def_sig}");
+
+    let print_edges = |label: &str, ids: &[u32], is_caller: bool| {
+        if ids.is_empty() { return; }
+        println!("{label}:");
+        let limit = 5;
+        for &idx in ids.iter().take(limit) {
+            let c = &graph.chunks[idx as usize];
+            let file = rude_util::apply_alias(rude_util::relative_path(&c.file), &alias_map);
+            let loc = rude_util::format_lines_opt(c.lines);
+            let site = if is_caller {
+                graph.call_site_line(idx, seed_idx)
+            } else {
+                graph.call_site_line(seed_idx, idx)
+            };
+            let arrow = if site > 0 { format!("  → :{site}") } else { String::new() };
+            println!("  [{file}{loc}]  {}{arrow}", c.dn());
+        }
+        if ids.len() > limit {
+            println!("  (... {} more)", ids.len() - limit);
+        }
+    };
+    print_edges("callers", &callers_filtered, true);
+    print_edges("callees", &callees_filtered, false);
     Ok(())
 }

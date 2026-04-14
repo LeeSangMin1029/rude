@@ -4,7 +4,7 @@ use anyhow::Result;
 
 use rude_intel::graph;
 use rude_intel::parse::ParsedChunk;
-use rude_util::{apply_alias, build_path_aliases, format_lines_opt, relative_path, shorten_signature};
+use rude_util::{apply_alias, format_lines_opt, relative_path, shorten_signature};
 
 use super::common::load_or_build_graph;
 
@@ -18,8 +18,7 @@ pub fn run_symbols(
     let is_file_query = name.as_deref().is_some_and(looks_like_file_path);
     let graph = load_or_build_graph()?;
     let chunks = &graph.chunks;
-    let all_files: Vec<&str> = chunks.iter().map(|c| relative_path(&c.file)).collect();
-    let (alias_map, _) = build_path_aliases(&all_files);
+    let (alias_map, _) = graph.global_aliases();
     let filtered: Vec<&ParsedChunk> = chunks.iter().filter(|c| {
         if let Some(ref n) = name {
             if is_file_query {
@@ -37,6 +36,18 @@ pub fn run_symbols(
     let display: Vec<&ParsedChunk> = if let Some(n) = limit { filtered.into_iter().take(n).collect() } else { filtered };
     if display.is_empty() {
         println!("No symbols found.");
+        // Name was provided but nothing matched — hint about test filter if active.
+        if !include_tests && name.is_some() {
+            let test_hits = chunks.iter().filter(|c| {
+                let n = name.as_deref().unwrap_or("");
+                let nl = n.to_lowercase();
+                (c.name.to_lowercase().contains(&nl) || c.display_name.to_lowercase().contains(&nl))
+                    && graph::is_test_chunk(c)
+            }).count();
+            if test_hits > 0 {
+                println!("  (tip: {test_hits} test symbol(s) excluded by default, retry with --include-tests)");
+            }
+        }
         return Ok(());
     }
     let suffix = limit.map_or(String::new(), |n| format!(" (showing {}/{})", display.len().min(n), total));

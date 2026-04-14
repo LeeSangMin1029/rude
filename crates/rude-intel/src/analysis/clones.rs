@@ -213,13 +213,38 @@ pub fn chunk_lines(c: &ParsedChunk) -> usize {
 
 fn compute_ast_hash(c: &ParsedChunk) -> Option<u64> {
     use std::hash::{Hash, Hasher};
-    // Reproduce the AST hash: hash normalized signature + calls
     let sig = c.signature.as_deref().unwrap_or("");
-    if sig.is_empty() && c.calls.is_empty() { return None; }
+    let body_lines = chunk_lines(c);
+    // Only skip when we have literally nothing to hash — no signature, no calls,
+    // and no meaningful body. Previously anything without a signature was dropped,
+    // which silently excluded macro-expanded / attribute-impl chunks.
+    if sig.is_empty() && c.calls.is_empty() && c.text.trim().is_empty() && body_lines < 3 {
+        return None;
+    }
     let mut hasher = std::hash::DefaultHasher::new();
     sig.hash(&mut hasher);
     for call in &c.calls { call.hash(&mut hasher); }
+    // Body fallback: when signature is absent, mix in name + line count + a
+    // normalized body digest so macro-generated chunks can still cluster.
+    if sig.is_empty() {
+        c.name.hash(&mut hasher);
+        body_lines.hash(&mut hasher);
+        let digest = normalized_body_digest(&c.text);
+        digest.hash(&mut hasher);
+    }
     Some(hasher.finish())
+}
+
+fn normalized_body_digest(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("//") { continue; }
+        let norm: String = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
+        norm.hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 fn get_minhash(c: &ParsedChunk) -> Option<Vec<u64>> {
@@ -232,13 +257,25 @@ fn collect_ast_hash_groups(
 ) -> HashMap<u64, Vec<usize>> {
     let mut groups: HashMap<u64, Vec<usize>> = HashMap::new();
     let mut missing = 0u32;
+    let mut empty_sig_and_calls = 0u32;
     for &idx in candidate_indices {
         match compute_ast_hash(&chunks[idx]) {
             Some(k) => groups.entry(k).or_default().push(idx),
-            None => missing += 1,
+            None => {
+                missing += 1;
+                let c = &chunks[idx];
+                let sig_empty = c.signature.as_deref().map(str::is_empty).unwrap_or(true);
+                if sig_empty && c.calls.is_empty() {
+                    empty_sig_and_calls += 1;
+                }
+            }
         }
     }
-    if missing > 0 { eprintln!("  ast_hash: {missing} chunks without ast_hash"); }
+    if missing > 0 {
+        eprintln!(
+            "  ast_hash: {missing} chunks without ast_hash ({empty_sig_and_calls} had empty signature and no calls); consider --all for token fallback"
+        );
+    }
     groups
 }
 

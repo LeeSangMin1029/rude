@@ -53,8 +53,8 @@ fn run() -> anyhow::Result<()> {
         Commands::Symbols { name, kind, include_tests, limit, compact } => {
             intel::run_symbols(name, kind, include_tests, limit, compact || env_compact())
         }
-        Commands::Context { symbol, depth, source, include_tests, scope, tree, blast } => {
-            intel::run_context(symbol, depth, source, include_tests, scope, tree, blast)
+        Commands::Context { symbol, depth, source, include_tests, scope, tree, blast, summary } => {
+            intel::run_context(symbol, depth, source, include_tests, scope, tree, blast, summary)
         }
         Commands::Trace { from, to } => intel::run_trace(from, to),
         Commands::Dupes { threshold, exclude_tests, k, json, ast, all, min_lines, min_sub_lines, analyze } => {
@@ -64,45 +64,45 @@ fn run() -> anyhow::Result<()> {
         }
         Commands::Dead { include_pub, file } => intel::run_dead(include_pub, file),
         Commands::Stats => intel::run_stats(),
-        Commands::Coverage { file, refresh } => intel::run_coverage(file, refresh),
+        Commands::Coverage { file, refresh, wait } => intel::run_coverage(file, refresh, wait),
         Commands::Add { input, exclude } => commands::add::run(input, &exclude),
-        Commands::Replace { symbol, file, body, body_file } => {
+        Commands::Replace { symbol, file, body, body_file, dry_run } => {
             let body = read_body(body, body_file)?;
-            apply_edits(&[(&symbol, Op::Replace(&body))], file.as_deref())
+            apply_edits(&[(&symbol, Op::Replace(&body))], file.as_deref(), dry_run)
         }
-        Commands::InsertAfter { symbol, file, body, body_file } => {
+        Commands::InsertAfter { symbol, file, body, body_file, dry_run } => {
             let body = read_body(body, body_file)?;
-            apply_edits(&[(&symbol, Op::After(&body))], file.as_deref())
+            apply_edits(&[(&symbol, Op::After(&body))], file.as_deref(), dry_run)
         }
-        Commands::InsertBefore { symbol, file, body, body_file } => {
+        Commands::InsertBefore { symbol, file, body, body_file, dry_run } => {
             let body = read_body(body, body_file)?;
-            apply_edits(&[(&symbol, Op::Before(&body))], file.as_deref())
+            apply_edits(&[(&symbol, Op::Before(&body))], file.as_deref(), dry_run)
         }
-        Commands::DeleteSymbol { symbol, file } => {
-            apply_edits(&[(&symbol, Op::Delete)], file.as_deref())
+        Commands::DeleteSymbol { symbol, file, dry_run } => {
+            apply_edits(&[(&symbol, Op::Delete)], file.as_deref(), dry_run)
         }
-        Commands::InsertAt { file, line, body, body_file } => {
+        Commands::InsertAt { file, line, body, body_file, dry_run } => {
             let body = read_body(body, body_file)?;
-            commands::edit::insert_at(file, line, body)
+            commands::edit::insert_at(file, line, body, dry_run)
         }
-        Commands::DeleteLines { file, start, end } => {
-            commands::edit::delete_lines(file, start, end)
+        Commands::DeleteLines { file, start, end, dry_run } => {
+            commands::edit::delete_lines(file, start, end, dry_run)
         }
-        Commands::ReplaceLines { file, start, end, body, body_file } => {
+        Commands::ReplaceLines { file, start, end, body, body_file, dry_run } => {
             let body = read_body(body, body_file)?;
-            commands::edit::replace_lines(file, start, end, body)
+            commands::edit::replace_lines(file, start, end, body, dry_run)
         }
-        Commands::Batch { manifest } => {
-            commands::edit::run_batch(manifest)
+        Commands::Batch { manifest, dry_run } => {
+            commands::edit::run_batch(manifest, dry_run)
         }
         Commands::Cluster { file, min_lines } => {
             let min = min_lines.unwrap_or(rude_cli::config::get().cluster.min_lines);
             commands::intel::run_cluster(file, min)
         }
         Commands::Watch { input } => commands::watch::run(input),
-        Commands::CreateFile { file, body, body_file } => {
+        Commands::CreateFile { file, body, body_file, dry_run } => {
             let body = read_body(body, body_file)?;
-            commands::edit::create_file(file, body)
+            commands::edit::create_file(file, body, dry_run)
         }
         Commands::Split { symbols, to, dry_run } => {
             commands::edit::split(symbols, to, dry_run)

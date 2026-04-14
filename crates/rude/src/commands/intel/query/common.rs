@@ -76,7 +76,44 @@ fn score_chunk(chunk: &rude_intel::parse::ParsedChunk, recent: &[String]) -> u32
 
 pub(super) fn resolve_symbol(graph: &graph::CallGraph, symbol: &str) -> Option<Vec<u32>> {
     let seeds = graph.resolve(symbol);
-    if seeds.is_empty() { println!("No symbol found matching \"{symbol}\"."); None } else { Some(seeds) }
+    if seeds.is_empty() {
+        print_no_symbol_hint(graph, symbol);
+        None
+    } else {
+        Some(seeds)
+    }
+}
+
+pub(crate) fn print_no_symbol_hint(graph: &graph::CallGraph, symbol: &str) {
+    println!("No symbol found matching \"{symbol}\".");
+    let needle = symbol.to_lowercase();
+    let mut suggestions: Vec<(&str, &str, Option<(usize, usize)>)> = Vec::new();
+    for c in &graph.chunks {
+        let dn = c.dn();
+        let nl_name = c.name.to_lowercase();
+        let nl_dn = dn.to_lowercase();
+        let m = nl_name.contains(&needle)
+            || needle.contains(&nl_name)
+            || nl_dn.contains(&needle)
+            || needle.contains(&nl_dn);
+        if m {
+            let file_short = relative_path(&c.file);
+            let file_name = std::path::Path::new(file_short).file_name()
+                .and_then(|s| s.to_str()).unwrap_or(file_short);
+            suggestions.push((dn, file_name, c.lines));
+            if suggestions.len() >= 5 { break; }
+        }
+    }
+    if !suggestions.is_empty() {
+        let parts: Vec<String> = suggestions.iter().map(|(name, file, lines)| {
+            match lines {
+                Some((s, _)) => format!("{name} ({file}:{s})"),
+                None => format!("{name} ({file})"),
+            }
+        }).collect();
+        println!("  similar: {}", parts.join(", "));
+    }
+    println!("  tip: try `rude symbols {symbol}` for a broader search");
 }
 
 #[inline]

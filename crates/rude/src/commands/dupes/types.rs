@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::Serialize;
 use rude_intel::clones::{DupePair, UnifiedDupePair};
 use rude_intel::parse::{normalize_path, ParsedChunk};
-use rude_util::{apply_alias, build_path_aliases};
+use rude_util::apply_alias;
 
 pub(crate) trait DupePairLike {
     fn idx_a(&self) -> usize;
@@ -75,6 +75,7 @@ pub(crate) fn print_json<T: Serialize>(val: &T) {
 pub(crate) fn group_by_file(
     idx_pairs: &[(usize, usize)],
     chunks: &[ParsedChunk],
+    alias_map: &BTreeMap<String, String>,
 ) -> Vec<(String, Vec<GroupEntry>)> {
     let labels: Vec<(ChunkLabel, ChunkLabel)> = idx_pairs
         .iter()
@@ -86,14 +87,12 @@ pub(crate) fn group_by_file(
         .flat_map(|(a, b)| [normalize_path(&a.file), normalize_path(&b.file)])
         .collect();
 
-    let (alias_map, _) = build_path_aliases(&all_files.iter().map(String::as_str).collect::<Vec<_>>());
-
     let mut by_file: Vec<(String, Vec<GroupEntry>)> = Vec::new();
     let mut file_index: HashMap<String, usize> = HashMap::new();
 
     for (i, _) in idx_pairs.iter().enumerate() {
         let raw = &all_files[i * 2];
-        let key = if raw.is_empty() { "(unknown)".to_owned() } else { apply_alias(raw, &alias_map) };
+        let key = if raw.is_empty() { "(unknown)".to_owned() } else { apply_alias(raw, alias_map) };
         let idx = *file_index.entry(key.clone()).or_insert_with(|| {
             let i = by_file.len();
             by_file.push((key, Vec::new()));

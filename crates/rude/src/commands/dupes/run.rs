@@ -19,6 +19,7 @@ pub fn run(cfg: DupesConfig) -> Result<()> {
     use crate::commands::intel::load_or_build_graph;
     let graph = load_or_build_graph()?;
     let chunks = &graph.chunks;
+    let (alias_map, _) = graph.global_aliases();
 
     let candidate_indices = clones::collect_filtered_indices(chunks, exclude_tests, min_lines);
 
@@ -35,7 +36,7 @@ pub fn run(cfg: DupesConfig) -> Result<()> {
         if json {
             print_groups_json(&groups, chunks);
         } else {
-            print_groups_text(&groups, chunks);
+            print_groups_text(&groups, chunks, &alias_map);
         }
         return Ok(());
     }
@@ -55,7 +56,7 @@ pub fn run(cfg: DupesConfig) -> Result<()> {
         if json {
             print_pairs_json(&pairs, chunks);
         } else {
-            print_pairs_text(&pairs, chunks);
+            print_pairs_text(&pairs, chunks, &alias_map, threshold);
         }
 
         if analyze {
@@ -72,11 +73,12 @@ pub fn run(cfg: DupesConfig) -> Result<()> {
             clones::run_unified_pipeline(chunks, &candidate_indices, threshold, k, &stages, min_sub_lines)?;
 
         if unified_pairs.is_empty() {
-            println!("No duplicates found.");
+            println!("No duplicates found above threshold {threshold:.2}.");
+            println!("  tip: try --threshold 0.3 for broader matches, or --all for the unified pipeline");
         } else if json {
             print_pairs_json(&unified_pairs, chunks);
         } else {
-            print_pairs_text(&unified_pairs, chunks);
+            print_pairs_text(&unified_pairs, chunks, &alias_map, threshold);
         }
 
         if !sub_clones.is_empty() {
@@ -84,7 +86,7 @@ pub fn run(cfg: DupesConfig) -> Result<()> {
             if json {
                 print_sub_block_json(&capped, chunks);
             } else {
-                print_sub_block_text(&capped, chunks);
+                print_sub_block_text(&capped, chunks, &alias_map);
             }
         }
 

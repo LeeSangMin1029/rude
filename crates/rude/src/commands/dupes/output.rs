@@ -1,7 +1,9 @@
+use std::collections::BTreeMap;
+
 use serde::Serialize;
 use rude_intel::clones::SubBlockClone;
 use rude_intel::parse::{normalize_path, ParsedChunk};
-use rude_util::{apply_alias, build_path_aliases};
+use rude_util::apply_alias;
 
 use super::types::{
     ChunkLabel, DupePairLike, group_by_file, label, parse_label, print_json,
@@ -10,15 +12,18 @@ use super::types::{
 pub(crate) fn print_pairs_text(
     pairs: &[impl DupePairLike],
     chunks: &[ParsedChunk],
+    alias_map: &BTreeMap<String, String>,
+    threshold: f32,
 ) {
     if pairs.is_empty() {
-        println!("No duplicates found above threshold.");
+        println!("No duplicates found above threshold {threshold:.2}.");
+        println!("  tip: try --threshold 0.3 for broader matches, or --all for the unified pipeline");
         return;
     }
     println!("{} duplicate pairs found:\n", pairs.len());
 
     let idx_pairs: Vec<(usize, usize)> = pairs.iter().map(|p| (p.idx_a(), p.idx_b())).collect();
-    let groups = group_by_file(&idx_pairs, chunks);
+    let groups = group_by_file(&idx_pairs, chunks, alias_map);
 
     for (file, entries) in &groups {
         println!("  {file} ({} pairs)", entries.len());
@@ -42,9 +47,14 @@ pub(crate) fn print_pairs_json(pairs: &[impl DupePairLike], chunks: &[ParsedChun
     print_json(&serde_json::json!({ "pairs": vals }));
 }
 
-pub(crate) fn print_groups_text(groups: &[(u64, Vec<usize>)], chunks: &[ParsedChunk]) {
+pub(crate) fn print_groups_text(
+    groups: &[(u64, Vec<usize>)],
+    chunks: &[ParsedChunk],
+    alias_map: &BTreeMap<String, String>,
+) {
     if groups.is_empty() {
         println!("No clones found.");
+        println!("  tip: try --threshold 0.3 for broader matches, or --all for the unified pipeline");
         return;
     }
     println!("{} clone groups found:\n", groups.len());
@@ -58,7 +68,6 @@ pub(crate) fn print_groups_text(groups: &[(u64, Vec<usize>)], chunks: &[ParsedCh
         .collect();
 
     let all_files: Vec<String> = entries_flat.iter().map(|(_, _, cl)| normalize_path(&cl.file)).collect();
-    let (alias_map, _) = build_path_aliases(&all_files.iter().map(String::as_str).collect::<Vec<_>>());
 
     use std::collections::HashMap;
     type FileGroup = (String, Vec<(usize, u64, String)>);
@@ -66,7 +75,7 @@ pub(crate) fn print_groups_text(groups: &[(u64, Vec<usize>)], chunks: &[ParsedCh
     let mut file_index: HashMap<String, usize> = HashMap::new();
 
     for (i, (group_num, hash, cl)) in entries_flat.iter().enumerate() {
-        let key = if all_files[i].is_empty() { "(unknown)".to_owned() } else { apply_alias(&all_files[i], &alias_map) };
+        let key = if all_files[i].is_empty() { "(unknown)".to_owned() } else { apply_alias(&all_files[i], alias_map) };
         let idx = *file_index.entry(key.clone()).or_insert_with(|| {
             let n = by_file.len();
             by_file.push((key, Vec::new()));
@@ -101,7 +110,11 @@ pub(crate) fn print_groups_json(groups: &[(u64, Vec<usize>)], chunks: &[ParsedCh
     });
 }
 
-pub(crate) fn print_sub_block_text(clones: &[SubBlockClone], chunks: &[ParsedChunk]) {
+pub(crate) fn print_sub_block_text(
+    clones: &[SubBlockClone],
+    chunks: &[ParsedChunk],
+    alias_map: &BTreeMap<String, String>,
+) {
     println!("\n{} sub-block clones (intra-function):\n", clones.len());
 
     let labels: Vec<(ChunkLabel, ChunkLabel)> = clones
@@ -112,12 +125,11 @@ pub(crate) fn print_sub_block_text(clones: &[SubBlockClone], chunks: &[ParsedChu
         .iter()
         .flat_map(|(a, b)| [normalize_path(&a.file), normalize_path(&b.file)])
         .collect();
-    let (alias_map, _) = build_path_aliases(&all_files.iter().map(String::as_str).collect::<Vec<_>>());
 
     for (i, c) in clones.iter().enumerate() {
         let (name_a, name_b) = (&labels[i].0.name, &labels[i].1.name);
-        let file_a = apply_alias(&all_files[i * 2], &alias_map);
-        let file_b = apply_alias(&all_files[i * 2 + 1], &alias_map);
+        let file_a = apply_alias(&all_files[i * 2], alias_map);
+        let file_b = apply_alias(&all_files[i * 2 + 1], alias_map);
         let body_tag = if c.body_match { " [exact]" } else { "" };
         println!(
             "    {name_a}  ({file_a} L{}-{}) \u{2194} {name_b}  ({file_b} L{}-{}){body_tag}",

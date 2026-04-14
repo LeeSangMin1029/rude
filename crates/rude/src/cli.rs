@@ -17,7 +17,12 @@ pub struct Cli {
 #[derive(Subcommand)]
 #[expect(clippy::large_enum_variant, reason = "clap derive enums are parsed once, size is irrelevant")]
 pub enum Commands {
-    /// Print global path alias mapping (stable across all commands).
+    /// Print path alias mapping used in output (labels like [A]/[B1]).
+    ///
+    /// Labels are *locally* re-derived for `dupes` and `symbols` (based on the
+    /// files that appear in their result set), so `[A]` in dupes output may
+    /// refer to a different crate than `[A]` listed here. `stats`, `context`,
+    /// `dead`, and `trace` use these global labels.
     Aliases,
     /// List symbols in the database (functions, structs, enums, impls).
     Symbols {
@@ -50,7 +55,9 @@ pub enum Commands {
         /// Show individual test entries (default: summary count only).
         #[arg(long)]
         include_tests: bool,
-        /// Filter results to symbols whose file path contains this prefix.
+        /// Restrict results to symbols whose file path *contains* this string
+        /// (substring match, not prefix). Matches against the project-relative
+        /// path, e.g. `crates/rude-intel` or `graph/build.rs`.
         #[arg(long)]
         scope: Option<String>,
         /// Show DFS callee tree instead of grouped context.
@@ -59,6 +66,9 @@ pub enum Commands {
         /// Show blast radius (callers only with depth tags + summary).
         #[arg(long)]
         blast: bool,
+        /// Compact summary: definition + one-line caller/callee list only.
+        #[arg(long)]
+        summary: bool,
     },
     /// Find shortest call path between two symbols.
     #[command(visible_alias = "tr")]
@@ -102,6 +112,11 @@ pub enum Commands {
     /// Show per-crate code statistics (functions, structs, enums).
     Stats,
     /// Per-crate test coverage with per-function test counts.
+    ///
+    /// By default `cargo llvm-cov` runs in the **background** so the caller
+    /// (including automated agents) is not blocked. First invocation prints
+    /// "started in background" and returns immediately; rerun `rude coverage`
+    /// later to see parsed results. Use `--wait` to block until completion.
     #[command(visible_alias = "cov")]
     Coverage {
         /// Filter by file path suffix (e.g. "add.rs" or "commands/intel").
@@ -110,6 +125,9 @@ pub enum Commands {
         /// Force re-run llvm-cov (ignore cache).
         #[arg(long)]
         refresh: bool,
+        /// Block until llvm-cov finishes (legacy foreground behavior).
+        #[arg(long)]
+        wait: bool,
     },
     /// Find dead code: functions with no callers (unreachable).
     Dead {
@@ -142,6 +160,9 @@ pub enum Commands {
         /// Read body from file (avoids bash quoting issues).
         #[arg(long)]
         body_file: Option<PathBuf>,
+        /// Preview: print target file/range and first lines without modifying.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Insert content after a symbol.
     InsertAfter {
@@ -156,6 +177,9 @@ pub enum Commands {
         /// Read body from file (avoids bash quoting issues).
         #[arg(long)]
         body_file: Option<PathBuf>,
+        /// Preview only — no file modification.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Insert content before a symbol.
     InsertBefore {
@@ -170,6 +194,9 @@ pub enum Commands {
         /// Read body from file (avoids bash quoting issues).
         #[arg(long)]
         body_file: Option<PathBuf>,
+        /// Preview only — no file modification.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Delete a symbol from its source file.
     #[command(visible_alias = "del")]
@@ -179,6 +206,9 @@ pub enum Commands {
         /// Restrict to file (suffix match).
         #[arg(long)]
         file: Option<String>,
+        /// Preview: print target file/range and first lines without deleting.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Insert content at a specific line number (before that line).
     #[command(visible_alias = "ia")]
@@ -194,6 +224,9 @@ pub enum Commands {
         /// Read body from file (avoids bash quoting issues).
         #[arg(long)]
         body_file: Option<PathBuf>,
+        /// Preview only — no file modification.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Delete a range of lines from a file.
     #[command(visible_alias = "dl")]
@@ -206,6 +239,9 @@ pub enum Commands {
         /// 1-based end line (inclusive).
         #[arg(long)]
         end: usize,
+        /// Preview only — no file modification.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Replace a range of lines with new content.
     #[command(visible_alias = "rl")]
@@ -224,11 +260,26 @@ pub enum Commands {
         /// Read body from file (avoids bash quoting issues).
         #[arg(long)]
         body_file: Option<PathBuf>,
+        /// Preview only — no file modification.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Batch edit: apply multiple symbol edits atomically from a JSON manifest.
+    ///
+    /// Manifest is a JSON array of entries:
+    ///   [{ "op": "replace"|"insert-after"|"insert-before"|"delete",
+    ///      "symbol": "fn_name",
+    ///      "file":   "optional/suffix.rs",
+    ///      "body":   "new content",
+    ///      "body_file": "optional/path.txt" }]
+    /// `body` or `body_file` is required for non-delete ops. After a successful
+    /// run, `rude add` is re-run to refresh the DB.
     Batch {
         /// Path to JSON manifest file with edit operations.
         manifest: PathBuf,
+        /// Preview only — print planned edits without touching files.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Analyze independent function clusters in a file
     Cluster {
@@ -255,6 +306,9 @@ pub enum Commands {
         /// Read body from file (avoids bash quoting issues).
         #[arg(long)]
         body_file: Option<PathBuf>,
+        /// Preview only — print target path and first lines without creating.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Split symbols into a new module file.
     Split {

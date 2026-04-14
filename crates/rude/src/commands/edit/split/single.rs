@@ -65,7 +65,7 @@ pub fn split(symbols: String, to: String, dry_run: bool) -> Result<()> {
         .with_context(|| format!("Failed to write {}", target_abs.display()))?;
     eprintln!("Created {} ({} line(s))", to, new_file_content.lines().count());
     let ops: Vec<(&str, Op)> = symbol_names.iter().map(|&s| (s, Op::Delete)).collect();
-    crate::commands::edit::apply_edits(&ops, None)?;
+    crate::commands::edit::apply_edits(&ops, None, false)?;
     if !reexport_line.is_empty() {
         insert_reexport(source_path, &reexport_line)?;
         eprintln!("Inserted re-export: {}", reexport_line);
